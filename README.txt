@@ -92,3 +92,20 @@ Yi Capital 網站使用說明（v2）
   說明：瀏覽器安全模型不允許任何網站「主動」讀寫你的硬盤；
   綁定式授權（File System Access API）是唯一正規途徑，且只讀。
   記帳寫入仍由 Python 程序完成——網站負責讀與展示。
+
+■ 後台 Portal（v4 新增）—— admin.html
+  一個零服務器的發布後台：用 GitHub 倉庫充當數據庫與部署觸發器。
+  ▸ 一次性準備（約 10 分鐘）：
+    1. 把網站文件夾上傳到一個 GitHub 倉庫
+    2. 開啟 GitHub Pages（Settings → Pages），或在 Netlify "Import from Git"
+       連接該倉庫（取代拖拽上傳）
+    3. 生成 Fine-grained Token：只勾選該倉庫、只給 Contents 讀寫權限
+    4. 打開 網站/admin.html → 填入 用戶名/倉庫/Token → 保存 → 測試連接
+  ▸ 之後每次更新（30 秒）：
+    Python 記完賬 → 打開 admin.html → 拖入工作簿（頁面先用同一套引擎
+    試算校驗，防止發布壞文件）→ 點「發布」→ 約 1 分鐘後全站更新
+  ▸ 安全模型：admin.html 本身不含密鑰，Token 只存在你本機瀏覽器的
+    localStorage；且 Token 權限被限制到單一倉庫的文件讀寫。
+    別人打開這頁沒有你的 Token 無法發布任何東西。
+  ▸ 進階：Python 程序裡加一段 GitHub API PUT（同 admin.html 的邏輯），
+    可做到「記完賬自動發布」，連 Portal 都不用打開。

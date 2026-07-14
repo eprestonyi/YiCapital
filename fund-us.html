@@ -318,7 +318,9 @@
   function bootFetch(){
     const remote=new URLSearchParams(location.search).get('data');
     const url=remote||DATA_URL;
-    fetch(url).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+    // cache-bust：避免瀏覽器/CDN 緩存舊淨值表
+    const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
+    fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
       .then(buf=>loadArrayBuffer(buf, remote?('遠程 '+url):('站內 '+DATA_URL+'（隨部署更新）')))
       .catch(()=>{ $('loader').style.display='block'; $('loader').firstChild.textContent='未找到 '+url+'（可綁定本地文件持續同步，或拖入文件預覽）'; $('srcstate').textContent='數據源：無'; });
   }
