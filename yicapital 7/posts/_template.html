@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<!-- ═══════════════════════════════════════════════════════════
+  ★ 新文章模板 ★
+  發文步驟：
+  1. 複製這個檔案，改名，例如 alibaba-9988.html（英文小寫、用 - 連接）
+  2. 把下面標了【改我】的地方換成你的內容
+  3. 登記到列表（兩處，看文章性質）：
+     - 研報 → assets/reports.js 的 REPORTS 加一條（會出現在 Research Forum，可搜索）
+     - 精選 → assets/posts.js 的 POSTS 加一條（會出現在 Our Insights）
+     一篇文章可以兩邊都登記
+  4. 整個資料夾重新拖上 Netlify → 上線
+
+  正文常用寫法：
+    <h2>章標題</h2>
+    <h3>節標題</h3>
+    <p>段落。<strong>加粗重點</strong>。</p>
+    <blockquote>引用／提示框</blockquote>
+    表格：照下面示範的 <table> 抄
+    插圖：<figure><img src="../assets/img/你的圖.png" alt="說明">
+          <figcaption>圖1 說明文字｜資料來源：xxx</figcaption></figure>
+          （圖片放進 assets/img/ 資料夾）
+    PDF 下載：<p><a href="../assets/pdf/你的報告.pdf" style="color:var(--cyan)">↓ 下載報告全文 PDF</a></p>
+═══════════════════════════════════════════════════════════ -->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>【改我：文章標題】 ｜ Yi Capital</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<div class="utility"><div class="wrap">
+  <a href="../index.html#sec-portfolios">LIVE PORTFOLIO</a>
+  <a href="../index.html#sec-forum">RESEARCH FORUM</a>
+  <a href="../index.html#sec-insights">LATEST INSIGHTS</a>
+  <a href="../about.html">CONTACT</a>
+</div></div>
+
+<header><div class="wrap nav">
+  <a class="logo" href="../index.html">Yi<b>Capital</b></a>
+  <button class="menu-btn" aria-label="開啟選單" onclick="document.getElementById('m').classList.toggle('open')">MENU ≡</button>
+  <nav><ul id="m">
+    <li><a class="link active" href="../insights.html">Our Insights</a></li>
+    <li><a class="link" href="../forum.html">Research Forum</a></li>
+    <li><a class="link" href="../portfolios.html">Our Portfolios</a></li>
+    <li><a class="link" href="../about.html">About Us</a></li>
+  </ul></nav>
+</div></header>
+
+<article class="article">
+  <div class="art-head">
+    <div class="tagline">【改我：公司研究 ｜ 行業 ｜ 首次覆蓋 ｜ 日期】</div>
+    <h1>【改我：文章完整標題】</h1>
+    <div class="art-meta">
+      <span>作者：Yi Capital</span>
+      <span>【改我：市值等補充資訊，不需要可刪】</span>
+    </div>
+    <!-- 評級條：純方法論文章可整段刪掉 -->
+    <div class="rating-strip">
+      <div><div class="k">投資評級</div><div class="v buy">買入</div></div>
+      <div><div class="k">目標價</div><div class="v">HK$000</div></div>
+      <div><div class="k">現價</div><div class="v">HK$000</div></div>
+      <div><div class="k">上行空間</div><div class="v buy">+00%</div></div>
+    </div>
+  </div>
+
+  <h2>投資要點</h2>
+  <p>【改我：第一段】</p>
+  <p>【改我：第二段。<strong>重點可以加粗</strong>。】</p>
+
+  <blockquote>【改我：引用或提示框，不需要可刪】</blockquote>
+
+  <h2>【改我：章標題】</h2>
+  <h3>【改我：節標題】</h3>
+  <p>【改我：正文】</p>
+
+  <table>
+    <thead><tr><th>項目</th><th>FY2025A</th><th>2026E</th></tr></thead>
+    <tbody>
+      <tr><td>收入</td><td>0,000</td><td>0,000</td></tr>
+      <tr><td>淨利潤</td><td>0,000</td><td>0,000</td></tr>
+    </tbody>
+  </table>
+
+
+  <!-- ▼▼ 研報頁底部 PDF：把 PDF 放進 assets/pdf/ 後，取消下面註釋並改檔名 ▼▼
+  <div class="pdf-bar">
+    <b>報告全文 PDF</b>
+    <a href="../assets/pdf/你的檔名.pdf" download>↓ 下載 PDF</a>
+  </div>
+  <object class="pdf-frame" data="../assets/pdf/你的檔名.pdf" type="application/pdf">
+    <div class="placeholder" style="margin:0"><b>PDF</b><a href="../assets/pdf/你的檔名.pdf" style="color:var(--cyan)">點此下載報告全文</a></div>
+  </object>
+  ▲▲ -->
+
+  <div class="art-disc">
+    <p>免責聲明：本報告基於公開資料撰寫，僅供研究與學習參考，不構成任何證券之買賣要約、招攬或投資建議。相關證券之價格可升可跌，過往表現不應作為日後表現之依據。</p>
+  </div>
+  <a class="back-link" href="../insights.html">← 返回研究觀點</a>
+</article>
+
+<footer><div class="wrap">
+  <div class="logo">Yi<b>Capital</b></div>
+  <p>© 2026 Yi Capital.</p>
+</div></footer>
+
+</body>
+</html>
