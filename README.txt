@@ -44,3 +44,51 @@ Yi Capital 網站使用說明（v2）
   - about.html 郵箱換成真實郵箱
   - 三個組合頁五個分頁的內容（你說回頭給文件，貼進 tab-panel 即可）
   - Forum 若要開放留言：https://giscus.app 生成代碼貼入報告頁
+
+■ 數據驅動組合頁（v3 新增）—— fund-us.html
+  Yi Capital US 現有一個「完整檔案頁」fund-us.html：
+  所有指標與圖表由淨值表 Excel 即時計算，與 Yi_Capital_Manager_V2.py 同一套口徑
+  （日收益 =（每股淨資產＋每股派息）÷ 前日淨資產 − 1；指標已與 pandas 逐位核對一致）。
+
+  ▸ 更新數據（唯一要做的事）：
+    1. 用 Yi_Capital_Manager 正常記帳，得到基金工作簿（含 NAV Statement /
+       Asset Position Record 兩個分頁）
+    2. 把該 xlsx 改名為 Yi_Capital_US.xlsx，放進 assets/data/ 覆蓋
+    3. 重新拖上 Netlify → 頁面所有數字、曲線、熱力圖、VaR、壓測自動更新
+    （目前 assets/data/ 內是一份示例數據，替換即可）
+
+  ▸ 可選：Alpha / Beta / 基準對比曲線
+    在同一 xlsx 加一個分頁「Benchmark」：
+    第一行表頭 Date | SPY | QQQ | ...（收盤價），逐日一行。
+    頁面會自動疊加基準淨值曲線並計算 Alpha、Beta、信息比率、R²。
+    （可在 Python 程序裡把 yfinance 下載的 bm_prices 直接 to_excel 到該分頁）
+
+  ▸ 本地預覽：直接雙擊 fund-us.html（file:// 下 fetch 會失敗），
+    把 xlsx 拖進頁面即可渲染，不需要本地服務器。
+
+  ▸ 引擎文件：
+    assets/yc-analytics.js  計算引擎（解析 Excel、指標、VaR、bootstrap 壓測）
+    assets/yc-charts.js     SVG 圖表渲染（風格對齊全站）
+    HK / A Share 想做同款：複製 fund-us.html，把 DATA_URL 換成對應
+    xlsx 路徑、改標題與投資邏輯文案即可（引擎全部共用）。
+
+■ 持續同步（v4 新增）—— 網頁自動跟隨本地淨值表更新
+  fund-us.html 頂部有「🔗 綁定本地淨值表（持續同步）」按鈕（需 Chrome/Edge 桌面版）：
+    1. 點擊 → 選中你的基金工作簿（如 Yi_Capital_Version_2.xlsx）
+    2. 之後頁面每 4 秒檢查文件修改時間；Python 程序一保存，
+       全部指標與圖表自動重算重畫（狀態欄顯示 ● LIVE）
+    3. 綁定跨會話保留：下次打開頁面點一下「重新連接」即恢復同步
+  注意：這只作用於「你自己這台電腦上的瀏覽器」。訪客看到的仍是
+  站內 assets/data/Yi_Capital_US.xlsx（或遠程數據，見下）。
+
+  ▸ 讓「訪客也自動看到最新數據」的兩種方式：
+    a) 遠程託管：把 xlsx 放到任意可公開訪問的直鏈（GitHub raw /
+       Cloudflare R2 等），訪問 fund-us.html?data=https://…/文件.xlsx
+       或把頁面裡 DATA_URL 常量改成該鏈接。之後只更新遠端文件即可，
+       網站本身不用重新部署。（GitHub raw 可在 Python 記帳程序末尾
+       加一句 git commit + push 實現全自動。）
+    b) 傳統方式：覆蓋 assets/data/Yi_Capital_US.xlsx 後重新拖上 Netlify。
+
+  說明：瀏覽器安全模型不允許任何網站「主動」讀寫你的硬盤；
+  綁定式授權（File System Access API）是唯一正規途徑，且只讀。
+  記帳寫入仍由 Python 程序完成——網站負責讀與展示。
