@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>window.YC_LANG='en';</script>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Insights | Yi Capital</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<div class="utility"><div class="wrap">
+  <a href="./#sec-portfolios" data-i18n="ut.live">LIVE PORTFOLIO</a>
+  <a href="./#sec-forum" data-i18n="ut.forum">RESEARCH FORUM</a>
+  <a href="./#sec-insights" data-i18n="ut.insights">LATEST INSIGHTS</a>
+  <a href="about" data-i18n="ut.contact">CONTACT</a>
+  <a href="login" style="color:var(--cyan)" data-i18n="ut.login">LOGIN</a>
+</div></div>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <button class="menu-btn" aria-label="Open menu" onclick="document.getElementById('m').classList.toggle('open')">MENU ≡</button>
+  <nav><ul id="m">
+    <li><a class="link active" href="insights" data-i18n="nav.insights">Our Insights</a></li>
+    <li><a class="link" href="forum" data-i18n="nav.forum">Research Forum</a></li>
+    <li><a class="link" href="portfolios" data-i18n="nav.portfolios">Our Portfolios</a></li>
+    <li><a class="link" href="about" data-i18n="nav.about">About Us</a></li>
+  </ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb"><a href="./">HOME</a> / OUR INSIGHTS</div>
+    <h1><small>Our Insights</small><span data-i18n="ins.h1">Insights</span></h1>
+    <p data-i18n="ins.p">Deep-dive equity research, serialized by chapter: conclusions up front, evidence in the body. Each piece includes a decade-scale revenue and margin breakdown, falsifiable core assumptions, and a full valuation derivation.</p>
+  </div>
+</div>
+
+<section style="padding-top:56px">
+  <div class="wrap">
+    <div class="cards" id="post-list"></div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <div class="logo">Yi<b>Capital</b></div>
+  <p>Disclaimer: all research, portfolio data and forum content on this site are prepared from public information and personal judgment, for research and educational reference only, and constitute no offer, solicitation or investment advice with respect to any security. Prices may rise or fall; past performance should not be relied upon as a guide to future results. This site accepts no liability for any loss arising from use of its content.</p>
+  <p>© 2026 Yi Capital.</p>
+</div></footer>
+
+<script src="../assets/posts.js"></script>
+<script>renderPosts("post-list");</script>
+<script src="../assets/portal-config.js"></script>
+<script src="../assets/yc-i18n.js"></script>
+<script src="../assets/yc-session.js"></script>
+</body>
+</html>
