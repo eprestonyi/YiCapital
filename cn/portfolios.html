@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<script>window.YC_LANG='cn';</script>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>组合实录 ｜ Yi Capital</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<div class="utility"><div class="wrap">
+  <a href="./#sec-portfolios" data-i18n="ut.live">实时组合</a>
+  <a href="./#sec-forum" data-i18n="ut.forum">研报库</a>
+  <a href="./#sec-insights" data-i18n="ut.insights">最新观点</a>
+  <a href="about" data-i18n="ut.contact">联系我们</a>
+  <a href="login" style="color:var(--cyan)" data-i18n="ut.login">登入</a>
+</div></div>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <button class="menu-btn" aria-label="开启选单" onclick="document.getElementById('m').classList.toggle('open')">选单 ≡</button>
+  <nav><ul id="m">
+    <li><a class="link" href="insights" data-i18n="nav.insights">研究观点</a></li>
+    <li><a class="link" href="forum" data-i18n="nav.forum">研究论坛</a></li>
+    <li><a class="link active" href="portfolios" data-i18n="nav.portfolios">组合实录</a></li>
+    <li><a class="link" href="about" data-i18n="nav.about">关于我们</a></li>
+  </ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb"><a href="./">首页</a> / OUR PORTFOLIOS</div>
+    <h1><small>组合实录</small><span data-i18n="pf.crumbtitle">组合实录</span></h1>
+    <p>三个独立运作的个人组合，往下滑动依次为 <a href="#hk" style="color:var(--cyan)">Yi Capital HK</a> → <a href="#us" style="color:var(--cyan)">Yi Capital US</a> → <a href="#ashare" style="color:var(--cyan)">Yi Capital A Share</a>。每个组合含净值曲线、Performance / Holdings / Risks / Methodology 档案分页；致股东信见 Filings。绿涨红跌。</p>
+  </div>
+</div>
+
+<div class="yc-lock">
+<section class="fund" id="hk">
+  <div class="wrap">
+    <div class="fund-idx" data-i18n="hk.idx">01 ｜ HKD ｜ 周期均值回归</div>
+    <h2>Yi Capital HK</h2>
+    <p class="fund-desc" data-i18n="hk.desc">做港股的周期均值回归：在情绪与估值的极端处建仓，等待价格向长期均值收敛。高贝塔（beta）、高集中度，以无杠杆与安全边际换取持有极端波动的资格。回测区间 2025-02-06 → 2026-07-10（357 交易日）。</p>
+    <div class="stats"><div class="stat"><div class="v u">+51%</div><div class="k" data-i18n="hk.st.cum">累计回报（HK$10,000 → 约15,100）</div></div><div class="stat"><div class="v ">33.2%</div><div class="k" data-i18n="st.ann">年化收益率</div></div><div class="stat"><div class="v ">28.0%</div><div class="k" data-i18n="st.vol">年化波动率</div></div><div class="stat"><div class="v d">−23%</div><div class="k" data-i18n="st.mdd">最大回撤</div></div><div class="stat"><div class="v ">−2.53%</div><div class="k" data-i18n="st.var">VaR 95%（日，经验）</div></div><div class="stat"><div class="v ">51.8%</div><div class="k" data-i18n="hk.st.win">日胜率（185/357）</div></div></div>
+    
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="hk-performance" role="tab" data-i18n="tab.perf">业绩表现</button>
+      <button class="tab" data-tab="hk-holdings" role="tab" data-i18n="tab.hold">持仓</button>
+      <button class="tab" data-tab="hk-risks" role="tab" data-i18n="tab.risk">风险</button>
+      <button class="tab" data-tab="hk-methodology" role="tab" data-i18n="tab.meth">方法论</button>
+      <a class="tab" href="filings" role="tab" data-i18n="tab.filings">申报文件 ↗</a>
+    </div>
+    <div class="tab-panel on" id="hk-performance">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.equity.hk">净值曲线（模拟 10,000 投入）</h4>
+          <svg viewBox="0 0 560 250" width="100%" role="img" aria-label="Yi Capital HK 与恒指、恒生科技净值曲线">
+          <line x1="44" y1="188" x2="552" y2="188" stroke="#1a2436" stroke-dasharray="3 4"/>
+          <text x="4" y="32" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">17k</text>
+          <text x="4" y="192" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">10k</text>
+          <text x="4" y="215" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">9k</text>
+          <polyline fill="none" stroke="#8b5cf6" stroke-width="1.5" opacity=".75" points="44,180.9 74,153.4 104,217.4 134,180.9 164,171.7 193,153.4 223,146.6 253,105.4 283,153.4 313,146.6 343,142.0 373,164.9 403,183.1 432,190.0 462,180.9 492,187.7 522,212.9 552,194.6"/>
+          <polyline fill="none" stroke="#3b82f6" stroke-width="1.5" opacity=".75" points="44,180.9 74,164.9 104,196.9 134,174.0 164,158.0 193,130.6 223,126.0 253,116.9 283,126.0 313,121.4 343,116.9 373,103.1 403,112.3 432,126.0 462,121.4 492,121.4 522,158.0 552,148.9"/>
+          <polyline fill="none" stroke="#22d3ee" stroke-width="3" opacity="1" points="44,194.6 74,185.4 104,212.9 134,180.9 164,155.7 193,144.3 223,123.7 253,80.3 283,98.6 313,59.7 343,32.3 373,20.9 403,34.6 432,59.7 462,48.3 492,64.3 522,107.7 552,71.1"/>
+          <text x="34" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-03</text>
+          <text x="161" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-07</text>
+          <text x="288" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-11</text>
+          <text x="415" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">26-03</text>
+          <text x="542" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">26-07</text>
+          </svg>
+          <div class="legend"><i style="background:#22d3ee"></i>Yi Capital HK&nbsp;&nbsp;<i style="background:#3b82f6"></i>恒生指數 HSI&nbsp;&nbsp;<i style="background:#8b5cf6"></i>恒生科技 HSTECH</div>
+        </div>
+        <div class="panel"><h4 data-i18n="pn.heatmap">月度收益率热力图</h4><table class="hm"><thead><tr><th></th><th>1月</th><th>2月</th><th>3月</th><th>4月</th><th>5月</th><th>6月</th><th>7月</th><th>8月</th><th>9月</th><th>10月</th><th>11月</th><th>12月</th></tr></thead><tbody><tr><td class="y">2025</td><td class="e">·</td><td style="background:rgba(255,92,71,0.20)">-0.7</td><td style="background:rgba(52,211,153,0.46)">+3.8</td><td style="background:rgba(255,92,71,0.37)">-2.7</td><td style="background:rgba(52,211,153,0.91)">+9.1</td><td style="background:rgba(52,211,153,0.66)">+6.1</td><td style="background:rgba(255,92,71,0.16)">-0.2</td><td style="background:rgba(52,211,153,0.81)">+7.9</td><td style="background:rgba(52,211,153,0.92)">+15.9</td><td style="background:rgba(52,211,153,0.17)">+0.4</td><td style="background:rgba(52,211,153,0.51)">+4.3</td><td style="background:rgba(52,211,153,0.82)">+8.0</td></tr><tr><td class="y">2026</td><td style="background:rgba(52,211,153,0.46)">+3.8</td><td style="background:rgba(255,92,71,0.44)">-3.5</td><td style="background:rgba(255,92,71,0.66)">-6.1</td><td style="background:rgba(52,211,153,0.36)">+2.6</td><td style="background:rgba(255,92,71,0.48)">-4.0</td><td style="background:rgba(255,92,71,0.92)">-9.4</td><td style="background:rgba(52,211,153,0.92)">+9.9</td><td class="e">·</td><td class="e">·</td><td class="e">·</td><td class="e">·</td><td class="e">·</td></tr></tbody></table>
+          <div class="legend" style="margin-top:14px" data-i18n="ch.updown">绿涨红跌；色深对应幅度。</div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="hk-holdings">
+      <div class="panel"><table class="m"><thead><tr><th data-i18n="ch.ticker">代号</th><th data-i18n="ch.weight">权重</th><th><span data-i18n="ch.pnl">总盈亏</span>（HK$）</th><th data-i18n="ch.expret">敞口收益率</th></tr></thead><tbody><tr><td>0700.HK</td><td>44.5%</td><td class="d">−20,960</td><td class="d">-6.7%</td></tr><tr><td>9988.HK</td><td>16.0%</td><td class="u">+30,230</td><td class="u">+12.8%</td></tr><tr><td>9992.HK</td><td>14.6%</td><td class="d">−4,760</td><td class="d">-7.3%</td></tr><tr><td>0883.HK</td><td>10.6%</td><td class="u">+16,540</td><td class="u">+10.9%</td></tr><tr><td>0941.HK</td><td>9.5%</td><td class="u">+1,109</td><td class="u">+2.8%</td></tr><tr><td>9633.HK</td><td>4.8%</td><td class="d">−380</td><td class="d">-1.9%</td></tr></tbody></table><div class="legend" style="margin-top:12px" data-i18n="hk.hold.note">总市值 HK$413,365。盈亏含已实现＋未实现＋股息。0700.HK 为核心周期仓位，详见〈研究论坛〉深度研报。</div></div>
+    </div>
+    <div class="tab-panel" id="hk-risks">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.var">VaR（日，95/98/99）</h4><table class="m"><thead><tr><th data-i18n="ch.cl">置信水平</th><th data-i18n="ch.varn">VaR 正态</th><th data-i18n="ch.varcf">VaR Cornish-Fisher</th><th data-i18n="ch.vare">VaR 经验</th></tr></thead><tbody><tr><td>95%</td><td class="d">−2.77%</td><td class="d">−2.88%</td><td class="d">−2.53%</td></tr><tr><td>98%</td><td class="d">−3.33%</td><td class="d">−4.97%</td><td class="d">−3.05%</td></tr><tr><td>99%</td><td class="d">−3.97%</td><td class="d">−8.33%</td><td class="d">−3.77%</td></tr></tbody></table>
+        <div class="risk-note" data-i18n="hk.risknote1">CVaR（Expected Shortfall）95% = <b>−3.88%</b>。偏度 −0.91（大亏概率显著高于大盈）、超额峰度 9.04、Student-t 自由度 3.9——<b>极厚尾</b>，4σ 事件概率为正态假设的 272 倍。正态模型低估真实风险约 9%，风控一律采用 Cornish-Fisher / Skewed-t 口径，并以 GARCH(1,1) 建模条件波动率。</div></div>
+        <div class="panel"><h4 data-i18n="pn.skewt">Skewed-t 极端压力测试</h4><table class="m"><thead><tr><th data-i18n="ch.scen">压力场景</th><th data-i18n="ch.dur">持续</th><th>累积亏损</th><th>终值</th></tr></thead><tbody><tr><td data-i18n="sc.crash">Black Swan Crash（10天，1%分位）</td><td>10天</td><td class="d">−36.2%</td><td>0.64</td></tr><tr><td data-i18n="sc.bear">Prolonged Bear（21天，5%分位）</td><td>21天</td><td class="d">−40.4%</td><td>0.60</td></tr><tr><td data-i18n="sc.grind">Slow Grind Down（126天，负收益均值）</td><td>126天</td><td class="d">−79.6%</td><td>0.20</td></tr></tbody></table>
+        <div class="risk-note" data-i18n="hk.risknote2">高贝塔＋高集中度（0700 占 44.5%）使本组合为三者中尾部风险最高：阴跌半年情景下腰斩概率 100%。无杠杆、无 margin call 是压测下仍可存活的前提；该仓位结构要求极强的心理承受力。</div></div>
+      </div></div>
+    <div class="tab-panel" id="hk-methodology">
+      <div class="panel"><p style="color:#cdd6e3;font-size:15px;line-height:1.9" data-i18n="hk.meth">周期均值回归的三个纪律：其一，只在估值与情绪的统计极端处建仓（历史分位、隐含回报、资金面拥挤度三重确认）；其二，标的必须现金流可验证、股东回报明确——回归的锚是内在价值而非价格惯性；其三，无杠杆持仓，用仓位而非止损管理风险，接受深回撤以换取完整的回归路径。当前核心仓位 0700.HK 的完整论证见研究论坛的深度研报。</p></div>
+    </div>
+  </div>
+</section>
+<section class="fund" id="us">
+  <div class="wrap">
+    <div class="fund-idx" data-i18n="us.idx">02 ｜ USD ｜ 多资产配置</div>
+    <h2><a href="fund-us" style="color:inherit">Yi Capital US <span style="color:var(--cyan);font-size:.55em;vertical-align:middle;font-family:var(--mono);letter-spacing:1px"><span data-i18n="pf.fullpage">完整档案页 ↗</span></span></a></h2>
+    <p class="fund-desc"><span data-i18n="us.desc">多资产配置的美金组合：股票、久期（duration）、黄金与短债的风险平衡，以厚尾（fat-tail）与压力测试框架管理回撤，追求全天候的风险调整后回报。本板块全部数字与图表由净值表（Excel）实时计算——</span><a href="fund-us" style="color:var(--cyan)" data-i18n="us.desc.a">进入完整档案页</a><span data-i18n="us.desc.b">看全部 14 张图。</span> <span id="us-period" style="color:var(--muted)"></span></p>
+    <div class="stats" id="us-stats"><div class="stat"><div class="v">…</div><div class="k" data-i18n="fund.loading">正在从净值表计算</div></div></div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="us-performance" role="tab" data-i18n="tab.perf">业绩表现</button>
+      <button class="tab" data-tab="us-holdings" role="tab" data-i18n="tab.hold">持仓</button>
+      <button class="tab" data-tab="us-risks" role="tab" data-i18n="tab.risk">风险</button>
+      <button class="tab" data-tab="us-methodology" role="tab" data-i18n="tab.meth">方法论</button>
+      <a class="tab" href="filings" role="tab" data-i18n="tab.filings">申报文件 ↗</a>
+    </div>
+    <div class="tab-panel on" id="us-performance">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.equity">净值曲线（模拟 $10,000 投入）</h4><div id="us-equity"></div></div>
+        <div class="panel"><h4 data-i18n="pn.heatmap">月度收益率热力图</h4><div id="us-heatmap"></div></div>
+      </div>
+    </div>
+    <div class="tab-panel" id="us-holdings">
+      <div class="panel"><div id="us-holdings-table"></div><div class="legend" style="margin-top:12px" id="us-holdings-note"></div></div>
+    </div>
+    <div class="tab-panel" id="us-risks">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.var">VaR（日，95/98/99）</h4><div id="us-var"></div><div class="risk-note" id="us-var-note"></div></div>
+        <div class="panel"><h4>蒙特卡洛极端压力测试（bootstrap ×10,000）</h4><div id="us-stress"></div><div class="risk-note">压测回答的唯一问题：会不会死？完整路径图见完整档案页。</div></div>
+      </div></div>
+    <div class="tab-panel" id="us-methodology">
+      <div class="panel"><p style="color:#cdd6e3;font-size:15px;line-height:1.9">两个变量：每笔交易都是胜率与赔率权衡后的期望值决策。多资产反脆弱架构：股票进攻、美债弹药、黄金保险丝、短债流动性，组合在任何单一宏观情景下都不被摧毁。衍生品是心理工程：有限成本的 bear spread 提前把恐慌区的决策权交给冷靜的自己。厚尾风控：拒绝正态 VaR 幻觉，一律采用 Cornish-Fisher / 经验分位＋蒙特卡洛压测。完整投资逻辑见<a href="fund-us" style="color:var(--cyan)">完整档案页</a>与致股东信。</p></div>
+    </div>
+  </div>
+</section>
+<section class="fund" id="ashare">
+  <div class="wrap">
+    <div class="fund-idx" data-i18n="a.idx">03 ｜ CNY ｜ 长期持有</div>
+    <h2>Yi Capital A Share</h2>
+    <p class="fund-desc" data-i18n="a.desc">A股优质资产的长期持有：聚焦竞争格局清晰、自由现金流充沛的龙头，换手极低、以年为单位计仓，用时间换取复利。回测区间 2025-01-07 → 2026-07-10（377 交易日）。</p>
+    <div class="stats"><div class="stat"><div class="v u">+22%</div><div class="k" data-i18n="a.st.cum">累计回报（¥10,000 → 约12,200）</div></div><div class="stat"><div class="v ">14.6%</div><div class="k" data-i18n="st.ann">年化收益率</div></div><div class="stat"><div class="v ">14.5%</div><div class="k" data-i18n="st.vol">年化波动率</div></div><div class="stat"><div class="v d">−11%</div><div class="k" data-i18n="st.mdd">最大回撤</div></div><div class="stat"><div class="v ">−1.42%</div><div class="k" data-i18n="st.var">VaR 95%（日，经验）</div></div><div class="stat"><div class="v ">46.9%</div><div class="k" data-i18n="a.st.win">日胜率（177/377）</div></div></div>
+    
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="ashare-performance" role="tab" data-i18n="tab.perf">业绩表现</button>
+      <button class="tab" data-tab="ashare-holdings" role="tab" data-i18n="tab.hold">持仓</button>
+      <button class="tab" data-tab="ashare-risks" role="tab" data-i18n="tab.risk">风险</button>
+      <button class="tab" data-tab="ashare-methodology" role="tab" data-i18n="tab.meth">方法论</button>
+      <a class="tab" href="filings" role="tab" data-i18n="tab.filings">申报文件 ↗</a>
+    </div>
+    <div class="tab-panel on" id="ashare-performance">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.equity.hk">净值曲线（模拟 10,000 投入）</h4>
+          <svg viewBox="0 0 560 250" width="100%" role="img" aria-label="Yi Capital A 与沪深300净值曲线">
+          <line x1="44" y1="187" x2="552" y2="187" stroke="#1a2436" stroke-dasharray="3 4"/>
+          <text x="4" y="43" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">13k</text>
+          <text x="4" y="191" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">10k</text>
+          <text x="4" y="216" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">9.5k</text>
+          <polyline fill="none" stroke="#3b82f6" stroke-width="1.5" opacity=".75" points="44,192.3 72,177.4 100,172.5 129,212.1 157,187.3 185,162.6 213,113.0 242,88.3 270,73.4 298,78.4 326,68.5 354,63.5 383,78.4 411,73.4 439,78.4 467,43.7 496,38.8 524,58.6 552,68.5"/>
+          <polyline fill="none" stroke="#22d3ee" stroke-width="3" opacity="1" points="44,184.9 72,167.5 100,162.6 129,184.9 157,127.9 185,73.4 213,48.7 242,63.5 270,113.0 298,73.4 326,48.7 354,33.8 383,48.7 411,48.7 439,53.6 467,43.7 496,48.7 524,93.2 552,78.4"/>
+          <text x="34" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-01</text>
+          <text x="161" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-05</text>
+          <text x="288" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-09</text>
+          <text x="415" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">26-01</text>
+          <text x="542" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">26-05</text>
+          </svg>
+          <div class="legend"><i style="background:#22d3ee"></i>Yi Capital A&nbsp;&nbsp;<i style="background:#3b82f6"></i>沪深300 CSI300</div>
+        </div>
+        <div class="panel"><h4 data-i18n="pn.heatmap">月度收益率热力图</h4><table class="hm"><thead><tr><th></th><th>1月</th><th>2月</th><th>3月</th><th>4月</th><th>5月</th><th>6月</th><th>7月</th><th>8月</th><th>9月</th><th>10月</th><th>11月</th><th>12月</th></tr></thead><tbody><tr><td class="y">2025</td><td style="background:rgba(52,211,153,0.42)">+3.3</td><td style="background:rgba(255,92,71,0.21)">-0.8</td><td style="background:rgba(52,211,153,0.34)">+2.4</td><td style="background:rgba(255,92,71,0.17)">-0.3</td><td style="background:rgba(52,211,153,0.86)">+8.5</td><td style="background:rgba(52,211,153,0.83)">+8.1</td><td style="background:rgba(52,211,153,0.23)">+1.1</td><td style="background:rgba(52,211,153,0.15)">+0.1</td><td style="background:rgba(255,92,71,0.78)">-7.5</td><td style="background:rgba(52,211,153,0.56)">+4.9</td><td style="background:rgba(52,211,153,0.29)">+1.8</td><td style="background:rgba(52,211,153,0.51)">+4.3</td></tr><tr><td class="y">2026</td><td style="background:rgba(255,92,71,0.17)">-0.4</td><td style="background:rgba(139,152,172,.15)">-0.0</td><td style="background:rgba(255,92,71,0.15)">-0.1</td><td style="background:rgba(52,211,153,0.21)">+0.8</td><td style="background:rgba(255,92,71,0.35)">-2.5</td><td style="background:rgba(255,92,71,0.57)">-5.1</td><td style="background:rgba(52,211,153,0.40)">+3.1</td><td class="e">·</td><td class="e">·</td><td class="e">·</td><td class="e">·</td><td class="e">·</td></tr></tbody></table>
+          <div class="legend" style="margin-top:14px" data-i18n="ch.updown">绿涨红跌；色深对应幅度。</div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="ashare-holdings">
+      <div class="panel"><table class="m"><thead><tr><th data-i18n="ch.ticker">代号</th><th data-i18n="ch.weight">权重</th><th><span data-i18n="ch.pnl">总盈亏</span>（¥）</th><th data-i18n="ch.expret">敞口收益率</th></tr></thead><tbody><tr><td>600036.SS 招商银行</td><td>20.9%</td><td class="d">−1,666</td><td class="d">-1.0%</td></tr><tr><td>600519.SS 贵州茅台</td><td>18.6%</td><td class="d">−30,004</td><td class="d">-20.1%</td></tr><tr><td>601838.SS 成都银行</td><td>11.2%</td><td class="u">+10,491</td><td class="u">+11.9%</td></tr><tr><td>600406.SS 国电南瑞</td><td>10.9%</td><td class="d">−6,556</td><td class="d">-8.5%</td></tr><tr><td>600919.SS 江苏银行</td><td>10.4%</td><td class="u">+21,016</td><td class="u">+16.9%</td></tr><tr><td>600660.SS 福耀玻璃</td><td>9.7%</td><td class="d">−6,054</td><td class="d">-8.8%</td></tr><tr><td>000333.SZ 美的集团</td><td>9.6%</td><td class="d">−2,134</td><td class="d">-3.3%</td></tr><tr><td>600690.SS 海尔智家</td><td>6.7%</td><td class="d">−3,779</td><td class="d">-8.1%</td></tr><tr><td>600900.SS 长江电力</td><td>2.1%</td><td class="u">+380</td><td class="u">+2.9%</td></tr></tbody></table><div class="legend" style="margin-top:12px" data-i18n="a.hold.note">总市值 ¥644,048。盈亏含已实现＋未实现＋股息。</div></div>
+    </div>
+    <div class="tab-panel" id="ashare-risks">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.var">VaR（日，95/98/99）</h4><table class="m"><thead><tr><th data-i18n="ch.cl">置信水平</th><th data-i18n="ch.varn">VaR 正态</th><th data-i18n="ch.varcf">VaR Cornish-Fisher</th><th data-i18n="ch.vare">VaR 经验</th></tr></thead><tbody><tr><td>95%</td><td class="d">−1.44%</td><td class="d">−1.47%</td><td class="d">−1.42%</td></tr><tr><td>98%</td><td class="d">−1.73%</td><td class="d">−2.03%</td><td class="d">−1.73%</td></tr><tr><td>99%</td><td class="d">−2.06%</td><td class="d">−2.85%</td><td class="d">−2.07%</td></tr></tbody></table>
+        <div class="risk-note" data-i18n="a.risknote1">CVaR 95% = <b>−1.98%</b>。偏度 −0.32（近似对称、轻微左尾）、超额峰度 2.87、Student-t 自由度 6.4——温和厚尾。VaR 回测：317 个滚动样本实际突破 19 次 vs 预期 16 次（1.2 倍），模型基本可用。</div></div>
+        <div class="panel"><h4 data-i18n="pn.skewt">Skewed-t 极端压力测试</h4><table class="m"><thead><tr><th data-i18n="ch.scen">压力场景</th><th data-i18n="ch.dur">持续</th><th>累积亏损</th><th>终值</th></tr></thead><tbody><tr><td data-i18n="sc.crash">Black Swan Crash（10天，1%分位）</td><td>10天</td><td class="d">−20.1%</td><td>0.80</td></tr><tr><td data-i18n="sc.bear">Prolonged Bear（21天，5%分位）</td><td>21天</td><td class="d">−25.2%</td><td>0.75</td></tr><tr><td data-i18n="sc.grind">Slow Grind Down（126天，负收益均值）</td><td>126天</td><td class="d">−57.2%</td><td>0.43</td></tr></tbody></table>
+        <div class="risk-note" data-i18n="a.risknote2">低换手、龙头分散（9 只、单一行业不超三成）令极端情景下回撤显著低于 HK 组合；最大单次回撤期 184 天（2026 上半年，尚未修复），长期持有策略以时间而非止损消化波动。</div></div>
+      </div></div>
+    <div class="tab-panel" id="ashare-methodology">
+      <div class="panel"><p style="color:#cdd6e3;font-size:15px;line-height:1.9" data-i18n="a.meth">选股三问：生意是否足够好（ROE 持续性与自由现金流）、格局是否足够清（份额集中且对手理性）、价格是否足够低（以十年持有期倒算的隐含回报）。买入后以年报为单位跟踪，卖出只有三个理由——逻辑被证伪、估值透支十年、出现显著更优的机会。银行股息仓（招行、成银、江银）提供组合的现金流底座，消费与制造龙头提供成长期权。</p></div>
+    </div>
+  </div>
+</section>
+<section style="padding:40px 0 0"><div class="wrap">
+  </div><!-- /yc-lock -->
+<p class="disc">免责声明：以上组合均为个人实盘之模拟净值化处理，非受监管之集合投资计划，不接受任何形式之申购；數据含全部交易成本，过往表现不代表未来回报。致股东信与阶段性文件见 <a href="filings" style="color:var(--cyan)">Filings</a>。</p>
+</div></section>
+
+<footer><div class="wrap">
+  <div class="logo">Yi<b>Capital</b></div>
+  <p>© 2026 Yi Capital.</p>
+</div></footer>
+
+<script>
+document.querySelectorAll('.tab[data-tab]').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const g=btn.closest('.fund');
+    g.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+    g.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('on'));
+    btn.classList.add('on');
+    g.querySelector('#'+btn.dataset.tab).classList.add('on');
+  });
+});
+</script>
+<script src="../assets/portal-config.js"></script>
+<script src="../assets/yc-i18n.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+/* Safari 偶发 XLSX CDN 加載失败 → 备援 jsdelivr/unpkg */
+window.ensureXLSX=function(){return new Promise(function(res,rej){
+  if(window.XLSX)return res();
+  var urls=['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'],i=0;
+  (function next(){ if(window.XLSX)return res();
+    if(i>=urls.length)return rej(new Error('表格解析库加載失败，请刷新或更換浏览器'));
+    var s=document.createElement('script');s.src=urls[i++];s.onload=function(){window.XLSX?res():next()};s.onerror=next;document.head.appendChild(s);
+  })();
+});}
+</script>
+<script src="../assets/yc-analytics.js"></script>
+<script src="../assets/yc-charts.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const card=(v,k,c)=>`<div class="stat"><div class="v ${c||''}">${v}</div><div class="k">${k}</div></div>`;
+  const url='../assets/data/Yi_Capital_US.xlsx?v='+Date.now();
+  fetch(url,{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.arrayBuffer();}).then(async buf=>{
+    await ensureXLSX();
+    const wb=XLSX.read(buf,{type:'array'});
+    const sheets={}; wb.SheetNames.forEach(n=>sheets[n]=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}));
+    try{ const _api=(window.YC_API||'').replace(/\/+$/,'');
+      if(_api){ const _j=await (await fetch(_api+'/api/nav/us',{cache:'no-store'})).json();
+        if(_j.ok&&_j.enabled&&_j.rows&&_j.rows.length) YC.appendLive(sheets,_j.rows); } }catch(e){}
+    const R=YC.analyze(sheets); if(R.error) throw R.error;
+    const api=(window.YC_API||'').replace(/\/+$/,'');
+    if(!R.primaryBM && api){
+      try{ const j=await (await fetch(api+'/api/benchmark?symbols=spy.us,qqq.us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
+    }
+    const M=R.metrics, F=YCC;
+    $('us-period').textContent=window.YCI?YCI.f('n.period',{end:R.end,days:M.days}):('數据截至 '+R.end+'（'+M.days+' 交易日）。');
+    const L=window.YCI?YCI.lbl.bind(YCI):(k=>k);
+    $('us-stats').innerHTML=
+      card(F.pct(M.totalRet,1,true),L('st.cum'),M.totalRet>=0?'u':'d')+
+      card(F.pct(M.annRet,1),L('st.ann'))+card(F.pct(M.vol,1),L('st.vol'))+
+      card(F.pct(M.maxDD,1),L('st.mdd'),'d')+card(F.pct(M.var95,2),L('st.var'))+
+      card(F.pct(M.winRate,1),L('st.win'))+
+      (R.primaryBM?card(F.pct(M.alpha,1,true),L('st.alpha'),M.alpha>=0?'u':'d')+card(M.beta.toFixed(2),L('st.beta')):'');
+    const eqSeries=[{name:'Yi Capital US',color:F.colors.cyan,width:3,data:R.curve}];
+    Object.entries(R.benchmarks||{}).forEach(([n,b],i)=>eqSeries.push({name:n,color:[F.colors.blue,F.colors.violet,F.colors.orange][i%3],width:1.5,opacity:.75,data:b.curve}));
+    $('us-equity').innerHTML=F.lineChart(eqSeries,{yFmt:v=>(v/1000).toFixed(1)+'k',baseline:10000});
+    $('us-heatmap').innerHTML=F.monthlyHeatmap(R.monthly);
+    $('us-holdings-table').innerHTML=F.holdingsTableHtml(R.assets);
+    const tot=R.assets.reduce((s,a)=>s+(a.marketValue||0),0);
+    $('us-holdings-note').textContent=window.YCI?YCI.f('n.holdnote',{v:Math.round(tot).toLocaleString()}):('总市值 $'+Math.round(tot).toLocaleString()+'。');
+    $('us-var').innerHTML=F.varTableHtml(R.varTable);
+    const cf99=R.varTable.find(r=>r.level===0.99);
+    $('us-var-note').innerHTML=window.YCI?YCI.f('n.varnote',{s:M.skew.toFixed(2),k:M.kurt.toFixed(2),cf:F.pct(cf99.cf,2),n:F.pct(cf99.normal,2)}):'';
+    $('us-stress').innerHTML=F.stressTableHtml(R.stress);
+  }).catch(e=>{
+    $('us-stats').innerHTML=card('—','未能載入净值表（assets/data/Yi_Capital_US.xlsx）');
+  });
+})();
+</script>
+<script src="../assets/yc-gate.js"></script>
+<script src="../assets/yc-session.js"></script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+Yi Capital 網站 · 平行三語版 上傳說明
+═══════════════════════════════════════
+
+⚠ 拖上傳的是本資料夾「裡面的內容」，不是資料夾本身。
+⚠ 倉庫裡已有的 CNAME 不在本包內——不要刪它。
+
+■ 目錄結構（平行三版本）：
+  /            繁體中文（默認）  index.html 等 9 頁
+  /cn/         简体中文          同樣 9 頁
+  /en/         English           同樣 9 頁（全文零漢字，已腳本驗證）
+  /posts/ /cn/posts/ /en/posts/   研報正文三語平行（PDF 原文僅繁體版附帶）
+  /assets/     共用引擎與三語數據（posts.js / reports.js 內建三語）
+  admin.html   後台（僅管理員，不三語化）
+
+■ 語言切換：每頁右上角 繁｜简｜EN，點擊即跳到對應目錄的同一頁。
+
+■ 上傳步驟（github.dev 一次到位）：
+  1. 倉庫頁按「.」進 github.dev
+  2. 左側選中除 CNAME 外全部舊文件 → 右鍵 Delete
+  3. 拖入本資料夾全部內容 → 源代碼管理 → ✓ 提交並推送
+  4. 等 1 分鐘部署 → 無痕驗收：
+     www.yicapital.co/            （繁體）
+     www.yicapital.co/cn/         （简体）
+     www.yicapital.co/en/         （English）
+     三版首頁右上角互切、研報庫類型篩選、US 板塊實時圖表
+
+■ 後端已到 v6（每日自動更新＋內容管理＋找回密碼）：
+  1. Cloudflare → Workers → yicapital-portal → 用 worker/worker.js 全量替換舊代碼 → Deploy（/api/health 應顯示 v6；本輪新增 PDF 直傳接口，需重貼 worker.js）
+  2. Worker → Settings → Triggers → Cron Triggers → 添加兩條：
+       30 21 * * *   （美股收盤後約1小時，更新 US 淨值＋預熱基準）
+       0 9 * * *     （北京時間 17:00，HK/A 預留槽）
+  3. 之後在後台重新「發布淨值表」一次——發布時會自動同步持倉賬本到後端，
+     從次日起每天自動按收盤價續算淨值，前台曲線與指標自動延長。
+
+■ 後台已拆分為獨立頁面（yicapital.co/admin 進入總覽）：
+  admin           總覽 + 系統狀態
+  admin-publish   發布淨值表（發布即自動同步賬本）
+  admin-reports   研報管理（新增/修改/停用/刪除；PDF 手動放 assets/pdf/）
+  admin-insights  研究觀點管理（同上）
+  admin-users     帳號管理（搜索用戶名/郵箱、停用、重置密碼、刪除）
+  admin-mail      郵件中心（群發或指定用戶，帶搜索）
+  admin-inbox     收件箱
+  首次使用內容管理：進 admin-reports / admin-insights 點「導入當前站上內置條目」→ 之後發研報不再需要改代碼或上傳 GitHub（PDF 除外）。
+
+■ 本輪新增：
+  · 首頁 Slogan + 註冊/登入 CTA（登入後自動隱藏）
+  · 研報庫 / 組合實錄 / 完整檔案頁：未登入只見頂部框架，往下滑出現「解鎖完整內容」登入牆（首頁全部內容不需登入）
+  · 研報/觀點管理：進頁自動載入現有條目可直接編輯；表單內拖入 PDF 即自動上傳 GitHub 並回填鏈接
+  · 移動端垂直排版重做

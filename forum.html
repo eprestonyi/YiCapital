@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>研究論壇 ｜ Yi Capital</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<div class="utility"><div class="wrap">
+  <a href="./#sec-portfolios" data-i18n="ut.live">實時組合</a>
+  <a href="./#sec-forum" data-i18n="ut.forum">研報庫</a>
+  <a href="./#sec-insights" data-i18n="ut.insights">最新觀點</a>
+  <a href="about" data-i18n="ut.contact">聯繫我們</a>
+  <a href="login" style="color:var(--cyan)" data-i18n="ut.login">登入</a>
+</div></div>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <button class="menu-btn" aria-label="開啟選單" onclick="document.getElementById('m').classList.toggle('open')">選單 ≡</button>
+  <nav><ul id="m">
+    <li><a class="link" href="insights" data-i18n="nav.insights">研究觀點</a></li>
+    <li><a class="link active" href="forum" data-i18n="nav.forum">研究論壇</a></li>
+    <li><a class="link" href="portfolios" data-i18n="nav.portfolios">組合實錄</a></li>
+    <li><a class="link" href="about" data-i18n="nav.about">關於我們</a></li>
+  </ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb"><a href="./">首頁</a> / 研究論壇</div>
+    <h1><small>研究論壇</small><span data-i18n="forum.h1">研報庫</span></h1>
+    <p data-i18n="forum.p">一份研報一個檔案：點進去是研報簡介，頁面底部附完整 PDF 原文。可按代號、公司名或主題搜索，或按類型篩選。</p>
+  </div>
+</div>
+
+<section style="padding-top:56px">
+  <div class="wrap">
+    <div class="yc-lock">
+  <div class="search-box">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+      <input id="q" type="search" data-i18n-ph="forum.ph" placeholder="搜索研報：0700、騰訊、VaR、均值回歸⋯" autocomplete="off">
+      <div class="search-hint">按代號／名稱／主題搜索</div>
+    </div>
+    <div class="g-chips" id="g-chips"></div>
+    <div id="report-list"></div>
+  </div><!-- /yc-lock -->
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <div class="logo">Yi<b>Capital</b></div>
+  <p data-i18n="footer.disc">免責聲明：本網站所載之研究報告、組合數據與論壇內容，均基於公開資料與個人判斷撰寫，僅供研究與學習參考，不構成任何證券之買賣要約、招攬或投資建議。</p>
+  <p>© 2026 Yi Capital.</p>
+</div></footer>
+
+<script src="assets/reports.js"></script>
+<script>
+document.addEventListener('yci-ready', function(){
+  renderReports("report-list", document.getElementById('q').value, "");
+  renderGenreChips("g-chips","q","report-list","");
+}, {once:true});
+renderReports("report-list","","");
+document.addEventListener("yc-content-reports",()=>renderReports("report-list",document.getElementById("q")?document.getElementById("q").value:"",""));
+bindSearch("q","report-list","");
+</script>
+<script src="assets/portal-config.js"></script>
+<script src="assets/yc-i18n.js"></script>
+<script src="assets/yc-gate.js"></script>
+<script src="assets/yc-session.js"></script>
+</body>
+</html>
