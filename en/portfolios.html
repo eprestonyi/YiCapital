@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>window.YC_LANG='en';</script>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Our Portfolios | Yi Capital</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<div class="utility"><div class="wrap">
+  <a href="./#sec-portfolios" data-i18n="ut.live">LIVE PORTFOLIO</a>
+  <a href="./#sec-forum" data-i18n="ut.forum">RESEARCH FORUM</a>
+  <a href="./#sec-insights" data-i18n="ut.insights">LATEST INSIGHTS</a>
+  <a href="about" data-i18n="ut.contact">CONTACT</a>
+  <a href="login" style="color:var(--cyan)" data-i18n="ut.login">LOGIN</a>
+</div></div>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <button class="menu-btn" aria-label="Open menu" onclick="document.getElementById('m').classList.toggle('open')">MENU ≡</button>
+  <nav><ul id="m">
+    <li><a class="link" href="insights" data-i18n="nav.insights">Our Insights</a></li>
+    <li><a class="link" href="forum" data-i18n="nav.forum">Research Forum</a></li>
+    <li><a class="link active" href="portfolios" data-i18n="nav.portfolios">Our Portfolios</a></li>
+    <li><a class="link" href="about" data-i18n="nav.about">About Us</a></li>
+  </ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb"><a href="./">HOME</a> / OUR PORTFOLIOS</div>
+    <h1><small>Our Portfolios</small><span data-i18n="pf.crumbtitle">Our Portfolios</span></h1>
+    <p>Three independently run portfolios; scroll down for <a href="#hk" style="color:var(--cyan)">Yi Capital HK</a> → <a href="#us" style="color:var(--cyan)">Yi Capital US</a> → <a href="#ashare" style="color:var(--cyan)">Yi Capital A Share</a>. Each includes its NAV curve and Performance / Holdings / Risks / Methodology tabs; shareholder letters live under Filings. Green = up, red = down.</p>
+  </div>
+</div>
+
+<section class="fund" id="hk">
+  <div class="wrap">
+    <div class="fund-idx" data-i18n="hk.idx">01 | HKD | Cyclical Mean-Reversion</div>
+    <h2>Yi Capital HK</h2>
+    <p class="fund-desc" data-i18n="hk.desc">Mean-reversion in HK cyclicals: positions built at sentiment and valuation extremes, held until price converges to long-run value. High beta, high concentration — no leverage and a margin of safety buy the right to sit through extreme volatility. Backtest window 2025-02-06 → 2026-07-10 (357 trading days).</p>
+    <div class="stats"><div class="stat"><div class="v u">+51%</div><div class="k" data-i18n="hk.st.cum">Cumulative Return (HK$10,000 → ≈15,100)</div></div><div class="stat"><div class="v ">33.2%</div><div class="k" data-i18n="st.ann">Annualized Return</div></div><div class="stat"><div class="v ">28.0%</div><div class="k" data-i18n="st.vol">Annualized Volatility</div></div><div class="stat"><div class="v d">−23%</div><div class="k" data-i18n="st.mdd">Max Drawdown</div></div><div class="stat"><div class="v ">−2.53%</div><div class="k" data-i18n="st.var">VaR 95% (daily, empirical)</div></div><div class="stat"><div class="v ">51.8%</div><div class="k" data-i18n="hk.st.win">Daily Win Rate (185/357)</div></div></div>
+    
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="hk-performance" role="tab" data-i18n="tab.perf">Performance</button>
+      <button class="tab" data-tab="hk-holdings" role="tab" data-i18n="tab.hold">Holdings</button>
+      <button class="tab" data-tab="hk-risks" role="tab" data-i18n="tab.risk">Risks</button>
+      <button class="tab" data-tab="hk-methodology" role="tab" data-i18n="tab.meth">Methodology</button>
+      <a class="tab" href="filings" role="tab" data-i18n="tab.filings">Filings ↗</a>
+    </div>
+    <div class="tab-panel on" id="hk-performance">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.equity.hk">NAV Curve (hypothetical 10,000)</h4>
+          <svg viewBox="0 0 560 250" width="100%" role="img" aria-label="Yi Capital HK vs HSI and HSTECH NAV curves">
+          <line x1="44" y1="188" x2="552" y2="188" stroke="#1a2436" stroke-dasharray="3 4"/>
+          <text x="4" y="32" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">17k</text>
+          <text x="4" y="192" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">10k</text>
+          <text x="4" y="215" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">9k</text>
+          <polyline fill="none" stroke="#8b5cf6" stroke-width="1.5" opacity=".75" points="44,180.9 74,153.4 104,217.4 134,180.9 164,171.7 193,153.4 223,146.6 253,105.4 283,153.4 313,146.6 343,142.0 373,164.9 403,183.1 432,190.0 462,180.9 492,187.7 522,212.9 552,194.6"/>
+          <polyline fill="none" stroke="#3b82f6" stroke-width="1.5" opacity=".75" points="44,180.9 74,164.9 104,196.9 134,174.0 164,158.0 193,130.6 223,126.0 253,116.9 283,126.0 313,121.4 343,116.9 373,103.1 403,112.3 432,126.0 462,121.4 492,121.4 522,158.0 552,148.9"/>
+          <polyline fill="none" stroke="#22d3ee" stroke-width="3" opacity="1" points="44,194.6 74,185.4 104,212.9 134,180.9 164,155.7 193,144.3 223,123.7 253,80.3 283,98.6 313,59.7 343,32.3 373,20.9 403,34.6 432,59.7 462,48.3 492,64.3 522,107.7 552,71.1"/>
+          <text x="34" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-03</text>
+          <text x="161" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-07</text>
+          <text x="288" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-11</text>
+          <text x="415" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">26-03</text>
+          <text x="542" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">26-07</text>
+          </svg>
+          <div class="legend"><i style="background:#22d3ee"></i>Yi Capital HK&nbsp;&nbsp;<i style="background:#3b82f6"></i>HSI&nbsp;&nbsp;<i style="background:#8b5cf6"></i>HSTECH</div>
+        </div>
+        <div class="panel"><h4 data-i18n="pn.heatmap">Monthly Returns Heatmap</h4><table class="hm"><thead><tr><th></th><th>M1</th><th>M2</th><th>M3</th><th>M4</th><th>M5</th><th>M6</th><th>M7</th><th>M8</th><th>M9</th><th>M10</th><th>M11</th><th>M12</th></tr></thead><tbody><tr><td class="y">2025</td><td class="e">·</td><td style="background:rgba(255,92,71,0.20)">-0.7</td><td style="background:rgba(52,211,153,0.46)">+3.8</td><td style="background:rgba(255,92,71,0.37)">-2.7</td><td style="background:rgba(52,211,153,0.91)">+9.1</td><td style="background:rgba(52,211,153,0.66)">+6.1</td><td style="background:rgba(255,92,71,0.16)">-0.2</td><td style="background:rgba(52,211,153,0.81)">+7.9</td><td style="background:rgba(52,211,153,0.92)">+15.9</td><td style="background:rgba(52,211,153,0.17)">+0.4</td><td style="background:rgba(52,211,153,0.51)">+4.3</td><td style="background:rgba(52,211,153,0.82)">+8.0</td></tr><tr><td class="y">2026</td><td style="background:rgba(52,211,153,0.46)">+3.8</td><td style="background:rgba(255,92,71,0.44)">-3.5</td><td style="background:rgba(255,92,71,0.66)">-6.1</td><td style="background:rgba(52,211,153,0.36)">+2.6</td><td style="background:rgba(255,92,71,0.48)">-4.0</td><td style="background:rgba(255,92,71,0.92)">-9.4</td><td style="background:rgba(52,211,153,0.92)">+9.9</td><td class="e">·</td><td class="e">·</td><td class="e">·</td><td class="e">·</td><td class="e">·</td></tr></tbody></table>
+          <div class="legend" style="margin-top:14px" data-i18n="ch.updown">Green = gains, red = losses; intensity scales with magnitude.</div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="hk-holdings">
+      <div class="panel"><table class="m"><thead><tr><th data-i18n="ch.ticker">Ticker</th><th data-i18n="ch.weight">Weight</th><th><span data-i18n="ch.pnl">Total P&L</span> (HK$)</th><th data-i18n="ch.expret">Exposure Return</th></tr></thead><tbody><tr><td>0700.HK</td><td>44.5%</td><td class="d">−20,960</td><td class="d">-6.7%</td></tr><tr><td>9988.HK</td><td>16.0%</td><td class="u">+30,230</td><td class="u">+12.8%</td></tr><tr><td>9992.HK</td><td>14.6%</td><td class="d">−4,760</td><td class="d">-7.3%</td></tr><tr><td>0883.HK</td><td>10.6%</td><td class="u">+16,540</td><td class="u">+10.9%</td></tr><tr><td>0941.HK</td><td>9.5%</td><td class="u">+1,109</td><td class="u">+2.8%</td></tr><tr><td>9633.HK</td><td>4.8%</td><td class="d">−380</td><td class="d">-1.9%</td></tr></tbody></table><div class="legend" style="margin-top:12px" data-i18n="hk.hold.note">Total market value HK$413,365. P&L includes realized, unrealized and dividends. 0700.HK is the core cyclical position — see the deep-dive report in the Research Forum.</div></div>
+    </div>
+    <div class="tab-panel" id="hk-risks">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.var">VaR (daily, 95/98/99)</h4><table class="m"><thead><tr><th data-i18n="ch.cl">Confidence</th><th data-i18n="ch.varn">VaR Normal</th><th data-i18n="ch.varcf">VaR Cornish-Fisher</th><th data-i18n="ch.vare">VaR Empirical</th></tr></thead><tbody><tr><td>95%</td><td class="d">−2.77%</td><td class="d">−2.88%</td><td class="d">−2.53%</td></tr><tr><td>98%</td><td class="d">−3.33%</td><td class="d">−4.97%</td><td class="d">−3.05%</td></tr><tr><td>99%</td><td class="d">−3.97%</td><td class="d">−8.33%</td><td class="d">−3.77%</td></tr></tbody></table>
+        <div class="risk-note" data-i18n="hk.risknote1">CVaR (Expected Shortfall) 95% = <b>−3.88%</b>. Skewness −0.91 (large losses far likelier than large gains), excess kurtosis 9.04, Student-t df 3.9 — <b>extremely fat-tailed</b>: a 4σ event is 272× more likely than the normal assumption implies. The normal model understates true risk by ~9%; risk controls use Cornish-Fisher / skewed-t throughout, with GARCH(1,1) conditional volatility.</div></div>
+        <div class="panel"><h4 data-i18n="pn.skewt">Skewed-t Extreme Stress Tests</h4><table class="m"><thead><tr><th data-i18n="ch.scen">Scenario</th><th data-i18n="ch.dur">Horizon</th><th>Cumulative Loss</th><th>Terminal</th></tr></thead><tbody><tr><td data-i18n="sc.crash">Black Swan Crash (10d, 1st pct.)</td><td>10d</td><td class="d">−36.2%</td><td>0.64</td></tr><tr><td data-i18n="sc.bear">Prolonged Bear (21d, 5th pct.)</td><td>21d</td><td class="d">−40.4%</td><td>0.60</td></tr><tr><td data-i18n="sc.grind">Slow Grind Down (126d, negative drift)</td><td>126d</td><td class="d">−79.6%</td><td>0.20</td></tr></tbody></table>
+        <div class="risk-note" data-i18n="hk.risknote2">High beta plus high concentration (0700 at 44.5%) makes this the highest tail-risk of the three portfolios: in the six-month grind-down scenario the probability of losing half is 100%. No leverage and no margin calls are the precondition for surviving the stress tests; this position structure demands exceptional psychological endurance.</div></div>
+      </div></div>
+    <div class="tab-panel" id="hk-methodology">
+      <div class="panel"><p style="color:#cdd6e3;font-size:15px;line-height:1.9" data-i18n="hk.meth">Three disciplines of cyclical mean-reversion: first, build positions only at statistical extremes of valuation and sentiment (triple-confirmed by historical percentile, implied return and crowding); second, holdings must have verifiable cash flow and clear shareholder returns — the anchor of reversion is intrinsic value, not price momentum; third, hold unlevered, manage risk with position size rather than stop-losses, and accept deep drawdowns in exchange for the full reversion path. The full thesis on the core 0700.HK position is in the Research Forum.</p></div>
+    </div>
+  </div>
+</section>
+<section class="fund" id="us">
+  <div class="wrap">
+    <div class="fund-idx" data-i18n="us.idx">02 | USD | Multi-Asset Allocation</div>
+    <h2><a href="fund-us" style="color:inherit">Yi Capital US <span style="color:var(--cyan);font-size:.55em;vertical-align:middle;font-family:var(--mono);letter-spacing:1px"><span data-i18n="pf.fullpage">Full Profile ↗</span></span></a></h2>
+    <p class="fund-desc"><span data-i18n="us.desc">A multi-asset USD portfolio: risk balanced across equities, duration, gold and short-term bonds, with fat-tail and stress-testing frameworks governing drawdowns, pursuing all-weather risk-adjusted returns. Every number and chart in this section is computed live from the NAV workbook — </span><a href="fund-us" style="color:var(--cyan)" data-i18n="us.desc.a">open the full profile</a><span data-i18n="us.desc.b">for all 14 charts.</span> <span id="us-period" style="color:var(--muted)"></span></p>
+    <div class="stats" id="us-stats"><div class="stat"><div class="v">…</div><div class="k" data-i18n="fund.loading">Computing from NAV workbook</div></div></div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="us-performance" role="tab" data-i18n="tab.perf">Performance</button>
+      <button class="tab" data-tab="us-holdings" role="tab" data-i18n="tab.hold">Holdings</button>
+      <button class="tab" data-tab="us-risks" role="tab" data-i18n="tab.risk">Risks</button>
+      <button class="tab" data-tab="us-methodology" role="tab" data-i18n="tab.meth">Methodology</button>
+      <a class="tab" href="filings" role="tab" data-i18n="tab.filings">Filings ↗</a>
+    </div>
+    <div class="tab-panel on" id="us-performance">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.equity">NAV Curve (hypothetical $10,000)</h4><div id="us-equity"></div></div>
+        <div class="panel"><h4 data-i18n="pn.heatmap">Monthly Returns Heatmap</h4><div id="us-heatmap"></div></div>
+      </div>
+    </div>
+    <div class="tab-panel" id="us-holdings">
+      <div class="panel"><div id="us-holdings-table"></div><div class="legend" style="margin-top:12px" id="us-holdings-note"></div></div>
+    </div>
+    <div class="tab-panel" id="us-risks">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.var">VaR (daily, 95/98/99)</h4><div id="us-var"></div><div class="risk-note" id="us-var-note"></div></div>
+        <div class="panel"><h4>Monte Carlo Stress Tests (bootstrap ×10,000)</h4><div id="us-stress"></div><div class="risk-note">Stress tests answer only one question: do we survive? Full fan charts are on the profile page.</div></div>
+      </div></div>
+    <div class="tab-panel" id="us-methodology">
+      <div class="panel"><p style="color:#cdd6e3;font-size:15px;line-height:1.9">Two variables: every trade is an expected-value decision weighed between win rate and payoff. Anti-fragile multi-asset architecture: equities attack, Treasuries hold the ammunition, gold is the fuse, short-term bills keep liquidity — the portfolio must survive any single macro scenario. Derivatives are psychological engineering: limited-cost bear spreads hand panic-zone decisions to your calm present self in advance. Fat-tail risk control: reject the normal-VaR illusion — Cornish-Fisher / empirical quantiles plus Monte Carlo stress tests throughout. Full investment logic in the <a href="fund-us" style="color:var(--cyan)">full profile</a> and the shareholder letter.</p></div>
+    </div>
+  </div>
+</section>
+<section class="fund" id="ashare">
+  <div class="wrap">
+    <div class="fund-idx" data-i18n="a.idx">03 | CNY | Long-Term Ownership</div>
+    <h2>Yi Capital A Share</h2>
+    <p class="fund-desc" data-i18n="a.desc">Long-term ownership of quality A-shares: leaders with clear competitive structure and abundant free cash flow; minimal turnover, positions measured in years, compounding bought with time. Backtest window 2025-01-07 → 2026-07-10 (377 trading days).</p>
+    <div class="stats"><div class="stat"><div class="v u">+22%</div><div class="k" data-i18n="a.st.cum">Cumulative Return (¥10,000 → ≈12,200)</div></div><div class="stat"><div class="v ">14.6%</div><div class="k" data-i18n="st.ann">Annualized Return</div></div><div class="stat"><div class="v ">14.5%</div><div class="k" data-i18n="st.vol">Annualized Volatility</div></div><div class="stat"><div class="v d">−11%</div><div class="k" data-i18n="st.mdd">Max Drawdown</div></div><div class="stat"><div class="v ">−1.42%</div><div class="k" data-i18n="st.var">VaR 95% (daily, empirical)</div></div><div class="stat"><div class="v ">46.9%</div><div class="k" data-i18n="a.st.win">Daily Win Rate (177/377)</div></div></div>
+    
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="ashare-performance" role="tab" data-i18n="tab.perf">Performance</button>
+      <button class="tab" data-tab="ashare-holdings" role="tab" data-i18n="tab.hold">Holdings</button>
+      <button class="tab" data-tab="ashare-risks" role="tab" data-i18n="tab.risk">Risks</button>
+      <button class="tab" data-tab="ashare-methodology" role="tab" data-i18n="tab.meth">Methodology</button>
+      <a class="tab" href="filings" role="tab" data-i18n="tab.filings">Filings ↗</a>
+    </div>
+    <div class="tab-panel on" id="ashare-performance">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.equity.hk">NAV Curve (hypothetical 10,000)</h4>
+          <svg viewBox="0 0 560 250" width="100%" role="img" aria-label="Yi Capital A vs CSI300 NAV curves">
+          <line x1="44" y1="187" x2="552" y2="187" stroke="#1a2436" stroke-dasharray="3 4"/>
+          <text x="4" y="43" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">13k</text>
+          <text x="4" y="191" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">10k</text>
+          <text x="4" y="216" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">9.5k</text>
+          <polyline fill="none" stroke="#3b82f6" stroke-width="1.5" opacity=".75" points="44,192.3 72,177.4 100,172.5 129,212.1 157,187.3 185,162.6 213,113.0 242,88.3 270,73.4 298,78.4 326,68.5 354,63.5 383,78.4 411,73.4 439,78.4 467,43.7 496,38.8 524,58.6 552,68.5"/>
+          <polyline fill="none" stroke="#22d3ee" stroke-width="3" opacity="1" points="44,184.9 72,167.5 100,162.6 129,184.9 157,127.9 185,73.4 213,48.7 242,63.5 270,113.0 298,73.4 326,48.7 354,33.8 383,48.7 411,48.7 439,53.6 467,43.7 496,48.7 524,93.2 552,78.4"/>
+          <text x="34" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-01</text>
+          <text x="161" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-05</text>
+          <text x="288" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">25-09</text>
+          <text x="415" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">26-01</text>
+          <text x="542" y="244" fill="#5f6f85" font-size="10.5" font-family="IBM Plex Mono">26-05</text>
+          </svg>
+          <div class="legend"><i style="background:#22d3ee"></i>Yi Capital A&nbsp;&nbsp;<i style="background:#3b82f6"></i>CSI300</div>
+        </div>
+        <div class="panel"><h4 data-i18n="pn.heatmap">Monthly Returns Heatmap</h4><table class="hm"><thead><tr><th></th><th>M1</th><th>M2</th><th>M3</th><th>M4</th><th>M5</th><th>M6</th><th>M7</th><th>M8</th><th>M9</th><th>M10</th><th>M11</th><th>M12</th></tr></thead><tbody><tr><td class="y">2025</td><td style="background:rgba(52,211,153,0.42)">+3.3</td><td style="background:rgba(255,92,71,0.21)">-0.8</td><td style="background:rgba(52,211,153,0.34)">+2.4</td><td style="background:rgba(255,92,71,0.17)">-0.3</td><td style="background:rgba(52,211,153,0.86)">+8.5</td><td style="background:rgba(52,211,153,0.83)">+8.1</td><td style="background:rgba(52,211,153,0.23)">+1.1</td><td style="background:rgba(52,211,153,0.15)">+0.1</td><td style="background:rgba(255,92,71,0.78)">-7.5</td><td style="background:rgba(52,211,153,0.56)">+4.9</td><td style="background:rgba(52,211,153,0.29)">+1.8</td><td style="background:rgba(52,211,153,0.51)">+4.3</td></tr><tr><td class="y">2026</td><td style="background:rgba(255,92,71,0.17)">-0.4</td><td style="background:rgba(139,152,172,.15)">-0.0</td><td style="background:rgba(255,92,71,0.15)">-0.1</td><td style="background:rgba(52,211,153,0.21)">+0.8</td><td style="background:rgba(255,92,71,0.35)">-2.5</td><td style="background:rgba(255,92,71,0.57)">-5.1</td><td style="background:rgba(52,211,153,0.40)">+3.1</td><td class="e">·</td><td class="e">·</td><td class="e">·</td><td class="e">·</td><td class="e">·</td></tr></tbody></table>
+          <div class="legend" style="margin-top:14px" data-i18n="ch.updown">Green = gains, red = losses; intensity scales with magnitude.</div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-panel" id="ashare-holdings">
+      <div class="panel"><table class="m"><thead><tr><th data-i18n="ch.ticker">Ticker</th><th data-i18n="ch.weight">Weight</th><th><span data-i18n="ch.pnl">Total P&L</span> (¥)</th><th data-i18n="ch.expret">Exposure Return</th></tr></thead><tbody><tr><td>600036.SS</td><td>20.9%</td><td class="d">−1,666</td><td class="d">-1.0%</td></tr><tr><td>600519.SS</td><td>18.6%</td><td class="d">−30,004</td><td class="d">-20.1%</td></tr><tr><td>601838.SS</td><td>11.2%</td><td class="u">+10,491</td><td class="u">+11.9%</td></tr><tr><td>600406.SS</td><td>10.9%</td><td class="d">−6,556</td><td class="d">-8.5%</td></tr><tr><td>600919.SS</td><td>10.4%</td><td class="u">+21,016</td><td class="u">+16.9%</td></tr><tr><td>600660.SS</td><td>9.7%</td><td class="d">−6,054</td><td class="d">-8.8%</td></tr><tr><td>000333.SZ</td><td>9.6%</td><td class="d">−2,134</td><td class="d">-3.3%</td></tr><tr><td>600690.SS</td><td>6.7%</td><td class="d">−3,779</td><td class="d">-8.1%</td></tr><tr><td>600900.SS</td><td>2.1%</td><td class="u">+380</td><td class="u">+2.9%</td></tr></tbody></table><div class="legend" style="margin-top:12px" data-i18n="a.hold.note">Total market value ¥644,048. P&L includes realized, unrealized and dividends.</div></div>
+    </div>
+    <div class="tab-panel" id="ashare-risks">
+      <div class="grid2">
+        <div class="panel"><h4 data-i18n="pn.var">VaR (daily, 95/98/99)</h4><table class="m"><thead><tr><th data-i18n="ch.cl">Confidence</th><th data-i18n="ch.varn">VaR Normal</th><th data-i18n="ch.varcf">VaR Cornish-Fisher</th><th data-i18n="ch.vare">VaR Empirical</th></tr></thead><tbody><tr><td>95%</td><td class="d">−1.44%</td><td class="d">−1.47%</td><td class="d">−1.42%</td></tr><tr><td>98%</td><td class="d">−1.73%</td><td class="d">−2.03%</td><td class="d">−1.73%</td></tr><tr><td>99%</td><td class="d">−2.06%</td><td class="d">−2.85%</td><td class="d">−2.07%</td></tr></tbody></table>
+        <div class="risk-note" data-i18n="a.risknote1">CVaR 95% = <b>−1.98%</b>. Skewness −0.32 (roughly symmetric, mild left tail), excess kurtosis 2.87, Student-t df 6.4 — moderately fat-tailed. VaR backtest: 19 actual breaches vs 16 expected across 317 rolling samples (1.2×) — the model is serviceable.</div></div>
+        <div class="panel"><h4 data-i18n="pn.skewt">Skewed-t Extreme Stress Tests</h4><table class="m"><thead><tr><th data-i18n="ch.scen">Scenario</th><th data-i18n="ch.dur">Horizon</th><th>Cumulative Loss</th><th>Terminal</th></tr></thead><tbody><tr><td data-i18n="sc.crash">Black Swan Crash (10d, 1st pct.)</td><td>10d</td><td class="d">−20.1%</td><td>0.80</td></tr><tr><td data-i18n="sc.bear">Prolonged Bear (21d, 5th pct.)</td><td>21d</td><td class="d">−25.2%</td><td>0.75</td></tr><tr><td data-i18n="sc.grind">Slow Grind Down (126d, negative drift)</td><td>126d</td><td class="d">−57.2%</td><td>0.43</td></tr></tbody></table>
+        <div class="risk-note" data-i18n="a.risknote2">Low turnover and diversified leaders (9 names, no single sector above 30%) keep extreme-scenario drawdowns well below the HK book; the longest drawdown spell is 184 days (H1 2026, not yet recovered). The long-hold strategy digests volatility with time, not stop-losses.</div></div>
+      </div></div>
+    <div class="tab-panel" id="ashare-methodology">
+      <div class="panel"><p style="color:#cdd6e3;font-size:15px;line-height:1.9" data-i18n="a.meth">Three questions before buying: is the business good enough (ROE durability and free cash flow), is the structure clear enough (concentrated share, rational competitors), is the price low enough (implied return over a ten-year holding period)? Positions are tracked by annual report; there are only three reasons to sell — the thesis is falsified, valuation borrows a decade of growth, or a clearly better opportunity appears. Bank dividend positions (CMB, Chengdu Bank, Jiangsu Bank) form the cash-flow base; consumer and manufacturing leaders provide the growth option.</p></div>
+    </div>
+  </div>
+</section>
+<section style="padding:40px 0 0"><div class="wrap">
+  <p class="disc">Disclaimer: all portfolios above are simulated NAV treatments of personal live accounts, not regulated collective investment schemes, and accept no subscriptions of any kind. Data includes all trading costs; past performance does not indicate future returns. Shareholder letters and interim documents are under <a href="filings" style="color:var(--cyan)">Filings</a>.</p>
+</div></section>
+
+<footer><div class="wrap">
+  <div class="logo">Yi<b>Capital</b></div>
+  <p>© 2026 Yi Capital.</p>
+</div></footer>
+
+<script>
+document.querySelectorAll('.tab[data-tab]').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const g=btn.closest('.fund');
+    g.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+    g.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('on'));
+    btn.classList.add('on');
+    g.querySelector('#'+btn.dataset.tab).classList.add('on');
+  });
+});
+</script>
+<script src="../assets/portal-config.js"></script>
+<script src="../assets/yc-i18n.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+
+window.ensureXLSX=function(){return new Promise(function(res,rej){
+  if(window.XLSX)return res();
+  var urls=['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'],i=0;
+  (function next(){ if(window.XLSX)return res();
+    if(i>=urls.length)return rej(new Error('Spreadsheet parser failed to load — refresh or switch browsers'));
+    var s=document.createElement('script');s.src=urls[i++];s.onload=function(){window.XLSX?res():next()};s.onerror=next;document.head.appendChild(s);
+  })();
+});}
+</script>
+<script src="../assets/yc-analytics.js"></script>
+<script src="../assets/yc-charts.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const card=(v,k,c)=>`<div class="stat"><div class="v ${c||''}">${v}</div><div class="k">${k}</div></div>`;
+  const url='../assets/data/Yi_Capital_US.xlsx?v='+Date.now();
+  fetch(url,{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.arrayBuffer();}).then(async buf=>{
+    await ensureXLSX();
+    const wb=XLSX.read(buf,{type:'array'});
+    const sheets={}; wb.SheetNames.forEach(n=>sheets[n]=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}));
+    try{ const _api=(window.YC_API||'').replace(/\/+$/,'');
+      if(_api){ const _j=await (await fetch(_api+'/api/nav/us',{cache:'no-store'})).json();
+        if(_j.ok&&_j.enabled&&_j.rows&&_j.rows.length) YC.appendLive(sheets,_j.rows); } }catch(e){}
+    const R=YC.analyze(sheets); if(R.error) throw R.error;
+    const api=(window.YC_API||'').replace(/\/+$/,'');
+    if(!R.primaryBM && api){
+      try{ const j=await (await fetch(api+'/api/benchmark?symbols=spy.us,qqq.us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
+    }
+    const M=R.metrics, F=YCC;
+    $('us-period').textContent=window.YCI?YCI.f('n.period',{end:R.end,days:M.days}):('Data through '+R.end+' ('+M.days+' trading days).');
+    const L=window.YCI?YCI.lbl.bind(YCI):(k=>k);
+    $('us-stats').innerHTML=
+      card(F.pct(M.totalRet,1,true),L('st.cum'),M.totalRet>=0?'u':'d')+
+      card(F.pct(M.annRet,1),L('st.ann'))+card(F.pct(M.vol,1),L('st.vol'))+
+      card(F.pct(M.maxDD,1),L('st.mdd'),'d')+card(F.pct(M.var95,2),L('st.var'))+
+      card(F.pct(M.winRate,1),L('st.win'))+
+      (R.primaryBM?card(F.pct(M.alpha,1,true),L('st.alpha'),M.alpha>=0?'u':'d')+card(M.beta.toFixed(2),L('st.beta')):'');
+    const eqSeries=[{name:'Yi Capital US',color:F.colors.cyan,width:3,data:R.curve}];
+    Object.entries(R.benchmarks||{}).forEach(([n,b],i)=>eqSeries.push({name:n,color:[F.colors.blue,F.colors.violet,F.colors.orange][i%3],width:1.5,opacity:.75,data:b.curve}));
+    $('us-equity').innerHTML=F.lineChart(eqSeries,{yFmt:v=>(v/1000).toFixed(1)+'k',baseline:10000});
+    $('us-heatmap').innerHTML=F.monthlyHeatmap(R.monthly);
+    $('us-holdings-table').innerHTML=F.holdingsTableHtml(R.assets);
+    const tot=R.assets.reduce((s,a)=>s+(a.marketValue||0),0);
+    $('us-holdings-note').textContent=window.YCI?YCI.f('n.holdnote',{v:Math.round(tot).toLocaleString()}):('Total market value $'+Math.round(tot).toLocaleString()+'.');
+    $('us-var').innerHTML=F.varTableHtml(R.varTable);
+    const cf99=R.varTable.find(r=>r.level===0.99);
+    $('us-var-note').innerHTML=window.YCI?YCI.f('n.varnote',{s:M.skew.toFixed(2),k:M.kurt.toFixed(2),cf:F.pct(cf99.cf,2),n:F.pct(cf99.normal,2)}):'';
+    $('us-stress').innerHTML=F.stressTableHtml(R.stress);
+  }).catch(e=>{
+    $('us-stats').innerHTML=card('—','Failed to load the NAV workbook (assets/data/Yi_Capital_US.xlsx)');
+  });
+})();
+</script>
+<script src="../assets/yc-session.js"></script>
+</body>
+</html>

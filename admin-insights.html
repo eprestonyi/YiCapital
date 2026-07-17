@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>研究觀點管理 ｜ Admin ｜ Yi Capital</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/portal-config.js"></script>
+<script src="assets/yc-admin.js"></script>
+</head>
+<body>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <nav><ul id="m"><li><a class="link" href="admin">Admin 總覽</a></li></ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb">ADMIN / INSIGHTS</div>
+    <div class="topbar">
+      <h1 style="margin:0"><small>Backstage · 管理後台</small>研究觀點管理</h1>
+      <div class="who" id="who"></div>
+    </div>
+    <div id="adminnav"></div>
+  </div>
+
+  <div id="gate" class="card" style="text-align:center;padding:60px">
+    <div class="log dim" style="display:inline-block" id="gatemsg">正在驗證會話…</div>
+  </div>
+
+  <div id="panel" style="display:none">
+
+    <div class="card">
+      <h3 id="frm-title">新增研究觀點</h3>
+      <div class="fldrow"><label>標題（繁/简/EN）</label>
+        <div class="tri">
+          <input id="f-title-tw" placeholder="繁體標題（必填）">
+          <input id="f-title-cn" placeholder="简体标题（留空回退繁体）">
+          <input id="f-title-en" placeholder="English title (leave empty = falls back to TW; EN page will then show Chinese)">
+        </div></div>
+      <div class="fldrow"><label>頂部標籤（繁/简/EN）</label>
+        <div class="tri">
+          <input id="f-tag-tw" placeholder="如：投資隨筆 ・ 2026-07-16">
+          <input id="f-tag-cn" placeholder="简体（留空回退）">
+          <input id="f-tag-en" placeholder="English (optional)">
+        </div></div>
+      <div class="fldrow"><label>日期</label><input id="f-date" type="date"></div>
+      <div class="fldrow"><label>摘要（繁/简/EN）</label>
+        <div class="tri">
+          <textarea id="f-ex-tw" rows="3" placeholder="卡片摘要（繁體，必填）"></textarea>
+          <textarea id="f-ex-cn" rows="3" placeholder="简体摘要（留空回退）"></textarea>
+          <textarea id="f-ex-en" rows="3" placeholder="English excerpt (optional)"></textarea>
+        </div></div>
+      <div class="fldrow"><label>角標（繁/简/EN）</label>
+        <div class="tri">
+          <input id="f-pill-tw" placeholder="如：投資隨筆 / 買入 BUY">
+          <input id="f-pill-cn" placeholder="简体">
+          <input id="f-pill-en" placeholder="English">
+        </div></div>
+      <div class="fldrow"><label>角標樣式</label>
+        <select id="f-pillstyle"><option value="">默認（青色）</option><option value="gray">灰色</option></select></div>
+      <div class="fldrow"><label>鏈接（可空）</label><input id="f-url" placeholder="報告頁 posts/xxx ｜ PDF assets/pdf/xxx.pdf ｜ 留空＝即將發布"></div>
+      <div class="fldrow"><label>按鈕文字（繁/简/EN）</label>
+        <div class="tri">
+          <input id="f-more-tw" placeholder="閱讀全文＋PDF →">
+          <input id="f-more-cn" placeholder="简体">
+          <input id="f-more-en" placeholder="English">
+        </div></div>
+      <div class="log dim" style="margin:4px 0 14px;font-size:11.5px;line-height:1.9">觀點卡片顯示在首頁與研究觀點頁（最新 3 條）及「探索更多」歸檔頁（全部）。若同一文章也要出現在研報庫，去「研報管理」另加一條即可。PDF 同樣手動上傳到 assets/pdf/。</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <button class="btn" id="f-save">✓ 保存此條</button>
+        <button class="btn2" id="f-new">＋ 清空表單（新增）</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>觀點列表 <span class="dim" id="list-state" style="font-size:12px;font-family:var(--mono)"></span></h3>
+      <div id="list" class="log dim">載入中…</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;align-items:center">
+        <button class="btn" id="push">🚀 發布全部變更到網站</button>
+        <button class="btn2" id="seed" style="display:none">導入當前站上內置條目作為起點</button>
+        <span class="dim" style="font-family:var(--mono);font-size:11.5px">變更先保存在本頁，點「發布」才寫入後端；前台約 1 分鐘內生效（無需改代碼、無需上傳 GitHub）。</span>
+      </div>
+      <div class="log" id="oplog" style="margin-top:14px;display:none"></div>
+    </div>
+
+  </div>
+</div>
+
+<footer><div class="wrap"><div class="logo">Yi<b>Capital</b></div><p>© 2026 Yi Capital.</p></div></footer>
+
+<script>
+(function(){
+  const {api, plog, $}=YCAdmin;
+  const KIND='posts';
+  let ITEMS=null, editingId=null, dirty=false;
+
+  YCAdmin.gate(load);
+  const P=(v)=>typeof v==='string'?{tw:v,cn:'',en:''}:(v||{tw:'',cn:'',en:''});
+
+  async function load(){
+    try{
+      const j=await api('/api/content/all');
+      if(j[KIND]){ ITEMS=j[KIND]; $('list-state').textContent='（後端託管中，共 '+ITEMS.length+' 條）'; }
+      else{
+        ITEMS=null; $('seed').style.display='inline-block';
+        $('list-state').textContent='（後端尚未託管——當前前台顯示內置條目；點下方「導入」開始管理）';
+      }
+      draw();
+    }catch(e){ $('list').textContent='✗ '+e.message; }
+  }
+
+  $('seed').onclick=async ()=>{
+    try{
+      const txt=await (await fetch('assets/posts.js?v='+Date.now(),{cache:'no-store'})).text();
+      const m=txt.match(/const POSTS = window\.POSTS = (\[[\s\S]*?\n\]);/) || txt.match(/const POSTS = (\[[\s\S]*?\n\]);/);
+      if(!m) throw new Error('無法解析內置條目');
+      ITEMS=Function('return '+m[1])();
+      ITEMS.forEach((it,i)=>{ if(!it.id) it.id='post-'+(it.date||i)+'-'+Math.random().toString(36).slice(2,6); });
+      dirty=true; $('seed').style.display='none';
+      $('list-state').textContent='（已導入 '+ITEMS.length+' 條，尚未發布）';
+      draw();
+    }catch(e){ alert('✗ '+e.message); }
+  };
+
+  function draw(){
+    const el=$('list');
+    if(!ITEMS){ el.className='log dim'; el.textContent='後端尚未託管。點「導入當前站上內置條目」接管現有觀點卡片。'; return; }
+    el.className='';
+    el.innerHTML='<table class="m"><thead><tr><th>日期</th><th>標題（繁）</th><th>角標</th><th>鏈接</th><th>狀態</th><th>操作</th></tr></thead><tbody>'+
+      ITEMS.slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))).map(it=>{
+        const t=P(it.title).tw||'';
+        return `<tr style="${it.disabled?'opacity:.45':''}"><td style="white-space:nowrap">${it.date||''}</td>
+          <td style="max-width:340px">${t.replace(/</g,'&lt;')}</td>
+          <td>${(P(it.pill).tw||'')}</td>
+          <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:11px">${it.more||'—'}</td>
+          <td><span class="badge ${it.disabled?'off':'on'}">${it.disabled?'停用':'啟用'}</span></td>
+          <td>
+            <button class="btn2" data-a="edit" data-id="${it.id}">編輯</button>
+            <button class="btn2" data-a="toggle" data-id="${it.id}">${it.disabled?'啟用':'停用'}</button>
+            <button class="btn2 danger" data-a="del" data-id="${it.id}">刪除</button>
+          </td></tr>`;
+      }).join('')+'</tbody></table>';
+    el.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>{
+      const it=ITEMS.find(x=>x.id===b.dataset.id); if(!it) return;
+      if(b.dataset.a==='edit') fillForm(it);
+      if(b.dataset.a==='toggle'){ it.disabled=!it.disabled; dirty=true; draw(); }
+      if(b.dataset.a==='del'){ if(confirm('刪除「'+(P(it.title).tw||it.id)+'」？')){ ITEMS=ITEMS.filter(x=>x!==it); dirty=true; draw(); } }
+    });
+  }
+
+  function fillForm(it){
+    editingId=it.id; $('frm-title').textContent='編輯：'+it.id;
+    const T=P(it.title), G=P(it.tag), E=P(it.excerpt), L=P(it.pill), M=P(it.moreLabel);
+    $('f-title-tw').value=T.tw||''; $('f-title-cn').value=T.cn||''; $('f-title-en').value=T.en||'';
+    $('f-tag-tw').value=G.tw||''; $('f-tag-cn').value=G.cn||''; $('f-tag-en').value=G.en||'';
+    $('f-ex-tw').value=E.tw||''; $('f-ex-cn').value=E.cn||''; $('f-ex-en').value=E.en||'';
+    $('f-pill-tw').value=L.tw||''; $('f-pill-cn').value=L.cn||''; $('f-pill-en').value=L.en||'';
+    $('f-pillstyle').value=it.pillStyle||'';
+    $('f-url').value=it.more||'';
+    $('f-more-tw').value=M.tw||''; $('f-more-cn').value=M.cn||''; $('f-more-en').value=M.en||'';
+    $('f-date').value=it.date||'';
+    window.scrollTo({top:0,behavior:'smooth'});
+  }
+  function clearForm(){
+    editingId=null; $('frm-title').textContent='新增研究觀點';
+    ['f-title-tw','f-title-cn','f-title-en','f-tag-tw','f-tag-cn','f-tag-en','f-ex-tw','f-ex-cn','f-ex-en','f-pill-tw','f-pill-cn','f-pill-en','f-url','f-more-tw','f-more-cn','f-more-en'].forEach(id=>$(id).value='');
+    $('f-pillstyle').value='';
+    $('f-date').value=new Date().toISOString().slice(0,10);
+  }
+  $('f-new').onclick=clearForm;
+
+  $('f-save').onclick=()=>{
+    if(!ITEMS){ alert('請先「導入內置條目」'); return; }
+    const tw=$('f-title-tw').value.trim();
+    const ex=$('f-ex-tw').value.trim();
+    if(!tw||!ex){ alert('繁體標題與摘要必填'); return; }
+    const item={
+      id: editingId || (($('f-date').value||'x')+'-'+tw.slice(0,12).replace(/\s+/g,'-')+'-'+Math.random().toString(36).slice(2,6)),
+      tag: {tw:$('f-tag-tw').value.trim(), cn:$('f-tag-cn').value.trim(), en:$('f-tag-en').value.trim()},
+      date: $('f-date').value,
+      title: {tw, cn:$('f-title-cn').value.trim(), en:$('f-title-en').value.trim()},
+      excerpt: {tw:ex, cn:$('f-ex-cn').value.trim(), en:$('f-ex-en').value.trim()},
+      pill: {tw:$('f-pill-tw').value.trim(), cn:$('f-pill-cn').value.trim(), en:$('f-pill-en').value.trim()},
+      pillStyle: $('f-pillstyle').value,
+      more: $('f-url').value.trim(),
+      moreLabel: {tw:$('f-more-tw').value.trim(), cn:$('f-more-cn').value.trim(), en:$('f-more-en').value.trim()},
+    };
+    if(!item.more){ item.soon=true; item.foot='即將發布'; }
+    const i=ITEMS.findIndex(x=>x.id===item.id);
+    if(i>=0){ item.disabled=ITEMS[i].disabled; ITEMS[i]=item; } else ITEMS.unshift(item);
+    dirty=true; clearForm(); draw();
+  };
+
+  $('push').onclick=async ()=>{
+    if(!ITEMS){ alert('沒有可發布的內容'); return; }
+    const el=$('oplog'); el.style.display='block'; el.innerHTML='';
+    try{
+      const j=await api('/api/content/save',{method:'POST',body:JSON.stringify({kind:KIND, items:ITEMS})});
+      dirty=false; plog(el,'✓ 已發布 '+j.count+' 條——首頁精選、研究觀點頁與歸檔頁刷新即見。','ok');
+      $('list-state').textContent='（後端託管中，共 '+ITEMS.length+' 條）';
+    }catch(e){ plog(el,'✗ '+e.message,'err'); }
+  };
+
+  window.addEventListener('beforeunload',e=>{ if(dirty){e.preventDefault();e.returnValue='';} });
+  clearForm();
+})();
+</script>
+</body>
+</html>

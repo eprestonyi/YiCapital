@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin 總覽 ｜ Admin ｜ Yi Capital</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/portal-config.js"></script>
+<script src="assets/yc-admin.js"></script>
+</head>
+<body>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <nav><ul id="m"><li><a class="link" href="admin">Admin 總覽</a></li></ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb">ADMIN / OVERVIEW</div>
+    <div class="topbar">
+      <h1 style="margin:0"><small>Backstage · 管理後台</small>Admin Portal</h1>
+      <div class="who" id="who"></div>
+    </div>
+    <div id="adminnav"></div>
+  </div>
+
+  <div id="gate" class="card" style="text-align:center;padding:60px">
+    <div class="log dim" style="display:inline-block" id="gatemsg">正在驗證會話…</div>
+  </div>
+
+  <div id="panel" style="display:none">
+
+    <div class="preview" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px">
+      <a href="admin-publish" class="card" style="text-decoration:none;margin:0"><h3>📊 發布淨值表</h3><p class="dim" style="font-size:13px;line-height:1.8">校驗並發布基金工作簿；發布時自動同步賬本，開啟每日自動更新。</p></a>
+      <a href="admin-reports" class="card" style="text-decoration:none;margin:0"><h3>📁 研報管理</h3><p class="dim" style="font-size:13px;line-height:1.8">研報庫條目的新增、修改、停用與刪除（PDF 手動上傳到 assets/pdf/）。</p></a>
+      <a href="admin-insights" class="card" style="text-decoration:none;margin:0"><h3>✒️ 研究觀點管理</h3><p class="dim" style="font-size:13px;line-height:1.8">研究觀點卡片的新增、修改、停用與刪除。</p></a>
+      <a href="admin-users" class="card" style="text-decoration:none;margin:0"><h3>👥 帳號管理</h3><p class="dim" style="font-size:13px;line-height:1.8">用戶名/郵箱搜索、停用、重置密碼、刪除。</p></a>
+      <a href="admin-mail" class="card" style="text-decoration:none;margin:0"><h3>✉️ 郵件中心</h3><p class="dim" style="font-size:13px;line-height:1.8">insight@ / information@ 群發或指定用戶發送（帶搜索）。</p></a>
+      <a href="admin-inbox" class="card" style="text-decoration:none;margin:0"><h3>📥 收件箱</h3><p class="dim" style="font-size:13px;line-height:1.8">insight@ / information@ 的來信查看與刪除。</p></a>
+    </div>
+    <div class="card"><h3>系統狀態</h3><div class="log dim" id="health">檢測中…</div></div>
+
+  </div>
+</div>
+
+<footer><div class="wrap"><div class="logo">Yi<b>Capital</b></div><p>© 2026 Yi Capital.</p></div></footer>
+
+<script>
+(function(){
+  const {api, $}=YCAdmin;
+  YCAdmin.gate(async ()=>{
+    try{
+      const h=await api('/api/health');
+      const nav=await fetch(YCAdmin.API+'/api/nav/us').then(r=>r.json()).catch(()=>null);
+      const rows=[
+        ['後端版本', h.version],
+        ['KV', h.kv?'✓':'✗'],
+        ['Resend 郵件', h.resend?'✓':'✗'],
+        ['GitHub 發布', h.github?'✓':'✗'],
+        ['每日自動更新', nav&&nav.enabled?('✓ 已啟用（實時行 '+nav.rows.length+' 條'+(nav.updatedAt?('，最近 '+nav.updatedAt.slice(0,16).replace('T',' ')):'')+'）'):'—（發布一次淨值表即自動開啟）'],
+      ];
+      $('health').className='log';
+      $('health').textContent=rows.map(r=>r[0]+'：'+r[1]).join('\n');
+    }catch(e){ $('health').textContent='✗ '+e.message; }
+  });
+})();
+</script>
+</body>
+</html>

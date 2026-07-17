@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>window.YC_LANG='en';</script>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yi Capital US | Full Profile | Yi Capital</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/portal-config.js"></script>
+<script src="../assets/yc-i18n.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+
+window.ensureXLSX=function(){return new Promise(function(res,rej){
+  if(window.XLSX)return res();
+  var urls=['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'],i=0;
+  (function next(){ if(window.XLSX)return res();
+    if(i>=urls.length)return rej(new Error('Spreadsheet parser failed to load — refresh or switch browsers'));
+    var s=document.createElement('script');s.src=urls[i++];s.onload=function(){window.XLSX?res():next()};s.onerror=next;document.head.appendChild(s);
+  })();
+});}
+</script>
+<script src="../assets/yc-analytics.js"></script>
+<script src="../assets/yc-charts.js"></script>
+<style>
+  .sec-h{margin:60px 0 22px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  .sec-h h2{font-family:var(--sans);font-size:clamp(24px,2.4vw,32px);color:#fff}
+  .sec-h .idx{font-family:var(--mono);font-size:12px;letter-spacing:2.5px;color:var(--cyan);text-transform:uppercase}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}}
+  .panel h4{font-family:var(--sans);font-size:15.5px;color:#fff;margin-bottom:14px}
+  #loader{padding:70px 0;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px;letter-spacing:1.5px}
+  #loader .drop{margin-top:26px;display:inline-block;border:1px dashed var(--line);border-radius:8px;padding:26px 40px;cursor:pointer}
+  #loader .drop:hover{border-color:var(--cyan);color:var(--cyan)}
+  .logic p{color:#cdd6e3;font-size:15.5px;line-height:2;margin-bottom:18px}
+  .logic b{color:#fff}
+  .logic .pull{border-left:3px solid var(--cyan);padding:6px 0 6px 20px;margin:26px 0;color:#e8edf5;font-size:16.5px;font-family:var(--zh)}
+  .asof{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:1.5px}
+</style>
+</head>
+<body>
+
+<div class="utility"><div class="wrap">
+  <a href="./#sec-portfolios" data-i18n="ut.live">LIVE PORTFOLIO</a>
+  <a href="./#sec-forum" data-i18n="ut.forum">RESEARCH FORUM</a>
+  <a href="./#sec-insights" data-i18n="ut.insights">LATEST INSIGHTS</a>
+  <a href="about" data-i18n="ut.contact">CONTACT</a>
+  <a href="login" style="color:var(--cyan)" data-i18n="ut.login">LOGIN</a>
+</div></div>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <button class="menu-btn" aria-label="Open menu" onclick="document.getElementById('m').classList.toggle('open')">MENU ≡</button>
+  <nav><ul id="m">
+    <li><a class="link" href="insights" data-i18n="nav.insights">Our Insights</a></li>
+    <li><a class="link" href="forum" data-i18n="nav.forum">Research Forum</a></li>
+    <li><a class="link active" href="portfolios" data-i18n="nav.portfolios">Our Portfolios</a></li>
+    <li><a class="link" href="about" data-i18n="nav.about">About Us</a></li>
+  </ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb"><a href="./">HOME</a> / <a href="portfolios">OUR PORTFOLIOS</a> / YI CAPITAL US</div>
+    <h1><small>Fund Profile | USD | Multi-Asset</small>Yi Capital US</h1>
+    <p>Every figure and chart on this page is computed live from the fund NAV workbook (Excel), using the same convention as the backend Python engine: daily return = (unit NAV + unit distribution) / prior unit NAV − 1. Nothing is filled in by hand.</p>
+    <p class="asof" id="asof"></p>
+  </div>
+</div>
+
+<div class="wrap">
+  <div id="srcbar" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:12px 18px;margin-bottom:8px;font-family:var(--mono);font-size:12px;color:var(--muted)">
+    <span id="srcstate">Data source: loading…</span>
+    <button id="bindbtn" class="menu-btn" style="display:inline-block">🔗 Bind local NAV workbook (live sync)</button>
+    <button id="unbindbtn" class="menu-btn" style="display:none">Unbind</button>
+    <span id="synctick" style="color:var(--up);display:none">● LIVE</span>
+  </div>
+</div>
+
+<div class="wrap" id="loader">
+  Loading NAV workbook …
+  <div><label class="drop" id="dropzone">or click / drop the fund Excel here (workbook exported by Yi_Capital_Manager; one-off preview)<input type="file" id="filepick" accept=".xlsx,.xlsm" style="display:none"></label></div>
+</div>
+
+<div id="report" style="display:none">
+
+  
+  <div class="wrap">
+    <div class="stats" id="statCards"></div>
+  </div>
+
+  <!-- ══ 01 Performance ══ -->
+  <div class="wrap">
+    <div class="sec-h"><span class="idx">01 | Performance</span><h2>Performance Review</h2></div>
+    <div class="grid2">
+      <div class="panel"><h4 data-i18n="pn.equity">NAV Curve (hypothetical $10,000)</h4><div id="c-equity"></div></div>
+      <div class="panel"><h4 data-i18n="pn.underwater">Underwater Chart (drawdown path)</h4><div id="c-underwater"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4 data-i18n="pn.heatmap">Monthly Returns Heatmap</h4><div id="c-heatmap"></div></div>
+      <div class="panel"><h4 data-i18n="pn.monthly">Monthly Returns</h4><div id="c-monthly"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4 data-i18n="pn.rollvol">Rolling Annualized Volatility (20d)</h4><div id="c-rollvol"></div></div>
+      <div class="panel"><h4 data-i18n="pn.rollsharpe">Rolling Sharpe Ratio (20d)</h4><div id="c-rollsharpe"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4 data-i18n="pn.dist">Daily Return Distribution vs Normal Fit</h4><div id="c-dist"></div><div class="risk-note" id="dist-note"></div></div>
+      <div class="panel"><h4 data-i18n="pn.metrics">Full Metrics Table</h4><div id="c-metrics"></div></div>
+    </div>
+  </div>
+
+  <!-- ══ 02 Holdings ══ -->
+  <div class="wrap">
+    <div class="sec-h"><span class="idx">02 | Holdings</span><h2>Holdings Analysis</h2></div>
+    <div class="grid2">
+      <div class="panel"><h4 data-i18n="pn.donut">Holdings by Market Value</h4><div id="c-donut"></div></div>
+      <div class="panel"><h4 data-i18n="pn.holdings">Holdings Detail</h4><div id="c-holdings-table"></div><div class="legend" style="margin-top:12px">P&L includes realized + unrealized + dividends (full history, per Asset Position Record).</div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><div id="c-pnl-bars"></div></div>
+      <div class="panel"><div id="c-expret-bars"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4 data-i18n="pn.stacked">Asset Composition (Cash vs Positions)</h4><div id="c-stacked"></div></div>
+      <div class="panel"><h4 data-i18n="pn.unitnav">Unit NAV History</h4><div id="c-unitnav"></div></div>
+    </div>
+  </div>
+
+  <!-- ══ 03 Risks ══ -->
+  <div class="wrap">
+    <div class="sec-h"><span class="idx">03 | Risks</span><h2>Risk Analysis</h2></div>
+    <div class="grid2">
+      <div class="panel"><h4 data-i18n="pn.var">VaR (daily, 95/98/99)</h4><div id="c-var"></div><div class="risk-note" id="var-note"></div></div>
+      <div class="panel"><h4 data-i18n="pn.stress">Monte Carlo Stress Tests (10,000 bootstrap paths)</h4><div id="c-stress-table"></div><div class="risk-note" id="stress-note"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4>Stress Path: Black Swan Crash (10d)</h4><div id="c-fan-crash"></div></div>
+      <div class="panel"><h4>Stress Path: Slow Grind Down (126d, negative drift)</h4><div id="c-fan-grind"></div></div>
+    </div>
+  </div>
+
+  
+  <div class="wrap logic">
+    <div class="sec-h"><span class="idx">04 | Methodology</span><h2>Investment Logic</h2></div>
+    <div class="panel" style="padding:34px 38px">
+      <p><b>Two variables.</b> Win rate and payoff — every trade in this portfolio is a composite decision made after weighing the two. Only two numbers decide the outcome: the probability this trade makes money (win rate), and how much you make when right versus lose when wrong (payoff). P/E is not the answer, ROE is not the answer, moats are not the answer — they are telescopes, not the thing seen through the telescope. When expected value is large enough, bet; when it is not, no story is good enough.</p>
+      <p><b>Anti-fragile multi-asset architecture.</b> Yi Capital US is a USD multi-asset portfolio: equities provide offense; duration (US Treasuries) is the ammunition reserve for equity crashes — a 4–5% Treasury is essentially a put option struck at the price of the next panic; gold and rare metals hedge the tail risk of the fiat system; short-term bills and cash keep liquidity. The portfolio must not be destroyed by any single macro scenario — tariff war, AI-bubble burst, rate spike, credit crisis. The goal of anti-fragility is not to profit in a crisis, but to still be at the table after it.</p>
+      <p><b>Derivatives are psychological engineering, not speculation.</b> Limited-cost bear spreads cover the foreseeable tail scenarios — not because a crash is predicted, but because its absence cannot be. The options execute the hedge before the psychological threshold is hit, transferring panic-zone decisions from a future self who may break down to a present self who is calm. What this protects is the floor of the payoff: in the worst case the loss is bounded, controlled, and never fatal.</p>
+      <p><b>Valuation anchoring, cycle rotation.</b> No calling tops or bottoms. One thing only: consult the ten-year valuation distribution and build positions at statistical extremes — panic prices naturally raise the win rate (mean reversion is the most reproducible statistical regularity), and extreme discounts naturally amplify the payoff. Exit when valuation reverts to its fair range, however great the company.</p>
+      <p><b>Fat-tail risk control; reject the VaR illusion.</b> Normal-assumption VaR precisely measures the part that needs no worrying, while staying silent on the tail that can actually destroy a portfolio. All risk on this page uses Cornish-Fisher / empirical quantiles plus Monte Carlo stress tests — measuring not "how much is lost on 99% of days," but "whether the loss stays bounded in the 1% that is truly lethal."</p>
+      <div class="pull">Staying at the table is the precondition for every positive-expectancy trade to pay off.</div>
+      <p style="margin-bottom:0">The full investment philosophy — seven principles, mistake reviews, thinking on insurance — is in the <a href="filings" style="color:var(--cyan)">Filings ↗ FY2025 Shareholder Letter</a>.</p>
+    </div>
+  </div>
+
+  <div class="wrap" style="padding:40px 0 0">
+    <p class="disc">Disclaimer: the above is a simulated NAV treatment of a personal live account, not a regulated collective investment scheme, and accepts no subscriptions of any kind. Data includes all trading costs; past performance does not indicate future returns. Charts are computed live from the NAV workbook; where conventions differ from the shareholder letter, the letter prevails.</p>
+  </div>
+</div>
+
+<footer><div class="wrap">
+  <div class="logo">Yi<b>Capital</b></div>
+  <p>© 2026 Yi Capital.</p>
+</div></footer>
+
+<script>
+(function(){
+  const DATA_URL = '../assets/data/Yi_Capital_US.xlsx';
+  const $ = id => document.getElementById(id);
+  const IS_ADMIN = localStorage.getItem('yc-role')==='admin';
+  if(!IS_ADMIN){
+    
+    const sb=$('srcbar'); if(sb) sb.style.display='none';
+    const dz=document.getElementById('dropzone'); if(dz) dz.style.display='none';
+    $('loader').firstChild.textContent='Loading data…';
+  }
+
+  function workbookToSheets(wb){
+    const out = {};
+    wb.SheetNames.forEach(n => out[n] = XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:true, defval:null}));
+    return out;
+  }
+
+  function statCard(v, k, cls){ return `<div class="stat"><div class="v ${cls||''}">${v}</div><div class="k">${k}</div></div>`; }
+
+  function render(R){
+    if(R.error){ $('loader').firstChild.textContent = '⚠ ' + R.error; return; }
+    const M = R.metrics, F = YCC;
+    $('loader').style.display='none'; $('report').style.display='block';
+    const __auto=window.__liveAdded?((window.YCI&&YCI.lang==='en')?` | incl. ${window.__liveAdded} auto-updated day(s)`:` | incl. ${window.__liveAdded} auto-updated day(s)`):'';
+    $('asof').textContent = ((window.YCI&&YCI.lang==='en')?`Data as of ${R.end} | Window ${R.start} → ${R.end} (${M.days} trading days) | computed live from the NAV workbook`:`Data as of ${R.end} | Window ${R.start} → ${R.end} (${M.days} trading days) | computed live from the NAV workbook`)+__auto;
+
+    
+    const endVal = Math.round(10000*(1+M.totalRet));
+    const L=window.YCI?YCI.lbl.bind(YCI):(k=>k);
+    $('statCards').innerHTML =
+      statCard(F.pct(M.totalRet,1,true), L('st.cum'), M.totalRet>=0?'u':'d') +
+      statCard(F.pct(M.annRet,1), L('st.ann')) +
+      statCard(F.pct(M.vol,1), L('st.vol')) +
+      statCard(F.pct(M.maxDD,1), L('st.mdd'), 'd') +
+      statCard(F.pct(M.var95,2), L('st.var')) +
+      statCard(F.pct(M.winRate,1), L('st.win'));
+
+    // 01 Performance
+    const series = [{name:'Yi Capital US', color:F.colors.cyan, width:3, data:R.curve}];
+    Object.entries(R.benchmarks).forEach(([n,b],i)=>{
+      series.push({name:n, color:[F.colors.blue,F.colors.violet,F.colors.orange][i%3], width:1.5, opacity:.75, data:b.curve});
+    });
+    $('c-equity').innerHTML = F.lineChart(series, {yFmt:v=>(v/1000).toFixed(0)+'k', baseline:10000});
+    $('c-underwater').innerHTML = F.underwaterChart(R.drawdown);
+    $('c-heatmap').innerHTML = F.monthlyHeatmap(R.monthly);
+    $('c-monthly').innerHTML = F.monthlyBars(R.monthly);
+    $('c-rollvol').innerHTML = F.lineChart([{name:'20d rolling annualized vol', color:F.colors.violet, width:2, data:R.rollVol.map(x=>({date:x.date,v:x.v*100})), fill:true}], {yFmt:v=>v.toFixed(0)+'%', baseline:0});
+    $('c-rollsharpe').innerHTML = F.lineChart([{name:'20d rolling Sharpe', color:F.colors.up, width:2, data:R.rollSharpe}], {yFmt:v=>v.toFixed(1), baseline:0});
+    $('c-dist').innerHTML = F.distributionChart(R.hist);
+    $('dist-note').innerHTML = `Skewness <b>${M.skew.toFixed(2)}</b>, excess kurtosis <b>${M.kurt.toFixed(2)}</b>${M.kurt>1?' — fat-tailed: the normal assumption understates extreme risk; risk uses Cornish-Fisher / empirical quantiles.':'.'}`;
+
+    
+    const rows = [
+      [L('st.cum'), F.pct(M.totalRet,2,true)], [L('st.ann'), F.pct(M.annRet,2)], [L('st.vol'), F.pct(M.vol,2)],
+      [L('st.sharpe'), M.sharpe.toFixed(2)], [L('st.sortino'), M.sortino.toFixed(2)], [L('st.calmar'), M.calmar.toFixed(2)],
+      [L('st.mdd'), F.pct(M.maxDD,2)], [L('st.win'), F.pct(M.winRate,1)], [L('st.pl'), M.plRatio.toFixed(2)],
+      [L('st.var'), F.pct(M.var95,2)], [L('st.cvar'), F.pct(M.cvar95,2)],
+      [L('st.skew'), M.skew.toFixed(2)], [L('st.kurt'), M.kurt.toFixed(2)],
+    ];
+    if(R.primaryBM) rows.push([L('st.alpha')+' (vs '+R.primaryBM+') ', F.pct(M.alpha,1,true)], [L('st.beta'), M.beta.toFixed(2)], [L('st.ir'), M.infoRatio.toFixed(2)], ['R²', M.r2.toFixed(2)]);
+    $('c-metrics').innerHTML = '<table class="m"><tbody>' + rows.map(r=>`<tr><td>${r[0]}</td><td style="text-align:right;font-family:var(--mono)">${r[1]}</td></tr>`).join('') + '</tbody></table>' + (R.primaryBM?'':'<div class="legend" style="margin-top:12px">Add a Benchmark sheet to the Excel (Date / SPY / QQQ… closing prices) and Alpha, Beta and the excess-return curve are computed automatically.</div>');
+
+    // 02 Holdings
+    if(R.assets.length){
+      $('c-donut').innerHTML = F.donutChart(R.assets);
+      $('c-holdings-table').innerHTML = F.holdingsTableHtml(R.assets);
+      const byPnl = [...R.assets].filter(a=>a.pnl!=null).sort((a,b)=>a.pnl-b.pnl);
+      $('c-pnl-bars').innerHTML = F.hBarChart(byPnl.map(a=>({label:a.ticker, v:a.pnl})), {title:'P&L by holding (realized + unrealized + dividends, $)'});
+      const byER = [...R.assets].filter(a=>a.exposureReturn!=null).sort((a,b)=>a.exposureReturn-b.exposureReturn);
+      $('c-expret-bars').innerHTML = F.hBarChart(byER.map(a=>({label:a.ticker, v:a.exposureReturn})), {title:'Exposure return by holding (total P&L / total cost)', valueFmt:v=>(v>=0?'+':'')+v.toFixed(1)+'%'});
+    } else {
+      $('c-donut').innerHTML = $('c-holdings-table').innerHTML = '<div class="legend">Asset Position Record sheet not found in the workbook.</div>';
+    }
+    $('c-stacked').innerHTML = F.stackedArea(R.navRows);
+    $('c-unitnav').innerHTML = F.lineChart([{name:'Unit NAV', color:F.colors.up, width:2, data:R.navRows.map(r=>({date:r.date, v:r.nav})), fill:true}], {yFmt:v=>v.toFixed(2)});
+
+    // 03 Risks
+    $('c-var').innerHTML = F.varTableHtml(R.varTable);
+    const cf99 = R.varTable.find(r=>r.level===0.99);
+    $('var-note').innerHTML = `At 99% confidence the normal model ${Math.abs(cf99.cf)>Math.abs(cf99.normal)?`understates risk by <b>${((cf99.cf/cf99.normal-1)*100).toFixed(0)}%</b> (CF ${F.pct(cf99.cf,2)} vs normal ${F.pct(cf99.normal,2)})`:'is close to the Cornish-Fisher measure'}. All risk controls use Cornish-Fisher / empirical quantiles.`;
+    $('c-stress-table').innerHTML = F.stressTableHtml(R.stress);
+    $('stress-note').innerHTML = `Bootstrap resampling of this portfolio's historical daily returns (10,000 paths per scenario). The Grind scenario shifts mean return negative to simulate a six-month slow bleed. Stress tests answer only one question: <b>do we survive?</b>`;
+    $('c-fan-crash').innerHTML = F.stressFanChart(R.stress.crash);
+    $('c-fan-grind').innerHTML = F.stressFanChart(R.stress.grind);
+  }
+
+  async function fetchLiveRows(sheets){
+    const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return 0;
+    try{
+      const j=await (await fetch(api+'/api/nav/us',{cache:'no-store'})).json();
+      if(j.ok && j.enabled && j.rows && j.rows.length) return YC.appendLive(sheets, j.rows);
+    }catch(e){}
+    return 0;
+  }
+  async function fetchBenchmarks(R){
+    const api=(window.YC_API||'').replace(/\/+$/,'');
+    if(R.error||R.primaryBM||!api) return R;
+    try{ const j=await (await fetch(api+'/api/benchmark?symbols=spy.us,qqq.us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
+    return R;
+  }
+  async function loadArrayBuffer(buf, srcLabel){
+    try{
+      await ensureXLSX();
+      const wb = XLSX.read(buf, {type:'array', cellDates:false});
+      const __sheets=workbookToSheets(wb);
+      window.__liveAdded=await fetchLiveRows(__sheets);
+      render(await fetchBenchmarks(YC.analyze(__sheets)));
+      if(srcLabel) $('srcstate').textContent = 'Data source: ' + srcLabel;
+      return true;
+    }catch(e){
+      $('loader').style.display='block';
+      $('loader').firstChild.textContent = '⚠ Parse failed: ' + e.message + ' ';
+      return false;
+    }
+  }
+
+  
+  const idb = {
+    open: () => new Promise((res,rej)=>{ const q=indexedDB.open('yc-fund',1);
+      q.onupgradeneeded=()=>q.result.createObjectStore('kv');
+      q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }),
+    get: async k => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); },
+    set: async (k,v) => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv','readwrite').objectStore('kv').put(v,k); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); }); },
+    del: async k => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv','readwrite').objectStore('kv').delete(k); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); }); },
+  };
+
+  let liveHandle=null, liveTimer=null, lastMod=0;
+
+  async function startLiveSync(handle){
+    liveHandle=handle;
+    const f=await handle.getFile();
+    lastMod=f.lastModified;
+    if(loadArrayBuffer(await f.arrayBuffer(), 'Local file: '+f.name+' (live sync)')){
+      $('bindbtn').style.display='none'; $('unbindbtn').style.display='inline-block'; $('synctick').style.display='inline';
+    }
+    clearInterval(liveTimer);
+    liveTimer=setInterval(async ()=>{
+      try{
+        const nf=await liveHandle.getFile();
+        if(nf.lastModified!==lastMod){       
+          lastMod=nf.lastModified;
+          $('synctick').textContent='● Updating…';
+          loadArrayBuffer(await nf.arrayBuffer(), 'Local file: '+nf.name+' (live sync)');
+          $('synctick').textContent='● LIVE · '+new Date().toLocaleTimeString();
+        }
+      }catch(e){  }
+    }, 4000);
+  }
+
+  
+  $('bindbtn').addEventListener('click', async ()=>{
+    if(!window.showOpenFilePicker){ alert('This browser does not support live sync (needs desktop Chrome / Edge). Use drag-and-drop for a one-off preview.'); return; }
+    try{
+      const [h]=await showOpenFilePicker({types:[{description:'Excel',accept:{'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx','.xlsm']}}]});
+      await idb.set('handle', h);
+      startLiveSync(h);
+    }catch(e){  }
+  });
+  $('unbindbtn').addEventListener('click', async ()=>{
+    await idb.del('handle'); clearInterval(liveTimer); liveHandle=null;
+    $('bindbtn').style.display='inline-block'; $('unbindbtn').style.display='none'; $('synctick').style.display='none';
+    $('srcstate').textContent='Data source: unbound (using site data)';
+    bootFetch();
+  });
+
+  
+  async function bootHandle(){
+    if(!window.showOpenFilePicker) return false;
+    try{
+      const h=await idb.get('handle'); if(!h) return false;
+      let perm=await h.queryPermission({mode:'read'});
+      if(perm==='prompt'){
+        
+        $('srcstate').textContent='Data source: previously bound local file detected — click to reconnect →';
+        $('bindbtn').textContent='🔗 Reconnect local NAV workbook';
+        $('bindbtn').onclick=async ()=>{ if(await h.requestPermission({mode:'read'})==='granted') startLiveSync(h); };
+        return 'pending';
+      }
+      if(perm==='granted'){ startLiveSync(h); return true; }
+    }catch(e){}
+    return false;
+  }
+
+  
+  function bootFetch(){
+    const remote=new URLSearchParams(location.search).get('data');
+    const url=remote||DATA_URL;
+    
+    const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
+    fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+      .then(buf=>loadArrayBuffer(buf, remote?('Remote '+url):('Site '+DATA_URL+' (updates with deploys)')))
+      .catch(()=>{ $('loader').style.display='block'; $('loader').firstChild.textContent=IS_ADMIN?('Not found: '+url+' (bind a local file for live sync, or drop a file to preview)'):'Data temporarily unavailable — please try again later.'; $('srcstate').textContent='Data source: none'; });
+  }
+
+  (async ()=>{
+    if(!IS_ADMIN){ bootFetch(); return; }
+    const st=await bootHandle();
+    if(st!==true) bootFetch();   
+  })();
+
+  
+  $('filepick').addEventListener('change', e=>{
+    const f=e.target.files[0]; if(!f) return;
+    f.arrayBuffer().then(b=>loadArrayBuffer(b,'Dropped file: '+f.name+' (one-off preview)'));
+  });
+  if(IS_ADMIN){
+  ['dragover','drop'].forEach(ev=>document.addEventListener(ev, e=>e.preventDefault()));
+  document.addEventListener('drop', e=>{
+    const f=e.dataTransfer && e.dataTransfer.files[0];
+    if(f) f.arrayBuffer().then(b=>loadArrayBuffer(b,'Dropped file: '+f.name+' (one-off preview)'));
+  });
+  }
+})();
+</script>
+<script src="../assets/yc-session.js"></script>
+</body>
+</html>
