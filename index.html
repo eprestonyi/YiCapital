@@ -94,10 +94,11 @@
           <text x="430" y="62" fill="#5f6f85" font-size="10" font-family="IBM Plex Mono">恒指 HSI</text>
         </svg>
         <div class="mini-stats">
-          <div><div class="v u">+51%</div><div class="k" data-i18n="home.st.cum17">累計回報（17 個月）</div></div>
-          <div><div class="v">33.2%</div><div class="k" data-i18n="st.ann">年化收益率</div></div>
-          <div><div class="v">−23%</div><div class="k" data-i18n="st.mdd">最大回撤</div></div>
+          <div><div class="v u" id="hm-hk-cum">+51%</div><div class="k" data-i18n="home.st.cum17">累計回報（17 個月）</div></div>
+          <div><div class="v" id="hm-hk-ann">33.2%</div><div class="k" data-i18n="st.ann">年化收益率</div></div>
+          <div><div class="v" id="hm-hk-mdd">−23%</div><div class="k" data-i18n="st.mdd">最大回撤</div></div>
         </div>
+        <div class="legend" id="hm-hk-date">AUTO · 等待後台</div>
         <div class="go" data-i18n="home.hk.go">查看淨值曲線、持倉與風險檔案 →</div>
       </a>
       <div class="pf-side">
@@ -105,12 +106,16 @@
           <div class="kick" data-i18n="home.us.k">USD ｜ 多資產</div>
           <h3>Yi Capital US</h3>
           <p data-i18n="home.us.p">多資產配置的美金組合：股票、久期（duration）、黃金與短債的風險平衡，以厚尾（fat-tail）與壓力測試框架管理回撤。</p>
+          <div class="mini-stats"><div><div class="v" id="hm-us-cum">—</div><div class="k">累計回報</div></div><div><div class="v" id="hm-us-ann">—</div><div class="k">年化收益率</div></div><span id="hm-us-mdd" hidden></span></div>
+          <div class="legend" id="hm-us-date">AUTO · 等待後台</div>
           <div class="go" data-i18n="home.enter">進入組合頁 →</div>
         </a>
         <a class="pf-card" href="portfolios#ashare">
           <div class="kick" data-i18n="home.a.k">CNY ｜ A股</div>
           <h3>Yi Capital A Share</h3>
           <p data-i18n="home.a.p">A股優質資產的長期持有：聚焦競爭格局清晰、自由現金流充沛的龍頭，換手極低、以年為單位計倉。</p>
+          <div class="mini-stats"><div><div class="v" id="hm-a-cum">—</div><div class="k">累計回報</div></div><div><div class="v" id="hm-a-ann">—</div><div class="k">年化收益率</div></div><span id="hm-a-mdd" hidden></span></div>
+          <div class="legend" id="hm-a-date">AUTO · 等待後台</div>
           <div class="go" data-i18n="home.enter">進入組合頁 →</div>
         </a>
       </div>
@@ -153,6 +158,7 @@ renderPosts("home-posts",{limit:3});document.addEventListener("yc-content-posts"
 renderReports("home-reports","","");document.addEventListener("yc-content-reports",()=>{renderReports("home-reports","","");});
 </script>
 <script src="assets/portal-config.js"></script>
+<script src="assets/yc-home-live.js"></script>
 <script src="assets/yc-i18n.js"></script>
 <script src="assets/yc-session.js"></script>
 </body>

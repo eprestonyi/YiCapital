@@ -59,13 +59,17 @@
           <input id="f-meta-en" placeholder="English (optional)">
         </div></div>
       <div class="fldrow"><label>搜索關鍵詞</label><input id="f-tags" placeholder="空格分隔：代號 公司名 主題 中英皆可"></div>
-      <div class="fldrow"><label>鏈接</label><input id="f-url" placeholder="報告頁：posts/xxx ｜ 或直接 PDF：assets/pdf/xxx.pdf"></div>
-      <div class="fldrow"><label>PDF 直傳</label>
+      <div class="fldrow"><label>報告頁鏈接</label><input id="f-url" placeholder="例如 posts/tencent-0700-ch12；若沒有專屬頁，也可直接填 PDF 路徑"></div>
+      <div class="fldrow"><label>PDF 文件路徑</label><input id="f-pdf" placeholder="例如 assets/pdf/tencent-0700-ch12.pdf；拖入後自動回填"></div>
+      <div class="fldrow"><label>上傳／更換 PDF</label>
         <div>
-          <label class="drop2" id="pdfdz" style="padding:22px">點此或拖入 PDF ——自動上傳到 GitHub assets/pdf/ 並回填上方鏈接<input type="file" id="pdffp" accept=".pdf" style="display:none"></label>
+          <label class="drop2" id="pdfdz" style="padding:22px"><b>點此選 PDF，或把 PDF 拖到這裡</b><br><span class="dim">編輯既有研報時，會沿用上方文件名並直接覆蓋；新增研報時使用本地文件名</span><input type="file" id="pdffp" accept=".pdf,application/pdf" style="display:none"></label>
           <div class="log dim" id="pdflog" style="margin-top:8px;min-height:0;display:none"></div>
         </div></div>
-      <div class="log dim" style="margin:4px 0 14px;font-size:11.5px;line-height:1.9">PDF 需手動上傳：把文件放進 GitHub 倉庫的 <b>assets/pdf/</b> 資料夾（github.dev 拖入→提交），然後在「鏈接」填 assets/pdf/文件名.pdf——訪客點擊即打開 PDF。若做了專屬報告頁（三語 posts 頁），則填 posts/頁名。</div>
+      <div class="log dim" style="margin:4px 0 14px;font-size:11.5px;line-height:1.9">
+        <b>更換既有 PDF：</b>先在下方列表点「編輯」，确认 PDF 路徑，再把新版文件拖入；即使本地文件名不同，也会覆盖当前路径。上传完成后再点「保存此条」及「发布全部变更」。<br>
+        <b>新增 PDF：</b>清空表单后拖入文件，系统会写入 GitHub 的 <b>assets/pdf/</b> 并自动回填路径。
+      </div>
       <div style="display:flex;gap:12px;flex-wrap:wrap">
         <button class="btn" id="f-save">✓ 保存此條</button>
         <button class="btn2" id="f-new">＋ 清空表單（新增）</button>
@@ -98,40 +102,70 @@
   YCAdmin.gate(load);
 
   const P=(v)=>typeof v==='string'?{tw:v,cn:'',en:''}:(v||{tw:'',cn:'',en:''});
+  const ensureIds=(list=ITEMS)=>{ const used=new Set(); (list||[]).forEach((it,i)=>{
+    let id=String(it.id||'').trim() || ('rep-'+String(it.url||it.date||i).replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').toLowerCase());
+    let u=id,n=2; while(used.has(u))u=id+'-'+n++; it.id=u; used.add(u);
+  }); return list||[]; };
+
+  const norm=v=>String(v||'').trim().replace(/^\/+/,'').replace(/\.html?(?=$|[?#])/i,'').toLowerCase();
+  const titleKey=it=>String(P(it&&it.title).tw||P(it&&it.title).cn||P(it&&it.title).en||'').trim().toLowerCase();
+  function mergeItems(seed, remote){
+    const out=ensureIds((seed||[]).map(x=>({...x})));
+    (remote||[]).forEach(raw=>{
+      const it={...raw};
+      let i=out.findIndex(x=>it.id&&x.id===it.id);
+      if(i<0&&it.url) i=out.findIndex(x=>norm(x.url)===norm(it.url));
+      if(i<0&&titleKey(it)) i=out.findIndex(x=>titleKey(x)===titleKey(it)&&String(x.date||'')===String(it.date||''));
+      if(i>=0){
+        const base=out[i];
+        out[i]={...base,...it,id:base.id||it.id,
+          title:{...P(base.title),...P(it.title)},
+          meta:{...P(base.meta),...P(it.meta)}};
+      }else out.push(it);
+    });
+    return ensureIds(out);
+  }
 
   async function load(){
     try{
-      const j=await api('/api/content/all');
-      if(j[KIND]){ ITEMS=j[KIND]; $('list-state').textContent='（後端託管中，共 '+ITEMS.length+' 條）'; }
-      else{
-        await autoSeed();
-        $('list-state').textContent='（已自動載入站上內置條目 '+(ITEMS?ITEMS.length:0)+' 條——現在就能編輯；點「發布」後由後端接管）';
+      const [j,seed]=await Promise.all([api('/api/content/all'),loadSeed()]);
+      const remote=Array.isArray(j[KIND])?j[KIND]:[];
+      ITEMS=mergeItems(seed,remote);
+      const added=Math.max(0,ITEMS.length-remote.length);
+      if(remote.length&&added){
+        dirty=true;
+        $('list-state').textContent='（已自动补齐站内全部研报：后端 '+remote.length+' 条＋补回 '+added+' 条；请点「发布」保存合集）';
+      }else if(remote.length){
+        $('list-state').textContent='（已合并站内全部研报与后端修改，共 '+ITEMS.length+' 条）';
+      }else{
+        $('list-state').textContent='（已自动选入站上全部内置研报 '+ITEMS.length+' 条；现在即可编辑）';
       }
       draw();
     }catch(e){ $('list').textContent='✗ '+e.message; }
   }
 
-  async function autoSeed(){
+  async function loadSeed(){
     try{
       const txt=await (await fetch('assets/reports.js?v='+Date.now(),{cache:'no-store'})).text();
       const m=txt.match(/const REPORTS = (\[[\s\S]*?\n\]);/);
       if(!m) throw new Error('無法解析內置條目');
-      ITEMS=Function('return '+m[1])();
-    }catch(e){ ITEMS=[]; alert('△ 內置條目載入失敗：'+e.message); }
+      return ensureIds(Function('return '+m[1])());
+    }catch(e){ alert('△ 內置條目載入失敗：'+e.message); return []; }
   }
 
   function draw(){
     const el=$('list');
     if(!ITEMS){ el.className='log dim'; el.textContent='載入中…'; return; }
     el.className='';
-    el.innerHTML='<table class="m"><thead><tr><th>日期</th><th>標題（繁）</th><th>代號</th><th>類型</th><th>鏈接</th><th>狀態</th><th>操作</th></tr></thead><tbody>'+
-      ITEMS.slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).map(it=>{
+    el.innerHTML='<table class="m"><thead><tr><th>日期</th><th>標題（繁）</th><th>代號</th><th>類型</th><th>報告頁</th><th>PDF</th><th>狀態</th><th>操作</th></tr></thead><tbody>'+
+      ITEMS.filter(it=>!it.deleted).slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).map(it=>{
         const t=P(it.title).tw||P(it.title).en||'';
         return `<tr style="${it.disabled?'opacity:.45':''}"><td style="white-space:nowrap">${it.date||''}</td>
           <td style="max-width:340px">${t.replace(/</g,'&lt;')}</td>
           <td>${it.ticker||''}</td>
           <td>${(it.genre||[]).map(g=>GENRE_TW[g]||g).join('、')}</td>
           <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:11px">${it.url||''}</td>
+          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:11px">${it.pdf||((/\.pdf(?:$|[?#])/i.test(it.url||''))?it.url:'—')}</td>
           <td><span class="badge ${it.disabled?'off':'on'}">${it.disabled?'停用':'啟用'}</span></td>
           <td>
             <button class="btn2" data-a="edit" data-id="${it.id}">編輯</button>
@@ -143,7 +177,7 @@
       const it=ITEMS.find(x=>x.id===b.dataset.id); if(!it) return;
       if(b.dataset.a==='edit') fillForm(it);
       if(b.dataset.a==='toggle'){ it.disabled=!it.disabled; dirty=true; draw(); }
-      if(b.dataset.a==='del'){ if(confirm('刪除「'+(P(it.title).tw||it.id)+'」？發布後前台將不再顯示。')){ ITEMS=ITEMS.filter(x=>x!==it); dirty=true; draw(); } }
+      if(b.dataset.a==='del'){ if(confirm('刪除「'+(P(it.title).tw||it.id)+'」？發布後前台將不再顯示。')){ it.deleted=true; it.disabled=true; dirty=true; draw(); } }
     });
   }
 
@@ -154,12 +188,15 @@
     $('f-ticker').value=it.ticker||''; $('f-date').value=it.date||'';
     $('f-meta-tw').value=M.tw||''; $('f-meta-cn').value=M.cn||''; $('f-meta-en').value=M.en||'';
     $('f-tags').value=it.tags||''; $('f-url').value=it.url||'';
+    $('f-pdf').value=it.pdf||((/\.pdf(?:$|[?#])/i.test(it.url||''))?it.url:'');
+    $('pdflog').style.display='none';
     document.querySelectorAll('#f-genre input').forEach(c=>c.checked=(it.genre||[]).includes(c.value));
     window.scrollTo({top:0,behavior:'smooth'});
   }
   function clearForm(){
     editingId=null; $('frm-title').textContent='新增研報';
-    ['f-title-tw','f-title-cn','f-title-en','f-ticker','f-meta-tw','f-meta-cn','f-meta-en','f-tags','f-url'].forEach(id=>$(id).value='');
+    ['f-title-tw','f-title-cn','f-title-en','f-ticker','f-meta-tw','f-meta-cn','f-meta-en','f-tags','f-url','f-pdf'].forEach(id=>$(id).value='');
+    $('pdflog').style.display='none';
     $('f-date').value=new Date().toISOString().slice(0,10);
     document.querySelectorAll('#f-genre input').forEach(c=>c.checked=false);
   }
@@ -173,6 +210,7 @@
     const item={
       id: editingId || (($('f-date').value||'x')+'-'+tw.slice(0,12).replace(/\s+/g,'-')+'-'+Math.random().toString(36).slice(2,6)),
       url: $('f-url').value.trim(),
+      pdf: $('f-pdf').value.trim(),
       ticker: $('f-ticker').value.trim(),
       genre: genre.length?genre:['other'],
       title: {tw, cn:$('f-title-cn').value.trim(), en:$('f-title-en').value.trim()},
@@ -200,14 +238,20 @@
   function b64(buf){const b=new Uint8Array(buf);let s='';for(let i=0;i<b.length;i+=8192)s+=String.fromCharCode.apply(null,b.subarray(i,i+8192));return btoa(s);}
   async function upPdf(f){
     if(!f) return;
-    const lg=$('pdflog'); lg.style.display='block'; lg.className='log'; lg.textContent='上傳中：'+f.name+'（'+(f.size/1024/1024).toFixed(1)+' MB）…';
+    const current=$('f-pdf').value.trim();
+    const currentName=(current.split(/[?#]/)[0].split('/').pop()||'').trim();
+    const target=/\.pdf$/i.test(currentName)?currentName:f.name;
+    const lg=$('pdflog'); lg.style.display='block'; lg.className='log'; lg.textContent='上傳中：'+f.name+' → assets/pdf/'+target+'（'+(f.size/1024/1024).toFixed(1)+' MB）…';
     try{
       if(!/\.pdf$/i.test(f.name)) throw new Error('只接受 .pdf');
       if(f.size>25*1024*1024) throw new Error('PDF 過大（上限約 25MB）');
-      const j=await api('/api/uploadpdf',{method:'POST',body:JSON.stringify({filename:f.name, content_b64:b64(await f.arrayBuffer())})});
-      $('f-url').value=j.path;
-      lg.textContent='✓ '+(j.replaced?'已更換同名文件':'已上傳')+'：'+j.path+'（約 1 分鐘後前台生效）。鏈接已自動回填。';
+      const j=await api('/api/uploadpdf',{method:'POST',body:JSON.stringify({filename:target, content_b64:b64(await f.arrayBuffer())})});
+      $('f-pdf').value=j.path;
+      dirty=true;
+      lg.className='log ok';
+      lg.textContent='✓ '+(j.replaced?'已覆盖并更换原 PDF':'已上传新 PDF')+'：'+j.path+'。路径已回填；请再点「保存此条」和「发布全部变更」。';
     }catch(e){ lg.className='log err'; lg.textContent='✗ '+e.message; }
+    $('pdffp').value='';
   }
   $('pdffp').addEventListener('change',e=>upPdf(e.target.files[0]));
   const pdz=$('pdfdz');

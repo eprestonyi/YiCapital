@@ -47,13 +47,22 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 
     <div class="card">
       <h3>發布淨值表</h3>
+      <div style="display:flex;gap:14px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+        <label for="pf-sel" style="font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:1px">基金組合</label>
+        <select id="pf-sel" style="background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--txt);padding:10px 14px;font-size:14px">
+          <option value="us">Yi Capital US（USD）</option>
+          <option value="hk">Yi Capital HK（HKD）</option>
+          <option value="a">Yi Capital A（CNY）</option>
+        </select>
+        <span class="dim" style="font-family:var(--mono);font-size:11.5px">工作簿只在交易、出入金、股息或公司行动改变时重傳；日常淨值由後台自動續算。</span>
+      </div>
       <label class="drop2" id="dz">點此或拖入基金工作簿（Yi_Capital_Manager 導出的 .xlsx）<input type="file" id="fp" accept=".xlsx,.xlsm" style="display:none"></label>
       <div id="pv" style="display:none">
         <div class="preview" id="pv-stats"></div>
         <div class="log dim" id="pv-note"></div>
       </div>
       <div style="margin-top:18px"><button class="btn" id="publish" disabled>🚀 發布到網站</button></div>
-      <div class="log" id="publog" style="margin-top:16px">選擇文件後，頁面會先用網站同一套引擎試算校驗，再發布。發布成功會自動同步賬本 → 每日美股收盤後約 1 小時自動續算淨值。</div>
+      <div class="log" id="publog" style="margin-top:16px">選擇文件後，頁面會先校驗歷史數據，並從持倉、現金流、負債與資本記錄建立後台賬本。US 每日收盤後更新；HK/A 每日北京 17:00 更新。</div>
     </div>
 
   </div>
@@ -64,7 +73,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 <script>
 (function(){
   const {api, plog, $}=YCAdmin;
-  let fileBuf=null, fileName=null, analyzed=null;
+  let fileBuf=null, fileName=null, analyzed=null, sourceSheets=null, sourceLedger=null;
   YCAdmin.gate();
 
   async function pick(f){
@@ -74,6 +83,12 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       await ensureXLSX();
       const wb=XLSX.read(fileBuf,{type:'array'});
       const sheets={}; wb.SheetNames.forEach(n=>sheets[n]=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}));
+      sourceSheets=sheets;
+      sourceLedger=YC.extractLedger(sheets,{portfolio:$('pf-sel').value});
+      if(sourceLedger.error) throw new Error(sourceLedger.error);
+      const byCurrency={USD:'us',HKD:'hk',CNY:'a'};
+      if(byCurrency[sourceLedger.currency]) $('pf-sel').value=byCurrency[sourceLedger.currency];
+      sourceLedger=YC.extractLedger(sheets,{portfolio:$('pf-sel').value});
       analyzed=YC.analyze(sheets);
       if(analyzed.error) throw new Error(analyzed.error);
       const M=analyzed.metrics, p=(v,d=1)=>(v*100).toFixed(d)+'%';
@@ -81,13 +96,14 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       $('pv-stats').innerHTML=[
         ['數據截至',analyzed.end],['交易日',M.days+' 天'],
         ['累計回報',(M.totalRet>=0?'+':'')+p(M.totalRet)],['最大回撤',p(M.maxDD)],
-        ['夏普',M.sharpe.toFixed(2)],['持倉',analyzed.assets.length+' 只'],
+        ['夏普',M.sharpe.toFixed(2)],['持倉',sourceLedger.positions.length+' 只'],
+        ['後台基準日',sourceLedger.sourceDate],['幣種',sourceLedger.currency],
       ].map(([k,v])=>`<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
-      $('pv-note').textContent='✓ 校驗通過：'+fileName+'（'+(fileBuf.byteLength/1024).toFixed(0)+' KB）';
+      $('pv-note').textContent='✓ 校驗通過：'+fileName+'（'+(fileBuf.byteLength/1024).toFixed(0)+' KB）｜營運基準來自持倉、現金流、負債、份額；歷史 NAV 僅用於既有曲線。';
       $('publish').disabled=false;
       $('publog').textContent='文件就緒，可以發布。';
     }catch(e){
-      analyzed=null; $('publish').disabled=true;
+      analyzed=null; sourceSheets=null; sourceLedger=null; $('publish').disabled=true;
       $('pv').style.display='block'; $('pv-stats').innerHTML='';
       $('pv-note').textContent='✗ 校驗失敗：'+e.message;
     }
@@ -109,18 +125,19 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     const el=$('publog'); el.innerHTML=''; $('publish').disabled=true;
     try{
       plog(el,'上傳中（'+fileName+'）…');
-      const j=await api('/api/publish',{method:'POST',body:JSON.stringify({content_b64:toBase64(fileBuf), message:'data: 更新淨值表至 '+(analyzed?analyzed.end:'')+'（via Portal）'})});
+      const pf=$('pf-sel').value;
+      const j=await api('/api/publish',{method:'POST',body:JSON.stringify({portfolio:pf,content_b64:toBase64(fileBuf), message:'data: 更新 '+pf.toUpperCase()+' 基金來源工作簿至 '+(sourceLedger?sourceLedger.sourceDate:'')+'（via Portal）'})});
       plog(el,'✓ 已提交：'+(j.commit||'').slice(0,7),'ok');
       plog(el,'✓ 發布完成。GitHub Pages 將在約 1 分鐘內自動重新部署。','ok');
       if(j.url) plog(el,'提交記錄：'+j.url,'dim');
       try{
-        const last=analyzed.navRows[analyzed.navRows.length-1];
-        const baseMV=(last.totalAssets!=null?last.totalAssets:((last.cash||0)+(last.marketValue||0)));
-        const led={ portfolio:'us',
-          positions:analyzed.assets.filter(a=>a.ticker&&isFinite(a.qty)&&a.qty).map(a=>({t:a.ticker,q:a.qty})),
-          cash:last.cash||0, lastDate:last.date, baseMV:baseMV, lastUnitNav:last.nav, units:last.units||0 };
+        const peakGrowth=Math.max(1,...analyzed.curve.map(x=>x.v/10000));
+        const endGrowth=analyzed.curve.length?analyzed.curve[analyzed.curve.length-1].v/10000:1;
+        const led={...sourceLedger,portfolio:pf,market:pf,
+          snap:{totalRet:analyzed.metrics.totalRet,annRet:analyzed.metrics.annRet,maxDD:analyzed.metrics.maxDD,
+            days:analyzed.metrics.days,start:analyzed.start,end:analyzed.end,peakGrowth,endGrowth}};
         const lj=await api('/api/ledger',{method:'POST',body:JSON.stringify(led)});
-        plog(el,'✓ 賬本已同步（'+lj.positions+' 只持倉，基準 '+led.lastDate+'）——每日自動續算淨值已就緒。','ok');
+        plog(el,'✓ 賬本已同步（'+lj.portfolio.toUpperCase()+'，'+lj.positions+' 只持倉，基準 '+led.sourceDate+'，保留 '+lj.preservedRows+' 個後台日更記錄）——自動續算已就緒。','ok');
       }catch(e){ plog(el,'△ 賬本同步失敗（不影響本次發布）：'+e.message,'dim'); }
     }catch(e){ plog(el,'✗ 發布失敗：'+e.message,'err'); }
     $('publish').disabled=false;

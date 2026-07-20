@@ -62,19 +62,19 @@
         </div></div>
       <div class="fldrow"><label>角標樣式</label>
         <select id="f-pillstyle"><option value="">默認（青色）</option><option value="gray">灰色</option></select></div>
-      <div class="fldrow"><label>鏈接（可空）</label><input id="f-url" placeholder="報告頁 posts/xxx ｜ PDF assets/pdf/xxx.pdf ｜ 留空＝即將發布"></div>
+      <div class="fldrow"><label>卡片鏈接（可空）</label><input id="f-url" placeholder="報告頁 posts/xxx ｜ 或直接 PDF assets/pdf/xxx.pdf ｜ 留空＝即將發布"></div>
       <div class="fldrow"><label>按鈕文字（繁/简/EN）</label>
         <div class="tri">
           <input id="f-more-tw" placeholder="閱讀全文＋PDF →">
           <input id="f-more-cn" placeholder="简体">
           <input id="f-more-en" placeholder="English">
         </div></div>
-      <div class="fldrow"><label>PDF 直傳</label>
+      <div class="fldrow"><label>PDF 直傳（直接作為卡片鏈接）</label>
         <div>
-          <label class="drop2" id="pdfdz" style="padding:22px">點此或拖入 PDF ——自動上傳到 GitHub assets/pdf/ 並回填上方鏈接<input type="file" id="pdffp" accept=".pdf" style="display:none"></label>
+          <label class="drop2" id="pdfdz" style="padding:22px"><b>點此選 PDF，或把 PDF 拖到這裡</b><br><span class="dim">只用于“点卡片直接打开 PDF”的观点；有专属报告页的 PDF 请到「研报管理」更换</span><input type="file" id="pdffp" accept=".pdf,application/pdf" style="display:none"></label>
           <div class="log dim" id="pdflog" style="margin-top:8px;min-height:0;display:none"></div>
         </div></div>
-      <div class="log dim" style="margin:4px 0 14px;font-size:11.5px;line-height:1.9">觀點卡片顯示在首頁與研究觀點頁（最新 3 條）及「探索更多」歸檔頁（全部）。若同一文章也要出現在研報庫，去「研報管理」另加一條即可。PDF 同樣手動上傳到 assets/pdf/。</div>
+      <div class="log dim" style="margin:4px 0 14px;font-size:11.5px;line-height:1.9">觀點卡片顯示在首頁與研究觀點頁（最新 3 條）及「探索更多」歸檔頁（全部）。本页会自动合并站内全部观点与后端版本，不再漏掉旧条目。若同一文章也要出现在研报库，去「研报管理」另加一条即可。</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap">
         <button class="btn" id="f-save">✓ 保存此條</button>
         <button class="btn2" id="f-new">＋ 清空表單（新增）</button>
@@ -105,27 +105,61 @@
 
   YCAdmin.gate(load);
   const P=(v)=>typeof v==='string'?{tw:v,cn:'',en:''}:(v||{tw:'',cn:'',en:''});
+  const ensureIds=(list=ITEMS)=>{ const used=new Set(); (list||[]).forEach((it,i)=>{
+    let id=String(it.id||'').trim() || ('post-'+String(it.more||it.date||i).replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').toLowerCase());
+    let u=id,n=2; while(used.has(u))u=id+'-'+n++; it.id=u; used.add(u);
+  }); return list||[]; };
+
+  const norm=v=>String(v||'').trim().replace(/^\/+/,'').replace(/\.html?(?=$|[?#])/i,'').toLowerCase();
+  const titleKey=it=>String(P(it&&it.title).tw||P(it&&it.title).cn||P(it&&it.title).en||'').trim().toLowerCase();
+  function mergeItems(seed, remote){
+    const out=ensureIds((seed||[]).map(x=>({...x})));
+    (remote||[]).forEach(raw=>{
+      const it={...raw};
+      let i=out.findIndex(x=>it.id&&x.id===it.id);
+      if(i<0&&titleKey(it)) i=out.findIndex(x=>titleKey(x)===titleKey(it)&&String(x.date||'')===String(it.date||''));
+      if(i<0&&it.more){
+        const same=out.map((x,n)=>norm(x.more)===norm(it.more)?n:-1).filter(n=>n>=0);
+        if(same.length===1) i=same[0];
+      }
+      if(i>=0){
+        const base=out[i];
+        out[i]={...base,...it,id:base.id||it.id,
+          tag:{...P(base.tag),...P(it.tag)},
+          title:{...P(base.title),...P(it.title)},
+          excerpt:{...P(base.excerpt),...P(it.excerpt)},
+          pill:{...P(base.pill),...P(it.pill)},
+          moreLabel:{...P(base.moreLabel),...P(it.moreLabel)}};
+      }else out.push(it);
+    });
+    return ensureIds(out);
+  }
 
   async function load(){
     try{
-      const j=await api('/api/content/all');
-      if(j[KIND]){ ITEMS=j[KIND]; $('list-state').textContent='（後端託管中，共 '+ITEMS.length+' 條）'; }
-      else{
-        await autoSeed();
-        $('list-state').textContent='（已自動載入站上內置條目 '+(ITEMS?ITEMS.length:0)+' 條——現在就能編輯；點「發布」後由後端接管）';
+      const [j,seed]=await Promise.all([api('/api/content/all'),loadSeed()]);
+      const remote=Array.isArray(j[KIND])?j[KIND]:[];
+      ITEMS=mergeItems(seed,remote);
+      const added=Math.max(0,ITEMS.length-remote.length);
+      if(remote.length&&added){
+        dirty=true;
+        $('list-state').textContent='（已自动补齐站内全部观点：后端 '+remote.length+' 条＋补回 '+added+' 条；请点「发布」保存合集）';
+      }else if(remote.length){
+        $('list-state').textContent='（已合并站内全部观点与后端修改，共 '+ITEMS.length+' 条）';
+      }else{
+        $('list-state').textContent='（已自动选入站上全部内置观点 '+ITEMS.length+' 条；现在即可编辑）';
       }
       draw();
     }catch(e){ $('list').textContent='✗ '+e.message; }
   }
 
-  async function autoSeed(){
+  async function loadSeed(){
     try{
       const txt=await (await fetch('assets/posts.js?v='+Date.now(),{cache:'no-store'})).text();
       const m=txt.match(/const POSTS = window\.POSTS = (\[[\s\S]*?\n\]);/) || txt.match(/const POSTS = (\[[\s\S]*?\n\]);/);
       if(!m) throw new Error('無法解析內置條目');
-      ITEMS=Function('return '+m[1])();
-      ITEMS.forEach((it,i)=>{ if(!it.id) it.id='post-'+(it.date||i)+'-'+Math.random().toString(36).slice(2,6); });
-    }catch(e){ ITEMS=[]; alert('△ 內置條目載入失敗：'+e.message); }
+      return ensureIds(Function('return '+m[1])());
+    }catch(e){ alert('△ 內置條目載入失敗：'+e.message); return []; }
   }
 
   function draw(){
@@ -133,7 +167,7 @@
     if(!ITEMS){ el.className='log dim'; el.textContent='載入中…'; return; }
     el.className='';
     el.innerHTML='<table class="m"><thead><tr><th>日期</th><th>標題（繁）</th><th>角標</th><th>鏈接</th><th>狀態</th><th>操作</th></tr></thead><tbody>'+
-      ITEMS.slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))).map(it=>{
+      ITEMS.filter(it=>!it.deleted).slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))).map(it=>{
         const t=P(it.title).tw||'';
         return `<tr style="${it.disabled?'opacity:.45':''}"><td style="white-space:nowrap">${it.date||''}</td>
           <td style="max-width:340px">${t.replace(/</g,'&lt;')}</td>
@@ -150,7 +184,7 @@
       const it=ITEMS.find(x=>x.id===b.dataset.id); if(!it) return;
       if(b.dataset.a==='edit') fillForm(it);
       if(b.dataset.a==='toggle'){ it.disabled=!it.disabled; dirty=true; draw(); }
-      if(b.dataset.a==='del'){ if(confirm('刪除「'+(P(it.title).tw||it.id)+'」？')){ ITEMS=ITEMS.filter(x=>x!==it); dirty=true; draw(); } }
+      if(b.dataset.a==='del'){ if(confirm('刪除「'+(P(it.title).tw||it.id)+'」？')){ it.deleted=true; it.disabled=true; dirty=true; draw(); } }
     });
   }
 
@@ -212,14 +246,22 @@
   function b64(buf){const b=new Uint8Array(buf);let s='';for(let i=0;i<b.length;i+=8192)s+=String.fromCharCode.apply(null,b.subarray(i,i+8192));return btoa(s);}
   async function upPdf(f){
     if(!f) return;
-    const lg=$('pdflog'); lg.style.display='block'; lg.className='log'; lg.textContent='上傳中：'+f.name+'（'+(f.size/1024/1024).toFixed(1)+' MB）…';
+    const current=$('f-url').value.trim();
+    const currentName=(current.split(/[?#]/)[0].split('/').pop()||'').trim();
+    const target=/\.pdf$/i.test(currentName)?currentName:f.name;
+    const lg=$('pdflog'); lg.style.display='block'; lg.className='log';
     try{
       if(!/\.pdf$/i.test(f.name)) throw new Error('只接受 .pdf');
       if(f.size>25*1024*1024) throw new Error('PDF 過大（上限約 25MB）');
-      const j=await api('/api/uploadpdf',{method:'POST',body:JSON.stringify({filename:f.name, content_b64:b64(await f.arrayBuffer())})});
+      if(current&&!/\.pdf(?:$|[?#])/i.test(current)) throw new Error('这条观点目前链接到专属报告页；请到「研报管理」编辑对应报告并拖入 PDF，避免覆盖卡片链接。');
+      lg.textContent='上傳中：'+f.name+' → assets/pdf/'+target+'（'+(f.size/1024/1024).toFixed(1)+' MB）…';
+      const j=await api('/api/uploadpdf',{method:'POST',body:JSON.stringify({filename:target, content_b64:b64(await f.arrayBuffer())})});
       $('f-url').value=j.path;
-      lg.textContent='✓ '+(j.replaced?'已更換同名文件':'已上傳')+'：'+j.path+'（約 1 分鐘後前台生效）。鏈接已自動回填。';
+      dirty=true;
+      lg.className='log ok';
+      lg.textContent='✓ '+(j.replaced?'已覆盖原 PDF':'已上传新 PDF')+'：'+j.path+'。卡片链接已回填；请再点「保存此条」和「发布全部变更」。';
     }catch(e){ lg.className='log err'; lg.textContent='✗ '+e.message; }
+    $('pdffp').value='';
   }
   $('pdffp').addEventListener('change',e=>upPdf(e.target.files[0]));
   const pdz=$('pdfdz');

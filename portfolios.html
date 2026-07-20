@@ -212,48 +212,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 </script>
 <script src="assets/yc-analytics.js"></script>
 <script src="assets/yc-charts.js"></script>
-<script>
-(function(){
-  const $=id=>document.getElementById(id);
-  const card=(v,k,c)=>`<div class="stat"><div class="v ${c||''}">${v}</div><div class="k">${k}</div></div>`;
-  const url='assets/data/Yi_Capital_US.xlsx?v='+Date.now();
-  fetch(url,{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.arrayBuffer();}).then(async buf=>{
-    await ensureXLSX();
-    const wb=XLSX.read(buf,{type:'array'});
-    const sheets={}; wb.SheetNames.forEach(n=>sheets[n]=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}));
-    try{ const _api=(window.YC_API||'').replace(/\/+$/,'');
-      if(_api){ const _j=await (await fetch(_api+'/api/nav/us',{cache:'no-store'})).json();
-        if(_j.ok&&_j.enabled&&_j.rows&&_j.rows.length) YC.appendLive(sheets,_j.rows); } }catch(e){}
-    const R=YC.analyze(sheets); if(R.error) throw R.error;
-    const api=(window.YC_API||'').replace(/\/+$/,'');
-    if(!R.primaryBM && api){
-      try{ const j=await (await fetch(api+'/api/benchmark?symbols=spy.us,qqq.us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
-    }
-    const M=R.metrics, F=YCC;
-    $('us-period').textContent=window.YCI?YCI.f('n.period',{end:R.end,days:M.days}):('數據截至 '+R.end+'（'+M.days+' 交易日）。');
-    const L=window.YCI?YCI.lbl.bind(YCI):(k=>k);
-    $('us-stats').innerHTML=
-      card(F.pct(M.totalRet,1,true),L('st.cum'),M.totalRet>=0?'u':'d')+
-      card(F.pct(M.annRet,1),L('st.ann'))+card(F.pct(M.vol,1),L('st.vol'))+
-      card(F.pct(M.maxDD,1),L('st.mdd'),'d')+card(F.pct(M.var95,2),L('st.var'))+
-      card(F.pct(M.winRate,1),L('st.win'))+
-      (R.primaryBM?card(F.pct(M.alpha,1,true),L('st.alpha'),M.alpha>=0?'u':'d')+card(M.beta.toFixed(2),L('st.beta')):'');
-    const eqSeries=[{name:'Yi Capital US',color:F.colors.cyan,width:3,data:R.curve}];
-    Object.entries(R.benchmarks||{}).forEach(([n,b],i)=>eqSeries.push({name:n,color:[F.colors.blue,F.colors.violet,F.colors.orange][i%3],width:1.5,opacity:.75,data:b.curve}));
-    $('us-equity').innerHTML=F.lineChart(eqSeries,{yFmt:v=>(v/1000).toFixed(1)+'k',baseline:10000});
-    $('us-heatmap').innerHTML=F.monthlyHeatmap(R.monthly);
-    $('us-holdings-table').innerHTML=F.holdingsTableHtml(R.assets);
-    const tot=R.assets.reduce((s,a)=>s+(a.marketValue||0),0);
-    $('us-holdings-note').textContent=window.YCI?YCI.f('n.holdnote',{v:Math.round(tot).toLocaleString()}):('總市值 $'+Math.round(tot).toLocaleString()+'。');
-    $('us-var').innerHTML=F.varTableHtml(R.varTable);
-    const cf99=R.varTable.find(r=>r.level===0.99);
-    $('us-var-note').innerHTML=window.YCI?YCI.f('n.varnote',{s:M.skew.toFixed(2),k:M.kurt.toFixed(2),cf:F.pct(cf99.cf,2),n:F.pct(cf99.normal,2)}):'';
-    $('us-stress').innerHTML=F.stressTableHtml(R.stress);
-  }).catch(e=>{
-    $('us-stats').innerHTML=card('—','未能載入淨值表（assets/data/Yi_Capital_US.xlsx）');
-  });
-})();
-</script>
+<script src="assets/yc-portfolios.js"></script>
 <script src="assets/yc-gate.js"></script>
 <script src="assets/yc-session.js"></script>
 </body>
