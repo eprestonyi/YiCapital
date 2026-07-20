@@ -24,17 +24,18 @@ Yi Capital 網站 · 平行三語版 上傳說明
      www.yicapital.co/en/         （English）
      三版首頁右上角互切、研報庫類型篩選、US 板塊實時圖表
 
-■ 後端已到 v8.1（三市場自動淨值＋六個基準＋完整內容管理＋PDF 拖放更換）：
-  ⚠ 必須先部署 worker/worker.js v8.1，再上傳網站文件；舊 v6 不認得 HK/A
+■ 後端已到 v8.2（三市場自動淨值＋七個基準＋完整內容管理＋PDF 拖放更換）：
+  ⚠ 必須先部署 worker/worker.js v8.2，再上傳網站文件；舊 v6 不認得 HK/A
      發布路徑，若順序倒轉，後台選 HK/A 仍可能覆蓋 US 工作簿。
-  1. Cloudflare → Workers → yicapital-portal → 用 worker/worker.js 全量替換舊代碼 → Deploy（/api/health 應顯示 v8.1）
+  1. Cloudflare → Workers → yicapital-portal → 用 worker/worker.js 全量替換舊代碼 → Deploy（/api/health 應顯示 v8.2）
   2. Worker → Settings → Triggers → Cron Triggers → 添加兩條：
        30 21 * * *   （美股收盤後，更新 US 淨值＋S&P 500/NASDAQ/DOW）
-       0 9 * * *     （北京時間 17:00，更新 HK/A＋HSI/HSTECH/CSI300）
+       0 9 * * *     （北京時間 17:00，更新 HK/A＋2828/2800/3032/滬深300）
   3. 之後在後台「發布淨值表」依次選 US、HK、A，各發布一份工作簿。
      發布會從持倉、現金流、負債與資本記錄建立後台賬本；NAV Statement
-     只保留歷史曲線。從次日起後台每天自算淨值、持倉權重和實時行，
-     前台自動重算 Sharpe、最大回撤、VaR、壓測、Alpha/Beta 等。
+     只作首次歷史種子。從次日起後台每天自算淨值、持倉權重，並覆蓋
+     Sharpe、最大回撤、VaR、壓測等完整 KV 快照；前台只讀快照。
+     三份發布完成後點一次「立即刷新後台緩存」完成首次預熱。
   4. 以後只有交易、出入金、股息、公司行動或負債改變時才需重新發布；
      沒有交易時不需要為了補 NAV 每天上傳。
 
@@ -59,7 +60,7 @@ Yi Capital 網站 · 平行三語版 上傳說明
 
 ■ 本輪新增：
   · 三市場後台賬本：US / HK / A 均按實際行情日期每日續算
-  · 六個基準自動行情：美股三大、恒指、恒生科技、滬深300
+  · 七個基準自動行情：美股三大、國企ETF、恒生ETF、恒科ETF、滬深300
   · 三組合首頁摘要、組合頁完整績效/持倉/回撤/風險面板全部聯動
   · 研報與觀點永遠先載入站內全量，再合併後端；騰訊與高階矩不再遺失
   · 內置條目使用固定 id；編輯、停用、刪除均可持久保存

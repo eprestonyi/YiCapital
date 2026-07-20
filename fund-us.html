@@ -8,7 +8,6 @@
 <link rel="stylesheet" href="assets/style.css">
 <script src="assets/portal-config.js"></script>
 <script src="assets/yc-i18n.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 /* Safari 偶發 XLSX CDN 加載失敗 → 備援 jsdelivr/unpkg */
 window.ensureXLSX=function(){return new Promise(function(res,rej){
@@ -63,7 +62,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   <div class="page-hero">
     <div class="crumb"><a href="./">首頁</a> / <a href="portfolios">組合實錄</a> / YI CAPITAL US</div>
     <h1><small>基金檔案 ｜ USD ｜ 多資產配置</small>Yi Capital US</h1>
-    <p>本頁所有數據與圖表均由基金淨值表（Excel）即時計算生成——與後台 Python 分析引擎同一套口徑：日收益率 =（每股淨資產＋每股派息）÷ 前日淨資產 − 1。無任何手工填數。</p>
+    <p>本頁所有數據與圖表均讀取後台持久化快照。Excel 只作交易、出入金與公司行動變更時的來源；日常估值、指標與曲線由後台更新並覆蓋緩存，頁面只負責展示。</p>
     <p class="asof" id="asof"></p>
   </div>
 </div>
@@ -79,7 +78,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 </div>
 
 <div class="wrap" id="loader">
-  正在載入淨值表 …
+  正在載入後台快照 …
   <div><label class="drop" id="dropzone">或點此 / 拖入基金 Excel（Yi_Capital_Manager 導出的工作簿，僅本次預覽）<input type="file" id="filepick" accept=".xlsx,.xlsm" style="display:none"></label></div>
 </div>
 
@@ -157,7 +156,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 
   <div class="wrap" style="padding:40px 0 0">
     </div><!-- /yc-lock -->
-    <p class="disc">免責聲明：以上為個人實盤之模擬淨值化處理，非受監管之集合投資計劃，不接受任何形式之申購；數據含全部交易成本，過往表現不代表未來回報。圖表由淨值表即時計算，如與致股東信存在口徑差異，以致股東信為準。</p>
+    <p class="disc">免責聲明：以上為個人實盤之模擬淨值化處理，非受監管之集合投資計劃，不接受任何形式之申購；數據含全部交易成本，過往表現不代表未來回報。圖表讀取後台持久化快照；如與致股東信存在口徑差異，以致股東信為準。</p>
   </div>
 </div>
 
@@ -186,12 +185,46 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 
   function statCard(v, k, cls){ return `<div class="stat"><div class="v ${cls||''}">${v}</div><div class="k">${k}</div></div>`; }
 
+  function cachedReport(j){
+    const required=j&&j.ok&&j.enabled&&Number(j.cacheVersion)>=2&&j.historyComplete===true&&j.metrics&&j.hist&&j.stress;
+    if(!required||!Array.isArray(j.history)||j.history.length<5||!Array.isArray(j.curve)||!Array.isArray(j.varTable)||!Array.isArray(j.navRows)) return null;
+    const assets=(j.assets||j.holdings||[]).map(h=>({
+      ticker:String(h.ticker||h.t||''),name:String(h.name||h.n||h.ticker||h.t||''),
+      qty:Number(h.qty??h.q)||0,price:Number(h.price??h.p)||0,marketValue:Number(h.marketValue??h.mv)||0,
+      weight:Number.isFinite(Number(h.weight))?Number(h.weight):null,
+      pnl:Number.isFinite(Number(h.pnl))?Number(h.pnl):null,
+      exposureReturn:Number.isFinite(Number(h.exposureReturn))?Number(h.exposureReturn):null,
+    })).filter(h=>h.ticker);
+    return {
+      source:'api',metrics:j.metrics,rets:j.history,rp:Array.isArray(j.rp)?j.rp:j.history.map(x=>x.ret),
+      curve:j.curve,drawdown:j.drawdown||[],monthly:j.monthly||[],rollVol:j.rollVol||[],
+      rollSharpe:j.rollSharpe||[],hist:j.hist,varTable:j.varTable,stress:j.stress,
+      navRows:j.navRows,assets,benchmarks:{},primaryBM:null,
+      start:(j.summary&&j.summary.start)||j.history[0].date,
+      end:j.end||(j.summary&&j.summary.end)||j.history[j.history.length-1].date,
+      asOf:j.asOf||j.marketDate||j.end,
+    };
+  }
+  async function bootCache(){
+    if(new URLSearchParams(location.search).has('data')) return false;
+    const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return false;
+    try{
+      const j=await (await fetch(api+'/api/nav/us',{cache:'no-store'})).json();
+      const R=cachedReport(j); if(!R) return false;
+      render(await fetchBenchmarks(R));
+      $('srcstate').textContent='數據源：後台持久化快照（AUTO · CACHE）';
+      return true;
+    }catch(e){ return false; }
+  }
+
   function render(R){
     if(R.error){ $('loader').firstChild.textContent = '⚠ ' + R.error; return; }
     const M = R.metrics, F = YCC;
     $('loader').style.display='none'; $('report').style.display='block';
     const __auto=window.__liveAdded?((window.YCI&&YCI.lang==='en')?` | incl. ${window.__liveAdded} auto-updated day(s)`:`｜ 含 ${window.__liveAdded} 個自動更新日`):'';
-    $('asof').textContent = ((window.YCI&&YCI.lang==='en')?`Data as of ${R.end} | Window ${R.start} → ${R.end} (${M.days} trading days) | computed live from the NAV workbook`:`數據截至 ${R.end} ｜ 回測區間 ${R.start} → ${R.end}（${M.days} 交易日）｜ 由淨值表即時計算`)+__auto;
+    $('asof').textContent = R.source==='api'
+      ? `數據截至 ${R.end} ｜ 回測區間 ${R.start} → ${R.end}（${M.days} 交易日）｜ 後台持久化快照 AUTO · CACHE`
+      : (((window.YCI&&YCI.lang==='en')?`Data as of ${R.end} | Window ${R.start} → ${R.end} (${M.days} trading days) | compatibility workbook mode`:`數據截至 ${R.end} ｜ 回測區間 ${R.start} → ${R.end}（${M.days} 交易日）｜ 工作簿相容模式`)+__auto);
 
     // 指標卡
     const endVal = Math.round(10000*(1+M.totalRet));
@@ -209,7 +242,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     Object.entries(R.benchmarks).forEach(([n,b],i)=>{
       series.push({name:n, color:[F.colors.blue,F.colors.violet,F.colors.orange][i%3], width:1.5, opacity:.75, data:b.curve});
     });
-    $('c-equity').innerHTML = F.lineChart(series, {yFmt:v=>(v/1000).toFixed(1).replace(/\.0$/,'')+'k', baseline:10000});
+    $('c-equity').innerHTML = F.lineChart(series, {yFmt:v=>(v/1000).toFixed(1).replace(/\.0$/,'')+'K', baseline:10000});
     $('c-underwater').innerHTML = F.underwaterChart(R.drawdown);
     $('c-heatmap').innerHTML = F.monthlyHeatmap(R.monthly);
     $('c-monthly').innerHTML = F.monthlyBars(R.monthly);
@@ -227,7 +260,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       [L('st.skew'), M.skew.toFixed(2)], [L('st.kurt'), M.kurt.toFixed(2)],
     ];
     if(R.primaryBM) rows.push([L('st.alpha')+'（vs '+R.primaryBM+'）', F.pct(M.alpha,1,true)], [L('st.beta'), M.beta.toFixed(2)], [L('st.ir'), M.infoRatio.toFixed(2)], ['R²', M.r2.toFixed(2)]);
-    $('c-metrics').innerHTML = '<table class="m"><tbody>' + rows.map(r=>`<tr><td>${r[0]}</td><td style="text-align:right;font-family:var(--mono)">${r[1]}</td></tr>`).join('') + '</tbody></table>' + (R.primaryBM?'':'<div class="legend" style="margin-top:12px">在 Excel 加入 Benchmark 分頁（Date / SPY / QQQ…收盤價）即可自動計算 Alpha、Beta 與超額收益曲線。</div>');
+    $('c-metrics').innerHTML = '<table class="m"><tbody>' + rows.map(r=>`<tr><td>${r[0]}</td><td style="text-align:right;font-family:var(--mono)">${r[1]}</td></tr>`).join('') + '</tbody></table>' + (R.primaryBM?'':'<div class="legend" style="margin-top:12px">等待後台三大股指快照。</div>');
 
     // 02 Holdings
     if(R.assets.length){
@@ -264,7 +297,8 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   }
   async function fetchBenchmarks(R){
     const api=(window.YC_API||'').replace(/\/+$/,'');
-    if(R.error||R.primaryBM||!api) return R;
+    if(R.error||!api) return R;
+    R.benchmarks={}; R.primaryBM=null;
     try{ const j=await (await fetch(api+'/api/benchmark?set=us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
     return R;
   }
@@ -371,6 +405,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   }
 
   (async ()=>{
+    if(await bootCache()) return;
     if(!IS_ADMIN){ bootFetch(); return; }
     const st=await bootHandle();
     if(st!==true) bootFetch();   // pending 時也先顯示站內數據，連接後自動切換

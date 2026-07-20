@@ -65,6 +65,13 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       <div class="log" id="publog" style="margin-top:16px">選擇文件後，頁面會先校驗歷史數據，並從持倉、現金流、負債與資本記錄建立後台賬本。US 每日收盤後更新；HK/A 每日北京 17:00 更新。</div>
     </div>
 
+    <div class="card" style="margin-top:20px">
+      <h3>後台快照</h3>
+      <p class="dim" style="margin-bottom:16px">立即重跑三個組合的日更估值，並刷新 US / HK / A 的基準行情快照。適合首次部署後預熱，或行情源短暫失敗後重試。</p>
+      <button class="btn" id="refresh-cache">↻ 立即刷新後台緩存</button>
+      <div class="log" id="refresh-log" style="margin-top:16px">尚未手動刷新。</div>
+    </div>
+
   </div>
 </div>
 
@@ -133,7 +140,15 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       try{
         const peakGrowth=Math.max(1,...analyzed.curve.map(x=>x.v/10000));
         const endGrowth=analyzed.curve.length?analyzed.curve[analyzed.curve.length-1].v/10000:1;
+        const retByDate=new Map(analyzed.rets.map(x=>[x.date,x.ret]));
         const led={...sourceLedger,portfolio:pf,market:pf,
+          history:analyzed.rets.map(x=>({date:x.date,ret:x.ret})),
+          navRows:analyzed.navRows.map(x=>({
+            date:x.date,nav:x.nav,unitNav:x.nav,ret:retByDate.get(x.date),
+            units:x.units,totalAssets:x.totalAssets,liability:x.totalLiability,
+            netValue:x.netValue,cash:x.cash,marketValue:x.marketValue,
+            divPerUnit:x.divPerUnit
+          })),
           snap:{totalRet:analyzed.metrics.totalRet,annRet:analyzed.metrics.annRet,maxDD:analyzed.metrics.maxDD,
             days:analyzed.metrics.days,start:analyzed.start,end:analyzed.end,peakGrowth,endGrowth}};
         const lj=await api('/api/ledger',{method:'POST',body:JSON.stringify(led)});
@@ -141,6 +156,23 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       }catch(e){ plog(el,'△ 賬本同步失敗（不影響本次發布）：'+e.message,'dim'); }
     }catch(e){ plog(el,'✗ 發布失敗：'+e.message,'err'); }
     $('publish').disabled=false;
+  };
+  $('refresh-cache').onclick=async ()=>{
+    const btn=$('refresh-cache'), el=$('refresh-log');
+    btn.disabled=true; el.innerHTML=''; plog(el,'正在刷新三個組合與全部基準行情…');
+    try{
+      const j=await api('/api/refresh',{method:'POST',body:JSON.stringify({portfolio:'all'})});
+      plog(el,'✓ 後台刷新完成 · '+(j.ranAt||new Date().toISOString()),'ok');
+      (j.nav||[]).forEach(s=>{
+        const state=s.appended?('新增 '+s.appended):(s.skip||'已更新快照');
+        plog(el,(s.pf||'NAV').toUpperCase()+'：'+state+(s.stale&&s.stale.length?'｜沿用舊價 '+s.stale.join(', '):''),s.skip&&String(s.skip).startsWith('missing-')?'dim':'ok');
+      });
+      (j.benchmarks||[]).forEach(s=>{
+        const missing=s.missing&&s.missing.length?'｜缺少 '+s.missing.join(', '):'｜全部就緒';
+        plog(el,'Benchmark '+String(s.set||'').toUpperCase()+'：刷新 '+(s.refreshed||[]).join(', ')+missing,s.ok?'ok':'dim');
+      });
+    }catch(e){ plog(el,'✗ 刷新失敗：'+e.message,'err'); }
+    btn.disabled=false;
   };
 })();
 </script>

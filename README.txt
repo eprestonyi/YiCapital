@@ -1,14 +1,18 @@
-Yi Capital 網站使用說明（v8）
-══════════════════════════════
+Yi Capital 網站使用說明（v8.2）
+════════════════════════════════
 
-■ v8 自動數據架構
+■ v8.2 自動數據架構
   · 工作簿是交易來源：持倉、現金流、負債、資本份額有改動時才重新發布。
   · Cloudflare Worker 每日抓取三市場收盤價，以持倉＋現金−負債計算
     淨值與每份 NAV，KV 保存日更行及最新持倉，不依賴每天手工補 NAV。
-  · 前台把日更行接到工作簿歷史曲線後，重算收益、Sharpe、Sortino、
-    最大回撤、VaR、壓測、持倉權重及 Alpha/Beta。
-  · 基準：US = S&P 500 / NASDAQ / DOW；HK = HSI / HSTECH；
-    A = CSI 300。首頁與三組合頁會自動刷新。
+  · 發布工作簿時會把既有 NAV 歷史一次性寫入 KV。此後 Worker 每次日更會
+    重算並覆蓋完整快照：收益、Sharpe、Sortino、最大回撤、VaR、壓測、
+    持倉權重與盈虧等；公開頁面只讀快照，不在訪客請求中下載 Excel 或現算。
+  · 基準同樣由 Cron 寫入持久 KV：US = S&P 500 / NASDAQ / DOW；
+    HK = 國企 ETF（2828）/ 恒生 ETF（2800）/ 恒科 ETF（3032）；
+    A = 滬深 300。上游短暫失敗時保留上一個成功版本。
+  · 首頁、組合頁與完整 US 檔案頁使用同一份後台快照；尚未建好快照時顯示
+    同步中／暫不可用，不再閃現舊的寫死業績。
 
 ■ 頁面結構
   index.html            首頁：hero＋三個板塊的最新內容；頂部小導航滑到對應區塊
@@ -18,7 +22,7 @@ Yi Capital 網站使用說明（v8）
     → 每個基金：淨值曲線＋關鍵指標＋分頁
       Performance / Holdings / Risks / Methodology（已填入回測真實數據）
       Filings 分頁點擊跳到共用的 filings.html
-    → 更新數據：直接改 portfolios.html 對應區塊的數字即可
+    → 數據來自 Cloudflare KV 快照，不需要手改頁面數字
   filings.html          致股東信與階段性文件：三組合共用（目前留空待發布）
   about.html            關於我們
   posts/                文章／研報頁（騰訊那篇底部已內嵌完整 PDF）
