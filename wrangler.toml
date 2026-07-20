@@ -1,0 +1,13 @@
+name = "yicapital-portal"
+main = "worker/worker.js"
+compatibility_date = "2026-07-15"
+keep_vars = true
+workers_dev = true
+preview_urls = true
+
+[[kv_namespaces]]
+binding = "YC_KV"
+id = "86de64cdbb864a4fb366acf4260165fd"
+
+[triggers]
+crons = ["30 21 * * *", "0 9 * * *"]
