@@ -187,8 +187,10 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   function statCard(v, k, cls){ return `<div class="stat"><div class="v ${cls||''}">${v}</div><div class="k">${k}</div></div>`; }
 
   function cachedReport(j){
-    const required=j&&j.ok&&j.enabled&&Number(j.cacheVersion)>=2&&j.historyComplete===true&&j.metrics&&j.hist&&j.stress;
+    const required=j&&j.ok&&j.enabled&&Number(j.cacheVersion)>=2&&j.historyComplete===true&&j.metrics&&j.hist;
     if(!required||!Array.isArray(j.history)||j.history.length<5||!Array.isArray(j.curve)||!Array.isArray(j.varTable)||!Array.isArray(j.navRows)) return null;
+    const rp=Array.isArray(j.rp)?j.rp:j.history.map(x=>x.ret);
+    const stress=j.stress&&j.stress.model==='noncentral-t'?j.stress:YC.stressScenarios(rp);
     const assets=(j.assets||j.holdings||[]).map(h=>({
       ticker:String(h.ticker||h.t||''),name:String(h.name||h.n||h.ticker||h.t||''),
       qty:Number(h.qty??h.q)||0,price:Number(h.price??h.p)||0,marketValue:Number(h.marketValue??h.mv)||0,
@@ -197,9 +199,9 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       exposureReturn:Number.isFinite(Number(h.exposureReturn))?Number(h.exposureReturn):null,
     })).filter(h=>h.ticker);
     return {
-      source:'api',metrics:j.metrics,rets:j.history,rp:Array.isArray(j.rp)?j.rp:j.history.map(x=>x.ret),
+      source:'api',metrics:j.metrics,rets:j.history,rp,
       curve:j.curve,drawdown:j.drawdown||[],monthly:j.monthly||[],rollVol:j.rollVol||[],
-      rollSharpe:j.rollSharpe||[],hist:j.hist,varTable:j.varTable,stress:j.stress,
+      rollSharpe:j.rollSharpe||[],hist:j.hist,varTable:j.varTable,stress,
       navRows:j.navRows,assets,benchmarks:{},primaryBM:null,
       start:(j.summary&&j.summary.start)||j.history[0].date,
       end:j.end||(j.summary&&j.summary.end)||j.history[j.history.length-1].date,

@@ -126,13 +126,16 @@
     const curve = Array.isArray(live.curve) ? live.curve : [];
     const metrics = live.metrics || live.statistics;
     if (history.length < 5 || curve.length < 5 || !metrics) return null;
+    const rp = Array.isArray(live.rp) ? live.rp : history.map(x => x.ret);
+    const stress = live.stress && live.stress.model === 'noncentral-t'
+      ? live.stress : A.stressScenarios(rp);
     return {
-      source: 'api', metrics, rets: history, rp: Array.isArray(live.rp) ? live.rp : history.map(x => x.ret),
+      source: 'api', metrics, rets: history, rp,
       curve, drawdown: Array.isArray(live.drawdown) ? live.drawdown : [],
       monthly: Array.isArray(live.monthly) ? live.monthly : [],
       assets: normalizeAssets(live.assets || live.holdings), benchmarks: {}, primaryBM: null,
       varTable: Array.isArray(live.varTable) ? live.varTable : null,
-      stress: live.stress || null, asOf: live.asOf || live.marketDate || live.end,
+      stress, asOf: live.asOf || live.marketDate || live.end,
       start: (live.summary && live.summary.start) || history[0].date,
       end: live.end || (live.summary && live.summary.end) || history[history.length - 1].date,
     };
