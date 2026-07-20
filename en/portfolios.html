@@ -38,12 +38,12 @@
 </div>
 
 <div class="yc-lock">
-<section class="fund" id="hk">
+<section class="fund yc-live-pending" id="hk">
   <div class="wrap">
     <div class="fund-idx" data-i18n="hk.idx">01 | HKD | Cyclical Mean-Reversion</div>
     <h2>Yi Capital HK</h2>
-    <p class="fund-desc" data-i18n="hk.desc">Mean-reversion in HK cyclicals: positions built at sentiment and valuation extremes, held until price converges to long-run value. High beta, high concentration — no leverage and a margin of safety buy the right to sit through extreme volatility. Backtest window 2025-02-06 → 2026-07-10 (357 trading days).</p>
-    <div class="stats"><div class="stat"><div class="v u">+51%</div><div class="k" data-i18n="hk.st.cum">Cumulative Return (HK$10,000 → ≈15,100)</div></div><div class="stat"><div class="v ">33.2%</div><div class="k" data-i18n="st.ann">Annualized Return</div></div><div class="stat"><div class="v ">28.0%</div><div class="k" data-i18n="st.vol">Annualized Volatility</div></div><div class="stat"><div class="v d">−23%</div><div class="k" data-i18n="st.mdd">Max Drawdown</div></div><div class="stat"><div class="v ">−2.53%</div><div class="k" data-i18n="st.var">VaR 95% (daily, empirical)</div></div><div class="stat"><div class="v ">51.8%</div><div class="k" data-i18n="hk.st.win">Daily Win Rate (185/357)</div></div></div>
+    <p class="fund-desc" data-i18n="hk.desc">Mean-reversion in HK cyclicals: positions built at sentiment and valuation extremes, held until price converges to long-run value. High beta, high concentration — no leverage and a margin of safety buy the right to sit through extreme volatility.</p>
+    <div class="stats"><div class="stat"><div class="v">—</div><div class="k">Loading backend snapshot</div></div></div>
     
     <div class="tabs" role="tablist">
       <button class="tab on" data-tab="hk-performance" role="tab" data-i18n="tab.perf">Performance</button>
@@ -91,12 +91,12 @@
     </div>
   </div>
 </section>
-<section class="fund" id="us">
+<section class="fund yc-live-pending" id="us">
   <div class="wrap">
     <div class="fund-idx" data-i18n="us.idx">02 | USD | Multi-Asset Allocation</div>
     <h2><a href="fund-us" style="color:inherit">Yi Capital US <span style="color:var(--cyan);font-size:.55em;vertical-align:middle;font-family:var(--mono);letter-spacing:1px"><span data-i18n="pf.fullpage">Full Profile ↗</span></span></a></h2>
-    <p class="fund-desc"><span data-i18n="us.desc">A multi-asset USD portfolio: risk balanced across equities, duration, gold and short-term bonds, with fat-tail and stress-testing frameworks governing drawdowns, pursuing all-weather risk-adjusted returns. Every number and chart in this section is computed live from the NAV workbook — </span><a href="fund-us" style="color:var(--cyan)" data-i18n="us.desc.a">open the full profile</a><span data-i18n="us.desc.b">for all 14 charts.</span> <span id="us-period" style="color:var(--muted)"></span></p>
-    <div class="stats" id="us-stats"><div class="stat"><div class="v">…</div><div class="k" data-i18n="fund.loading">Computing from NAV workbook</div></div></div>
+    <p class="fund-desc"><span data-i18n="us.desc">A multi-asset USD portfolio: risk balanced across equities, duration, gold and short-term bonds, with fat-tail and stress-testing frameworks governing drawdowns, pursuing all-weather risk-adjusted returns. Every number and chart in this section reads the persisted backend snapshot — </span><a href="fund-us" style="color:var(--cyan)" data-i18n="us.desc.a">open the full profile</a><span data-i18n="us.desc.b">for all 14 charts.</span> <span id="us-period" style="color:var(--muted)"></span></p>
+    <div class="stats" id="us-stats"><div class="stat"><div class="v">—</div><div class="k">Loading backend snapshot</div></div></div>
 
     <div class="tabs" role="tablist">
       <button class="tab on" data-tab="us-performance" role="tab" data-i18n="tab.perf">Performance</button>
@@ -124,12 +124,12 @@
     </div>
   </div>
 </section>
-<section class="fund" id="ashare">
+<section class="fund yc-live-pending" id="ashare">
   <div class="wrap">
     <div class="fund-idx" data-i18n="a.idx">03 | CNY | Long-Term Ownership</div>
     <h2>Yi Capital A Share</h2>
-    <p class="fund-desc" data-i18n="a.desc">Long-term ownership of quality A-shares: leaders with clear competitive structure and abundant free cash flow; minimal turnover, positions measured in years, compounding bought with time. Backtest window 2025-01-07 → 2026-07-10 (377 trading days).</p>
-    <div class="stats"><div class="stat"><div class="v u">+22%</div><div class="k" data-i18n="a.st.cum">Cumulative Return (¥10,000 → ≈12,200)</div></div><div class="stat"><div class="v ">14.6%</div><div class="k" data-i18n="st.ann">Annualized Return</div></div><div class="stat"><div class="v ">14.5%</div><div class="k" data-i18n="st.vol">Annualized Volatility</div></div><div class="stat"><div class="v d">−11%</div><div class="k" data-i18n="st.mdd">Max Drawdown</div></div><div class="stat"><div class="v ">−1.42%</div><div class="k" data-i18n="st.var">VaR 95% (daily, empirical)</div></div><div class="stat"><div class="v ">46.9%</div><div class="k" data-i18n="a.st.win">Daily Win Rate (177/377)</div></div></div>
+    <p class="fund-desc" data-i18n="a.desc">Long-term ownership of quality A-shares: leaders with clear competitive structure and abundant free cash flow; minimal turnover, positions measured in years, compounding bought with time.</p>
+    <div class="stats"><div class="stat"><div class="v">—</div><div class="k">Loading backend snapshot</div></div></div>
     
     <div class="tabs" role="tablist">
       <button class="tab on" data-tab="ashare-performance" role="tab" data-i18n="tab.perf">Performance</button>
@@ -199,7 +199,6 @@ document.querySelectorAll('.tab[data-tab]').forEach(btn=>{
 </script>
 <script src="../assets/portal-config.js"></script>
 <script src="../assets/yc-i18n.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 
 window.ensureXLSX=function(){return new Promise(function(res,rej){
@@ -213,48 +212,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 </script>
 <script src="../assets/yc-analytics.js"></script>
 <script src="../assets/yc-charts.js"></script>
-<script>
-(function(){
-  const $=id=>document.getElementById(id);
-  const card=(v,k,c)=>`<div class="stat"><div class="v ${c||''}">${v}</div><div class="k">${k}</div></div>`;
-  const url='../assets/data/Yi_Capital_US.xlsx?v='+Date.now();
-  fetch(url,{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.arrayBuffer();}).then(async buf=>{
-    await ensureXLSX();
-    const wb=XLSX.read(buf,{type:'array'});
-    const sheets={}; wb.SheetNames.forEach(n=>sheets[n]=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null}));
-    try{ const _api=(window.YC_API||'').replace(/\/+$/,'');
-      if(_api){ const _j=await (await fetch(_api+'/api/nav/us',{cache:'no-store'})).json();
-        if(_j.ok&&_j.enabled&&_j.rows&&_j.rows.length) YC.appendLive(sheets,_j.rows); } }catch(e){}
-    const R=YC.analyze(sheets); if(R.error) throw R.error;
-    const api=(window.YC_API||'').replace(/\/+$/,'');
-    if(!R.primaryBM && api){
-      try{ const j=await (await fetch(api+'/api/benchmark?symbols=spy.us,qqq.us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
-    }
-    const M=R.metrics, F=YCC;
-    $('us-period').textContent=window.YCI?YCI.f('n.period',{end:R.end,days:M.days}):('Data through '+R.end+' ('+M.days+' trading days).');
-    const L=window.YCI?YCI.lbl.bind(YCI):(k=>k);
-    $('us-stats').innerHTML=
-      card(F.pct(M.totalRet,1,true),L('st.cum'),M.totalRet>=0?'u':'d')+
-      card(F.pct(M.annRet,1),L('st.ann'))+card(F.pct(M.vol,1),L('st.vol'))+
-      card(F.pct(M.maxDD,1),L('st.mdd'),'d')+card(F.pct(M.var95,2),L('st.var'))+
-      card(F.pct(M.winRate,1),L('st.win'))+
-      (R.primaryBM?card(F.pct(M.alpha,1,true),L('st.alpha'),M.alpha>=0?'u':'d')+card(M.beta.toFixed(2),L('st.beta')):'');
-    const eqSeries=[{name:'Yi Capital US',color:F.colors.cyan,width:3,data:R.curve}];
-    Object.entries(R.benchmarks||{}).forEach(([n,b],i)=>eqSeries.push({name:n,color:[F.colors.blue,F.colors.violet,F.colors.orange][i%3],width:1.5,opacity:.75,data:b.curve}));
-    $('us-equity').innerHTML=F.lineChart(eqSeries,{yFmt:v=>(v/1000).toFixed(1)+'k',baseline:10000});
-    $('us-heatmap').innerHTML=F.monthlyHeatmap(R.monthly);
-    $('us-holdings-table').innerHTML=F.holdingsTableHtml(R.assets);
-    const tot=R.assets.reduce((s,a)=>s+(a.marketValue||0),0);
-    $('us-holdings-note').textContent=window.YCI?YCI.f('n.holdnote',{v:Math.round(tot).toLocaleString()}):('Total market value $'+Math.round(tot).toLocaleString()+'.');
-    $('us-var').innerHTML=F.varTableHtml(R.varTable);
-    const cf99=R.varTable.find(r=>r.level===0.99);
-    $('us-var-note').innerHTML=window.YCI?YCI.f('n.varnote',{s:M.skew.toFixed(2),k:M.kurt.toFixed(2),cf:F.pct(cf99.cf,2),n:F.pct(cf99.normal,2)}):'';
-    $('us-stress').innerHTML=F.stressTableHtml(R.stress);
-  }).catch(e=>{
-    $('us-stats').innerHTML=card('—','Failed to load the NAV workbook (assets/data/Yi_Capital_US.xlsx)');
-  });
-})();
-</script>
+<script src="../assets/yc-portfolios.js"></script>
 <script src="../assets/yc-gate.js"></script>
 <script src="../assets/yc-session.js"></script>
 </body>

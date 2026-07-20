@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   Yi Capital Portal Backend v4 — Cloudflare Worker（單文件，粘貼即部署）
+   Yi Capital Portal Backend v8.2 — Cloudflare Worker（單文件，粘貼即部署）
    ─────────────────────────────────────────────────────────────
    帳號模型：
      · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則發 6 位驗證碼）
@@ -12,7 +12,8 @@
      POST /api/google           {credential} → 老用戶直接登入 / 新用戶返回 needSetup
      POST /api/google/complete  {setupToken,username,password}
      GET  /api/me   POST /api/logout
-     GET  /api/benchmark?symbols=spy.us,qqq.us     基準行情（KV 緩存 12h）
+     GET  /api/benchmark?set=us|hk|a               三市場基準行情（只讀 KV 快照）
+     POST /api/refresh          [admin] 手動重算 NAV / 統計 / 基準並覆蓋 KV
      GET  /api/users            [admin]
      POST /api/users/update     [admin] disable/enable/delete/resetpw
      POST /api/publish          [admin] 淨值表 → GitHub
@@ -23,11 +24,13 @@
      POST /api/forgot           找回密碼第一步 {email} → 郵箱驗證碼
      POST /api/reset            找回密碼第二步 {email, code, password}
      POST /api/users/setpw      [admin] 重設任意用戶密碼
-     GET  /api/nav/us           公開：每日自動計算的實時淨值行
-     ⏰ Cron: "30 21 * * *" 美股收盤後1小時更新 US ｜ "0 9 * * *" 北京 17:00 更新 HK/A（預留）
+     GET  /api/nav/us|hk|a      公開：只讀每日持久化快照（不即時計算/抓行情）
+     ⏰ Cron: "30 21 * * *" 美股收盤後更新 US ｜ "0 9 * * *" 北京 17:00 更新 HK/A
    KV 鍵：
      user:{用戶名} / email:{郵箱}→用戶名 / sess:{token} /
-     pending:{郵箱}(驗證碼,15分鐘) / gsetup:{token}(Google待設置,15分鐘) / bm:{…}
+     pending:{郵箱}(驗證碼,15分鐘) / gsetup:{token}(Google待設置,15分鐘) /
+     ledger:{us|hk|a} / live:{us|hk|a} / navcache:{us|hk|a} /
+     navstatus:{us|hk|a} / bmset:{us|hk|a} / bmstatus:{us|hk|a}
    綁定與密鑰：KV=YC_KV；Secrets: ADMIN_USERNAME, ADMIN_PASSWORD, GH_TOKEN,
      （可選）RESEND_API_KEY；Text: GH_OWNER, GH_REPO, GH_BRANCH, GH_PATH,
      ALLOWED_ORIGIN,（可選）GOOGLE_CLIENT_ID, MAIL_FROM
@@ -155,70 +158,552 @@ async function createUser(env, rec) {
 }
 
 /* ── 收件：極簡 MIME 文本提取（best-effort，覆蓋常見 text/plain、QP、base64、multipart）── */
-/* Stooq 最新收盤價：AAPL → aapl.us；BRK.B → brk-b.us */
-async function stooqQuote(ticker) {
-  const sym = String(ticker).trim().toLowerCase().replace(/\./g, '-') + '.us';
-  const r = await fetch('https://stooq.com/q/l/?s=' + encodeURIComponent(sym) + '&f=sd2t2ohlcv&h&e=csv', { headers: { 'User-Agent': 'yicapital-portal' } });
+/* ── 三市場報價鏈：Stooq 優先，Yahoo Chart API 備援 ── */
+function symbolMap(ticker, market) {
+  const t = String(ticker || '').trim();
+  if (market === 'hk') return { stooq: t.replace(/\.HK$/i, '').padStart(4, '0') + '.hk', yahoo: t.toUpperCase() };
+  if (market === 'a') return { stooq: null, yahoo: t.toUpperCase() };
+  return { stooq: t.toLowerCase().replace(/\./g, '-') + '.us', yahoo: t.toUpperCase() };
+}
+async function stooqQuoteRaw(symbol) {
+  if (!symbol) return null;
+  const r = await fetch('https://stooq.com/q/l/?s=' + encodeURIComponent(symbol) + '&f=sd2t2ohlcv&h&e=csv', { headers: { 'User-Agent': 'yicapital-portal' } });
   if (!r.ok) return null;
   const lines = (await r.text()).trim().split('\n');
   if (lines.length < 2) return null;
-  const c = lines[1].split(',');
-  const close = parseFloat(c[6]);
-  return isFinite(close) && close > 0 ? { date: c[1], close } : null;
+  const c = lines[1].split(','), close = parseFloat(c[6]), date = String(c[1] || '').slice(0, 10);
+  return isFinite(close) && close > 0 && /^\d{4}-\d{2}-\d{2}$/.test(date) ? { date, close } : null;
 }
-/* Stooq 歷史序列（供基準預熱） */
-async function stooqSeries(s) {
-  const r = await fetch('https://stooq.com/q/d/l/?s=' + encodeURIComponent(s) + '&i=d', { headers: { 'User-Agent': 'yicapital-portal' } });
+async function yahooChart(symbol, range) {
+  const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) + '?range=' + (range || '5d') + '&interval=1d&events=history&includeAdjustedClose=true', { headers: { 'User-Agent': 'Mozilla/5.0 yicapital-portal' } });
+  if (!r.ok) return null;
+  const j = await r.json().catch(() => null);
+  return j && j.chart && j.chart.result && j.chart.result[0] || null;
+}
+async function yahooQuote(symbol) {
+  const res = await yahooChart(symbol, '10d');
+  if (!res || !res.timestamp || !res.indicators || !res.indicators.quote) return null;
+  const close = res.indicators.quote[0].close || [];
+  for (let i = res.timestamp.length - 1; i >= 0; i--) {
+    if (isFinite(close[i]) && close[i] > 0) return { date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), close: close[i] };
+  }
+  return null;
+}
+async function quote(ticker, market) {
+  const m = symbolMap(ticker, market);
+  try { const q = await yahooQuote(m.yahoo); if (q) return q; } catch (e) {}
+  if (m.stooq) { try { return await stooqQuoteRaw(m.stooq); } catch (e) {} }
+  return null;
+}
+async function stooqSeries(symbol) {
+  if (!symbol) return null;
+  const r = await fetch('https://stooq.com/q/d/l/?s=' + encodeURIComponent(symbol) + '&i=d', { headers: { 'User-Agent': 'yicapital-portal' } });
   if (!r.ok) return null;
   const rows = (await r.text()).trim().split('\n').slice(1).map(l => l.split(','));
-  const series = rows.filter(c => c.length >= 5 && c[4] && c[4] !== 'N/D').slice(-500).map(c => ({ date: c[0], close: parseFloat(c[4]) })).filter(p => isFinite(p.close));
+  const series = rows.filter(c => c.length >= 5 && c[4] && c[4] !== 'N/D').slice(-1300).map(c => ({ date: c[0], close: parseFloat(c[4]) })).filter(p => isFinite(p.close));
   return series.length > 20 ? series : null;
 }
-/* 每日淨值更新：賬本（持倉+現金）× 收盤價 → 追加一行；一天只算一次 */
-async function updatePortfolioNav(env, pf) {
-  const now = new Date();
-  const today = now.toISOString().slice(0, 10);
-  const dow = now.getUTCDay();
-  const st = { pf, ranAt: now.toISOString() };
-  if (dow === 0 || dow === 6) { st.skip = 'weekend'; await env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)); return st; }
-  const ledRaw = await env.YC_KV.get('ledger:' + pf);
-  if (!ledRaw) { st.skip = 'no-ledger'; await env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)); return st; }
-  const led = JSON.parse(ledRaw);
-  const liveRaw = await env.YC_KV.get('live:' + pf);
-  const live = liveRaw ? JSON.parse(liveRaw) : { rows: [] };
-  const lastDate = live.rows.length ? live.rows[live.rows.length - 1].date : led.lastDate;
-  if (today <= lastDate) { st.skip = 'already-updated:' + lastDate; await env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)); return st; }
-  const lastPxRaw = await env.YC_KV.get('lastpx:' + pf);
-  const lastPx = lastPxRaw ? JSON.parse(lastPxRaw) : {};
-  let mv = led.cash || 0, missing = [], stale = [];
-  for (const p of led.positions) {
-    if (!p.q) continue;
-    let q = null;
-    try { q = await stooqQuote(p.t); } catch (e) { /* noop */ }
-    if (q && q.close) { mv += p.q * q.close; lastPx[p.t] = q.close; }
-    else if (lastPx[p.t]) { mv += p.q * lastPx[p.t]; stale.push(p.t); }
-    else missing.push(p.t);
+async function yahooSeries(symbol) {
+  const res = await yahooChart(symbol, '5y');
+  if (!res || !res.timestamp || !res.indicators || !res.indicators.quote) return null;
+  const close = res.indicators.quote[0].close || [], out = [];
+  for (let i = 0; i < res.timestamp.length; i++) {
+    if (isFinite(close[i]) && close[i] > 0) out.push({ date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), close: close[i] });
   }
-  if (missing.length) { st.skip = 'missing-quotes:' + missing.join(','); await env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)); return st; }
-  const prev = live.rows.length ? live.rows[live.rows.length - 1] : { mv: led.baseMV, unitNav: led.lastUnitNav };
-  if (!prev.mv || !isFinite(prev.mv)) { st.skip = 'no-base-mv'; await env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)); return st; }
-  const ret = mv / prev.mv - 1;
-  if (!isFinite(ret) || Math.abs(ret) > 0.5) { st.skip = 'sanity-fail:' + ret; await env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)); return st; }
-  live.rows.push({ date: today, ret: Math.round(ret * 1e8) / 1e8, mv: Math.round(mv * 100) / 100, unitNav: Math.round((prev.unitNav || 0) * (1 + ret) * 1e6) / 1e6 });
-  if (live.rows.length > 500) live.rows = live.rows.slice(-500);
-  live.updatedAt = now.toISOString();
-  if (stale.length) live.note = 'stale:' + stale.join(',');
-  await env.YC_KV.put('live:' + pf, JSON.stringify(live));
-  await env.YC_KV.put('lastpx:' + pf, JSON.stringify(lastPx));
-  st.appended = today; st.mv = mv;
-  await env.YC_KV.put('navstatus:' + pf, JSON.stringify(st));
+  return out.length > 20 ? out.slice(-1300) : null;
+}
+async function hangSengSeries(code) {
+  const r = await fetch('https://www.hsi.com.hk/data/eng/indexes/' + encodeURIComponent(code) + '/chart.json', { headers: { 'User-Agent': 'Mozilla/5.0 yicapital-portal' } });
+  if (!r.ok) return null;
+  const j = await r.json().catch(() => null);
+  const levels = j && (j['indexLevels-5y'] || j['indexLevels-3y'] || j['indexLevels-1y']);
+  if (!Array.isArray(levels)) return null;
+  const out = levels.map(p => ({ date: new Date(Number(p[0])).toISOString().slice(0, 10), close: Number(p[1]) })).filter(p => isFinite(p.close) && p.close > 0);
+  return out.length > 20 ? out : null;
+}
+const BM_SETS = {
+  us: [{ label: 'S&P 500', stooq: '^spx', yahoo: '^GSPC' }, { label: 'NASDAQ', stooq: '^ndq', yahoo: '^IXIC' }, { label: 'DOW', stooq: '^dji', yahoo: '^DJI' }],
+  hk: [
+    { label: 'HSCEI ETF', stooq: '2828.hk', yahoo: '2828.HK' },
+    { label: 'HSI ETF', stooq: '2800.hk', yahoo: '2800.HK' },
+    { label: 'HSTECH ETF', stooq: '3032.hk', yahoo: '3032.HK' },
+  ],
+  a: [{ label: 'HS300', stooq: '000300.cn', yahoo: '000300.SS' }],
+};
+async function fetchBenchmarkSet(set) {
+  const cfg = BM_SETS[set]; if (!cfg) return null;
+  const data = {};
+  await Promise.all(cfg.map(async b => {
+    let series = null;
+    if (b.official) { try { series = await hangSengSeries(b.official); } catch (e) {} }
+    if (series && b.yahoo) {
+      try {
+        const latest = await yahooQuote(b.yahoo);
+        if (latest && (!series.length || latest.date > series[series.length - 1].date)) series.push(latest);
+      } catch (e) {}
+    }
+    if (!series) { try { series = await yahooSeries(b.yahoo); } catch (e) {} }
+    if (!series && b.stooq) { try { series = await stooqSeries(b.stooq); } catch (e) {} }
+    if (series) data[b.label] = series;
+  }));
+  return Object.keys(data).length ? data : null;
+}
+async function prewarmBenchmark(env, sets) {
+  return Promise.all((sets || ['us', 'hk', 'a']).map(async set => {
+    const ranAt = new Date().toISOString(), cacheKey = 'bmset:' + set, statusKey = 'bmstatus:' + set;
+    let fresh = null, error = null;
+    try { fresh = await fetchBenchmarkSet(set); } catch (e) { error = e.message || String(e); }
+    const oldRaw = await env.YC_KV.get(cacheKey);
+    const old = oldRaw ? JSON.parse(oldRaw) : null;
+    const expected = BM_SETS[set].map(x => x.label);
+    const data = {};
+    expected.forEach(label => {
+      if (fresh && fresh[label]) data[label] = fresh[label];
+      else if (old && old.data && old.data[label]) data[label] = old.data[label];
+    });
+    const refreshed = expected.filter(label => fresh && fresh[label]);
+    const missing = expected.filter(label => !(fresh && fresh[label]));
+    const unavailable = expected.filter(label => !data[label]);
+    const status = {
+      ok: unavailable.length === 0, set, ranAt, refreshed, missing, unavailable,
+      stale: missing.length > 0, error,
+    };
+    if (Object.keys(data).length) {
+      const payload = {
+        ok: true, set, data,
+        fetched: missing.length ? (old && old.fetched) || ranAt : ranAt,
+        partialFetched: refreshed.length ? ranAt : null,
+        lastAttempt: ranAt, missing, unavailable, stale: missing.length > 0,
+      };
+      // 行情快照不設 TTL：即使上游短暫失敗，公開 GET 仍讀到上一個成功版本。
+      await env.YC_KV.put(cacheKey, JSON.stringify(payload));
+    }
+    await env.YC_KV.put(statusKey, JSON.stringify(status));
+    return status;
+  }));
+}
+const round = (v, n) => Math.round(v * 10 ** n) / 10 ** n;
+const pxRecord = v => typeof v === 'number' ? { close: v, date: null } : v;
+
+const TRADING_DAYS = 252;
+const RISK_FREE = 0.04;
+const METRIC_FIELDS = [
+  'totalRet', 'annRet', 'vol', 'sharpe', 'sortino', 'calmar', 'treynor', 'maxDD',
+  'winRate', 'plRatio', 'var95', 'cvar95', 'alpha', 'beta', 'r2', 'infoRatio',
+  'trackingErr', 'skew', 'kurt', 'days', 'wins',
+];
+const sum = a => a.reduce((s, x) => s + x, 0);
+const mean = a => a.length ? sum(a) / a.length : 0;
+function std(a) {
+  if (a.length < 2) return 0;
+  const m = mean(a);
+  return Math.sqrt(sum(a.map(x => (x - m) ** 2)) / (a.length - 1));
+}
+function quantile(a, q) {
+  const s = [...a].sort((x, y) => x - y);
+  if (!s.length) return null;
+  const p = (s.length - 1) * q, lo = Math.floor(p), hi = Math.ceil(p);
+  return lo === hi ? s[lo] : s[lo] + (s[hi] - s[lo]) * (p - lo);
+}
+function skewness(a) {
+  const n = a.length, m = mean(a), s = std(a);
+  if (n < 3 || !s) return 0;
+  return (n / ((n - 1) * (n - 2))) * sum(a.map(x => ((x - m) / s) ** 3));
+}
+function excessKurtosis(a) {
+  const n = a.length, m = mean(a);
+  if (n < 4) return 0;
+  const s2 = sum(a.map(x => (x - m) ** 2)) / (n - 1);
+  if (!s2) return 0;
+  const m4 = sum(a.map(x => (x - m) ** 4));
+  return ((n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3))) * (m4 / (s2 * s2))
+    - (3 * (n - 1) ** 2) / ((n - 2) * (n - 3));
+}
+function normInv(p) {
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+  const pl = 0.02425;
+  let q, r;
+  if (p < pl) {
+    q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+      / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  if (p <= 1 - pl) {
+    q = p - 0.5; r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q
+      / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+  }
+  q = Math.sqrt(-2 * Math.log(1 - p));
+  return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+    / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+}
+function rollingMetric(rows, window, fn) {
+  const out = [];
+  for (let i = window; i <= rows.length; i++) {
+    out.push({ date: rows[i - 1].date, v: fn(rows.slice(i - window, i).map(x => x.ret)) });
+  }
+  return out;
+}
+function histogram(rp, bins = 30) {
+  if (!rp.length) return null;
+  const lo = Math.min(...rp), hi = Math.max(...rp), width = (hi - lo) / bins || 1e-9;
+  const counts = new Array(bins).fill(0);
+  rp.forEach(r => counts[Math.min(bins - 1, Math.floor((r - lo) / width))]++);
+  const m = mean(rp), s = std(rp);
+  const normal = counts.map((_, i) => {
+    if (!s) return 0;
+    const x = lo + (i + 0.5) * width, z = (x - m) / s;
+    return Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI) / s * width * rp.length;
+  });
+  return { lo, hi, width, counts, normal };
+}
+function buildVarTable(rp, levels = [0.95, 0.98, 0.99]) {
+  if (!rp.length) return [];
+  const m = mean(rp), s = std(rp), skew = skewness(rp), kurt = excessKurtosis(rp);
+  return levels.map(level => {
+    const z = normInv(1 - level);
+    const zcf = z + (z * z - 1) * skew / 6 + (z ** 3 - 3 * z) * kurt / 24
+      - (2 * z ** 3 - 5 * z) * skew * skew / 36;
+    const empirical = quantile(rp, 1 - level);
+    const tail = rp.filter(r => r <= empirical);
+    return {
+      level, normal: m + z * s, cf: m + zcf * s, empirical,
+      cvar: tail.length ? mean(tail) : empirical,
+    };
+  });
+}
+function seededRandom(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function stressTest(rp, nDays, seed, negativeShift) {
+  if (rp.length < 5) return null;
+  const random = seededRandom(seed), nSims = 10000;
+  let pool = rp.slice();
+  if (negativeShift) {
+    const m = mean(pool);
+    pool = pool.map(r => r - m - Math.abs(m) - 0.0005);
+  }
+  const finals = new Array(nSims), sampledPaths = [];
+  for (let sim = 0; sim < nSims; sim++) {
+    let value = 1, path = sim < 400 ? new Array(nDays) : null;
+    for (let day = 0; day < nDays; day++) {
+      value *= 1 + pool[Math.floor(random() * pool.length)];
+      if (path) path[day] = value;
+    }
+    finals[sim] = value;
+    if (path) sampledPaths.push(path);
+  }
+  finals.sort((a, b) => a - b);
+  const q = p => finals[Math.min(nSims - 1, Math.floor(p * nSims))];
+  const pathP5 = [], pathP50 = [], pathP95 = [];
+  for (let day = 0; day < nDays; day++) {
+    const col = sampledPaths.map(path => path[day]).sort((a, b) => a - b);
+    pathP5.push(col[Math.floor(0.05 * col.length)]);
+    pathP50.push(col[Math.floor(0.50 * col.length)]);
+    pathP95.push(col[Math.floor(0.95 * col.length)]);
+  }
+  return {
+    nDays, p1: q(0.01), p5: q(0.05), p50: q(0.50), p95: q(0.95),
+    mean: mean(finals), probLoss: finals.filter(v => v < 1).length / nSims,
+    probHalf: finals.filter(v => v < 0.5).length / nSims,
+    pathP5, pathP50, pathP95,
+  };
+}
+function stressScenarios(rp) {
+  if (rp.length < 5) return null;
+  return {
+    crash: { label: 'Black Swan Crash（10天，1%分位）', ...stressTest(rp, 10, 17, false) },
+    bear: { label: 'Prolonged Bear（21天，5%分位）', ...stressTest(rp, 21, 18, false) },
+    grind: { label: 'Slow Grind Down（126天，負收益均值）', ...stressTest(rp, 126, 19, true) },
+  };
+}
+function normalizeHistory(rows) {
+  const byDate = new Map();
+  (Array.isArray(rows) ? rows : []).forEach(row => {
+    const date = String(row && row.date || '').slice(0, 10), ret = Number(row && row.ret);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && isFinite(ret) && ret > -1 && Math.abs(ret) <= 1) {
+      byDate.set(date, { date, ret: round(ret, 10) });
+    }
+  });
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-5000);
+}
+function normalizeNavRows(rows) {
+  const byDate = new Map();
+  (Array.isArray(rows) ? rows : []).forEach(row => {
+    const date = String(row && row.date || '').slice(0, 10);
+    const nav = Number(row && (row.nav ?? row.unitNav));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isFinite(nav) || nav <= 0) return;
+    const clean = { date, nav: round(nav, 10) };
+    [
+      'ret', 'unitNav', 'units', 'marketValue', 'cash', 'liability',
+      'totalAssets', 'netValue', 'mv', 'divPerUnit',
+    ].forEach(key => {
+      const value = Number(row[key]);
+      if (isFinite(value)) clean[key] = value;
+    });
+    byDate.set(date, clean);
+  });
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-5000);
+}
+function cleanMetrics(value) {
+  const out = {};
+  METRIC_FIELDS.forEach(k => {
+    const v = Number(value && value[k]);
+    if (isFinite(v)) out[k] = v;
+  });
+  return out;
+}
+function calculatePortfolioMetrics(history) {
+  const rows = normalizeHistory(history), rp = rows.map(x => x.ret), days = rp.length;
+  if (!days) return {
+    metrics: null, drawdown: [], rollVol: [], rollSharpe: [],
+    hist: null, varTable: [], stress: null,
+  };
+  const totalRet = rp.reduce((c, r) => c * (1 + r), 1) - 1;
+  const annRet = Math.pow(Math.max(0.000001, 1 + totalRet), TRADING_DAYS / days) - 1;
+  const dailyStd = std(rp), vol = dailyStd * Math.sqrt(TRADING_DAYS);
+  const sharpe = dailyStd ? (mean(rp.map(r => r - RISK_FREE / TRADING_DAYS)) / dailyStd) * Math.sqrt(TRADING_DAYS) : 0;
+  const neg = rp.filter(r => r < 0), pos = rp.filter(r => r > 0);
+  const downStd = neg.length > 1 ? std(neg) * Math.sqrt(TRADING_DAYS) : 0;
+  const sortino = downStd ? (annRet - RISK_FREE) / downStd : 0;
+  let growth = 1, peak = 1, maxDD = 0;
+  const drawdown = rows.map(row => {
+    growth *= 1 + row.ret; peak = Math.max(peak, growth);
+    const v = growth / peak - 1; maxDD = Math.min(maxDD, v);
+    return { date: row.date, v: round(v, 10) };
+  });
+  const var95 = quantile(rp, 0.05);
+  const tail = rp.filter(r => r <= var95);
+  const avgLoss = neg.length ? Math.abs(mean(neg)) : 0;
+  return {
+    metrics: {
+      totalRet, annRet, vol, sharpe, sortino,
+      calmar: maxDD ? annRet / Math.abs(maxDD) : 0,
+      maxDD, winRate: pos.length / days,
+      plRatio: avgLoss ? mean(pos) / avgLoss : 0,
+      var95, cvar95: tail.length ? mean(tail) : var95,
+      skew: skewness(rp), kurt: excessKurtosis(rp), days, wins: pos.length,
+    },
+    drawdown,
+    rollVol: rollingMetric(rows, 20, values => std(values) * Math.sqrt(TRADING_DAYS)),
+    rollSharpe: rollingMetric(rows, 20, values => {
+      const s = std(values);
+      return s ? mean(values.map(r => r - RISK_FREE / TRADING_DAYS)) / s * Math.sqrt(TRADING_DAYS) : 0;
+    }),
+    hist: histogram(rp),
+    varTable: buildVarTable(rp),
+    stress: stressScenarios(rp),
+  };
+}
+function makePortfolioCache(led, live, status) {
+  const sourceHistory = normalizeHistory(led.history);
+  const liveRows = normalizeHistory(live.rows);
+  const combined = normalizeHistory([...sourceHistory, ...liveRows]);
+  const complete = sourceHistory.length > 0;
+  let calculated = calculatePortfolioMetrics(complete ? combined : liveRows);
+  const sourceMetricValues = cleanMetrics(led.sourceMetrics || led.snap);
+  let metrics = complete
+    ? { ...sourceMetricValues, ...(calculated.metrics || {}) }
+    : { ...(calculated.metrics || {}), ...sourceMetricValues };
+  let drawdown = calculated.drawdown;
+  let snap;
+
+  if (complete) {
+    const growth = combined.reduce((c, r) => c * (1 + r.ret), 1);
+    let peakGrowth = 1, cursor = 1;
+    combined.forEach(r => { cursor *= 1 + r.ret; peakGrowth = Math.max(peakGrowth, cursor); });
+    snap = {
+      ...led.snap, totalRet: metrics.totalRet, annRet: metrics.annRet, maxDD: metrics.maxDD,
+      days: metrics.days, start: combined[0] && combined[0].date,
+      end: combined[combined.length - 1] && combined[combined.length - 1].date,
+      peakGrowth, endGrowth: growth,
+    };
+  } else {
+    // 舊版 ledger 沒有完整歷史時，用既有 snap 延伸日更收益；不假造歷史 Sharpe。
+    const base = led.snap || {}, liveFactor = liveRows.reduce((c, r) => c * (1 + r.ret), 1);
+    let current = Number(base.endGrowth) || 1, peak = Math.max(Number(base.peakGrowth) || 1, current);
+    let maxDD = Number(base.maxDD) || 0;
+    drawdown = liveRows.map(row => {
+      current *= 1 + row.ret; peak = Math.max(peak, current);
+      const v = current / peak - 1; maxDD = Math.min(maxDD, v);
+      return { date: row.date, v: round(v, 10) };
+    });
+    const totalRet = (1 + (Number(base.totalRet) || 0)) * liveFactor - 1;
+    const days = (Number(base.days) || 0) + liveRows.length;
+    metrics = {
+      ...metrics, totalRet, days, maxDD,
+      annRet: days > 0 ? Math.pow(Math.max(0.000001, 1 + totalRet), TRADING_DAYS / days) - 1 : Number(base.annRet) || 0,
+    };
+    snap = {
+      ...base, totalRet: metrics.totalRet, annRet: metrics.annRet, maxDD: metrics.maxDD,
+      days, end: liveRows.length ? liveRows[liveRows.length - 1].date : base.end,
+      peakGrowth: peak, endGrowth: (Number(base.endGrowth) || 1) * liveFactor,
+    };
+  }
+
+  const publicHistory = complete ? combined : liveRows;
+  const monthGrowth = new Map();
+  publicHistory.forEach(row => {
+    const month = row.date.slice(0, 7);
+    monthGrowth.set(month, (monthGrowth.get(month) || 1) * (1 + row.ret));
+  });
+  const monthly = [...monthGrowth.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([month, growth]) => ({ month, ret: growth - 1 }));
+  const holdings = live.holdings || led.sourceHoldings || [];
+  const end = publicHistory.length ? publicHistory[publicHistory.length - 1].date : (snap.end || led.lastDate);
+  const asOf = live.marketDate || (holdings[0] && holdings[0].date) || end;
+
+  const sourceNavRows = normalizeNavRows(led.navRows);
+  const liveNavRows = normalizeNavRows((live.rows || []).map(row => ({
+    ...row, nav: Number(row.unitNav ?? row.nav),
+  })));
+  let navRows;
+  if (sourceNavRows.length) {
+    navRows = normalizeNavRows([...sourceNavRows, ...liveNavRows]);
+  } else {
+    const sourceFactor = sourceHistory.reduce((factor, row) => factor * (1 + row.ret), 1);
+    let navValue = complete && Number(led.lastUnitNav) > 0 && sourceFactor > 0
+      ? Number(led.lastUnitNav) / sourceFactor
+      : 1;
+    navRows = publicHistory.map(row => {
+      navValue *= 1 + row.ret;
+      return { date: row.date, nav: navValue, ret: row.ret };
+    });
+  }
+  let curveValue = 10000;
+  const curve = publicHistory.map(row => ({
+    date: row.date,
+    v: (curveValue *= 1 + row.ret),
+  }));
+
+  return {
+    ok: true, enabled: true, portfolio: led.portfolio, currency: led.currency,
+    base: {
+      date: led.lastDate, unitNav: led.lastUnitNav, marketValue: led.baseMarketValue,
+      totalAssets: led.baseTotalAssets, netValue: led.baseNetValue, cash: led.cash,
+      liability: led.liability, units: led.units,
+    },
+    snap, summary: snap, metrics, statistics: metrics,
+    history: publicHistory, rets: publicHistory, rp: publicHistory.map(row => row.ret),
+    historyComplete: complete, navRows, curve, drawdown, monthly,
+    rollVol: calculated.rollVol, rollSharpe: calculated.rollSharpe,
+    hist: calculated.hist, varTable: calculated.varTable, stress: calculated.stress,
+    rows: live.rows || [], holdings, assets: holdings,
+    asOf, end,
+    marketDate: live.marketDate || null, updatedAt: live.updatedAt || led.savedAt || null,
+    status: status || null, cacheVersion: 2,
+  };
+}
+async function persistPortfolioCache(env, pf, led, live, status) {
+  const cache = makePortfolioCache({ ...led, portfolio: pf }, live, status);
+  await Promise.all([
+    env.YC_KV.put('live:' + pf, JSON.stringify(live)),
+    env.YC_KV.put('navstatus:' + pf, JSON.stringify(status)),
+    env.YC_KV.put('navcache:' + pf, JSON.stringify(cache)),
+  ]);
+  return cache;
+}
+
+/* 持倉/現金/負債/份額為唯一營運基準；行情日期為實際追加日期。 */
+async function updatePortfolioNav(env, pf) {
+  const now = new Date(), st = { pf, ranAt: now.toISOString() };
+  const ledRaw = await env.YC_KV.get('ledger:' + pf);
+  if (!ledRaw) {
+    st.skip = 'no-ledger';
+    await Promise.all([
+      env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)),
+      env.YC_KV.put('navcache:' + pf, JSON.stringify({ ok: true, enabled: false, portfolio: pf, history: [], rows: [], holdings: [], status: st, cacheVersion: 2 })),
+    ]);
+    return st;
+  }
+  const led = JSON.parse(ledRaw), market = led.market || pf;
+  const liveRaw = await env.YC_KV.get('live:' + pf), live = liveRaw ? JSON.parse(liveRaw) : { rows: [] };
+  const lastPxRaw = await env.YC_KV.get('lastpx:' + pf), lastPx = lastPxRaw ? JSON.parse(lastPxRaw) : {};
+  const fetched = await Promise.all(led.positions.map(async p => ({ p, q: await quote(p.t, market).catch(() => null) })));
+  const freshDates = fetched.filter(x => x.q && x.q.date).map(x => x.q.date).sort();
+  if (!freshDates.length) {
+    st.skip = 'no-quotes';
+    await persistPortfolioCache(env, pf, led, live, st);
+    return st;
+  }
+  const marketDate = freshDates[freshDates.length - 1];
+  const lastDate = live.rows.length ? live.rows[live.rows.length - 1].date : led.lastDate;
+  if (lastDate && marketDate <= lastDate) {
+    st.skip = 'already-updated:' + lastDate; st.marketDate = marketDate;
+    await persistPortfolioCache(env, pf, led, live, st);
+    return st;
+  }
+
+  const missing = [], stale = [], holdings = [];
+  for (const item of fetched) {
+    const p = item.p; let q = item.q;
+    if (q && q.close) {
+      lastPx[p.t] = q;
+      if (q.date && q.date < marketDate) stale.push(p.t);
+    }
+    else {
+      const old = pxRecord(lastPx[p.t]);
+      if (old && old.close) { q = old; stale.push(p.t); } else { missing.push(p.t); continue; }
+    }
+    const mv = Number(p.q) * Number(q.close);
+    const pnl = Number(p.pnl) + mv - Number(p.mv);
+    holdings.push({
+      t: p.t, n: p.n || p.t, q: Number(p.q), price: round(Number(q.close), 6),
+      marketValue: round(mv, 2), date: q.date || marketDate,
+      buyCost: Number(p.buyCost) || 0, sellProceeds: Number(p.sellProceeds) || 0,
+      dividend: Number(p.dividend) || 0, netCost: Number(p.netCost) || 0,
+      pnl: round(pnl, 2),
+      exposureReturn: Number(p.buyCost) ? round(pnl / Number(p.buyCost) * 100, 8) : null,
+    });
+  }
+  if (missing.length) {
+    st.skip = 'missing-quotes:' + missing.join(',');
+    await persistPortfolioCache(env, pf, led, live, st);
+    return st;
+  }
+  const marketValue = holdings.reduce((s, h) => s + h.marketValue, 0);
+  holdings.forEach(h => { h.weight = marketValue ? round(h.marketValue / marketValue * 100, 6) : 0; });
+  const cash = Number(led.cash) || 0, liability = Number(led.liability) || 0;
+  const totalAssets = marketValue + cash, netValue = totalAssets - liability, units = Number(led.units) || 0;
+  const prev = live.rows.length ? live.rows[live.rows.length - 1] : { netValue: led.baseNetValue || led.baseMV, unitNav: led.lastUnitNav };
+  const unitNav = units > 0 ? netValue / units : (prev.unitNav && prev.netValue ? prev.unitNav * netValue / prev.netValue : 0);
+  const ret = prev.unitNav > 0 ? unitNav / prev.unitNav - 1 : netValue / prev.netValue - 1;
+  if (!isFinite(ret) || !isFinite(unitNav) || Math.abs(ret) > 0.75) {
+    st.skip = 'sanity-fail:' + ret;
+    await persistPortfolioCache(env, pf, led, live, st);
+    return st;
+  }
+  live.rows.push({
+    date: marketDate, ret: round(ret, 10), unitNav: round(unitNav, 8), units: round(units, 6),
+    marketValue: round(marketValue, 2), cash: round(cash, 2), liability: round(liability, 2),
+    totalAssets: round(totalAssets, 2), netValue: round(netValue, 2), mv: round(netValue, 2),
+  });
+  if (live.rows.length > 1300) live.rows = live.rows.slice(-1300);
+  live.holdings = holdings; live.updatedAt = now.toISOString(); live.marketDate = marketDate;
+  live.note = stale.length ? 'stale:' + stale.join(',') : null;
+  Object.assign(st, { appended: marketDate, marketValue: round(marketValue, 2), netValue: round(netValue, 2), stale });
+  await Promise.all([
+    env.YC_KV.put('lastpx:' + pf, JSON.stringify(lastPx)),
+    persistPortfolioCache(env, pf, led, live, st),
+  ]);
   return st;
 }
-async function prewarmBenchmark(env) {
-  const symbols = ['spy.us', 'qqq.us'];
-  const data = {};
-  for (const s of symbols) { try { const ser = await stooqSeries(s); if (ser) data[s.replace(/\.us$/, '').toUpperCase()] = ser; } catch (e) {} }
-  if (Object.keys(data).length) await env.YC_KV.put('bm:spy.us,qqq.us', JSON.stringify({ ok: true, data, fetched: new Date().toISOString() }), { expirationTtl: 26 * 3600 });
+
+async function refreshMarketCaches(env, portfolios, benchmarkSets, trigger, by) {
+  const ranAt = new Date().toISOString();
+  const nav = await Promise.all(portfolios.map(pf => updatePortfolioNav(env, pf)));
+  const benchmarks = await prewarmBenchmark(env, benchmarkSets);
+  const result = { ok: true, trigger, by: by || 'system', ranAt, nav, benchmarks };
+  await env.YC_KV.put('refresh:last:' + trigger, JSON.stringify(result));
+  return result;
 }
 
 async function streamToText(stream) {
@@ -253,6 +738,27 @@ function extractMimeText(raw, depth) {
   return text.trim().slice(0, 8000);
 }
 
+function contentHash(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+function normalizeContentItems(items, kind) {
+  const used = new Set();
+  return (Array.isArray(items) ? items : []).filter(Boolean).map((it, index) => {
+    const copy = { ...it };
+    let id = String(copy.id || '').trim();
+    if (!id) {
+      const title = copy.title && (copy.title.tw || copy.title.cn || copy.title.en) || '';
+      id = (kind === 'reports' ? 'rep-' : 'post-') + contentHash([copy.url, copy.pdf, copy.date, title, index].join('|'));
+    }
+    let unique = id, n = 2;
+    while (used.has(unique)) unique = id + '-' + n++;
+    copy.id = unique; used.add(unique);
+    return copy;
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -265,7 +771,7 @@ export default {
         let kvOk = false;
         try { await env.YC_KV.get('__ping__'); kvOk = true; } catch (e) {}
         return J(env, {
-          ok: true, version: 'v6',
+          ok: true, version: 'v8.2',
           kv: kvOk,
           admin: !!(env.ADMIN_USERNAME && env.ADMIN_PASSWORD),
           github: !!(env.GH_TOKEN && env.GH_OWNER && env.GH_REPO),
@@ -398,26 +904,18 @@ export default {
         return J(env, { ok: true, token, role: 'guest', username });
       }
 
-      /* ════ 基準行情（公開，Stooq，KV 緩存 12h）════ */
+      /* ════ 基準行情：公開 GET 僅讀 Cron/手動刷新寫入的持久 KV 快照 ════ */
       if (path === '/api/benchmark' && request.method === 'GET') {
-        const symbols = (url.searchParams.get('symbols') || 'spy.us,qqq.us').split(',').map(s => s.trim().toLowerCase()).filter(s => /^[a-z0-9.^-]{1,12}$/.test(s)).slice(0, 4);
-        const cacheKey = 'bm:' + symbols.join(',');
-        const cached = await env.YC_KV.get(cacheKey);
+        const set = String(url.searchParams.get('set') || 'us').toLowerCase();
+        if (!BM_SETS[set]) return J(env, { error: 'set 只支持 us/hk/a' }, 400);
+        const cacheKey = 'bmset:' + set, cached = await env.YC_KV.get(cacheKey);
         if (cached) return J(env, JSON.parse(cached));
-        const data = {};
-        for (const s of symbols) {
-          try {
-            const r = await fetch('https://stooq.com/q/d/l/?s=' + encodeURIComponent(s) + '&i=d', { headers: { 'User-Agent': 'yicapital-portal' } });
-            if (!r.ok) continue;
-            const rows = (await r.text()).trim().split('\n').slice(1).map(l => l.split(','));
-            const name = s.replace(/\.us$/i, '').toUpperCase();
-            const series = rows.filter(c => c.length >= 5 && c[4] && c[4] !== 'N/D').slice(-500).map(c => ({ date: c[0], close: parseFloat(c[4]) })).filter(p => isFinite(p.close));
-            if (series.length > 20) data[name] = series;
-          } catch (e) { /* 單一代碼失敗不影響其他 */ }
-        }
-        const resp = { ok: true, data, fetched: new Date().toISOString() };
-        if (Object.keys(data).length) await env.YC_KV.put(cacheKey, JSON.stringify(resp), { expirationTtl: 12 * 3600 });
-        return J(env, resp);
+        const status = await env.YC_KV.get('bmstatus:' + set);
+        return J(env, {
+          ok: false, set, pending: true, data: {},
+          status: status ? JSON.parse(status) : null,
+          error: '基準快照尚未建立，請等待每日任務或由管理員手動刷新',
+        }, 503);
       }
 
       /* ════ 會話 ════ */
@@ -434,6 +932,23 @@ export default {
 
       /* ════ 管理員 ════ */
       const needAdmin = () => (!sess ? J(env, { error: '未登入' }, 401) : sess.role !== 'admin' ? J(env, { error: '需要管理員權限' }, 403) : null);
+
+      /* 手動刷新與 Cron 使用同一條寫入鏈；只有 POST 會抓行情和重算快照。 */
+      if (path === '/api/refresh' && request.method === 'POST') {
+        const deny = needAdmin(); if (deny) return deny;
+        const b = await request.json().catch(() => ({}));
+        const requested = String(b.portfolio || b.set || 'all').toLowerCase();
+        if (!/^(all|us|hk|a)$/.test(requested)) return J(env, { error: 'portfolio 只支持 all/us/hk/a' }, 400);
+        const portfolios = requested === 'all' ? ['us', 'hk', 'a'] : [requested];
+        const result = b.benchmarks === false
+          ? {
+              ok: true, trigger: 'manual', by: sess.u, ranAt: new Date().toISOString(),
+              nav: await Promise.all(portfolios.map(pf => updatePortfolioNav(env, pf))), benchmarks: [],
+            }
+          : await refreshMarketCaches(env, portfolios, portfolios, 'manual', sess.u);
+        if (b.benchmarks === false) await env.YC_KV.put('refresh:last:manual', JSON.stringify(result));
+        return J(env, result);
+      }
 
       if (path === '/api/users' && request.method === 'GET') {
         const deny = needAdmin(); if (deny) return deny;
@@ -552,7 +1067,9 @@ export default {
       if (path === '/api/content' && request.method === 'GET') {
         const [r, p] = await Promise.all([env.YC_KV.get('content:reports'), env.YC_KV.get('content:posts')]);
         const flt = x => (x ? JSON.parse(x) : null);
-        const rep = flt(r), pos = flt(p);
+        const rep0 = flt(r), pos0 = flt(p);
+        const rep = rep0 ? normalizeContentItems(rep0, 'reports') : null;
+        const pos = pos0 ? normalizeContentItems(pos0, 'posts') : null;
         return J(env, {
           ok: true,
           managed: !!(rep || pos),   // false = 前端用內置種子
@@ -563,7 +1080,11 @@ export default {
       if (path === '/api/content/all' && request.method === 'GET') {
         const deny = needAdmin(); if (deny) return deny;
         const [r, p] = await Promise.all([env.YC_KV.get('content:reports'), env.YC_KV.get('content:posts')]);
-        return J(env, { ok: true, reports: r ? JSON.parse(r) : null, posts: p ? JSON.parse(p) : null });
+        return J(env, {
+          ok: true,
+          reports: r ? normalizeContentItems(JSON.parse(r), 'reports') : null,
+          posts: p ? normalizeContentItems(JSON.parse(p), 'posts') : null,
+        });
       }
       if (path === '/api/content/save' && request.method === 'POST') {
         const deny = needAdmin(); if (deny) return deny;
@@ -571,12 +1092,10 @@ export default {
         const kind = b.kind === 'posts' ? 'posts' : b.kind === 'reports' ? 'reports' : null;
         if (!kind || !Array.isArray(b.items)) return J(env, { error: 'kind 需為 reports/posts 且 items 為數組' }, 400);
         if (b.items.length > 500) return J(env, { error: '條目過多' }, 400);
-        // 輕量校驗：每條必須有 id 與 title
-        for (const it of b.items) {
-          if (!it || !it.id || !it.title) return J(env, { error: '每條需含 id 與 title' }, 400);
-        }
-        await env.YC_KV.put('content:' + kind, JSON.stringify(b.items));
-        return J(env, { ok: true, kind, count: b.items.length });
+        const items = normalizeContentItems(b.items, kind);
+        for (const it of items) if (!it.title) return J(env, { error: '每條需含 title' }, 400);
+        await env.YC_KV.put('content:' + kind, JSON.stringify(items));
+        return J(env, { ok: true, kind, count: items.length });
       }
 
       /* ════ 找回密碼：郵箱驗證碼 → 重設 ════ */
@@ -638,29 +1157,86 @@ export default {
         const pf = String(b.portfolio || 'us').toLowerCase();
         if (!/^(us|hk|a)$/.test(pf)) return J(env, { error: 'portfolio 只支持 us/hk/a' }, 400);
         if (!Array.isArray(b.positions) || !b.positions.length) return J(env, { error: 'positions 為空' }, 400);
-        const positions = b.positions.filter(p => p && p.t && isFinite(p.q)).map(p => ({ t: String(p.t).slice(0, 12), q: Number(p.q) })).slice(0, 100);
+        const positions = b.positions.filter(p => p && p.t && isFinite(p.q)).map(p => ({
+          t: String(p.t).slice(0, 16), n: String(p.n || p.name || p.t).slice(0, 100), q: Number(p.q),
+          p: Number(p.p) || 0, mv: Number(p.mv) || 0, netCost: Number(p.netCost) || 0,
+          buyCost: Number(p.buyCost) || 0, sellProceeds: Number(p.sellProceeds) || 0,
+          dividend: Number(p.dividend) || 0, pnl: Number(p.pnl) || 0,
+        })).slice(0, 120);
+        const sourceDate = String(b.sourceDate || b.lastDate || '').slice(0, 10);
+        const baseNetValue = Number(b.baseNetValue ?? b.baseMV);
+        const units = Number(b.units) || 0;
+        const fingerprint = contentHash(JSON.stringify({
+          positions: positions.map(p => [p.t, p.q]).sort((a, z) => a[0].localeCompare(z[0])),
+          cash: Number(b.cash) || 0, liability: Number(b.liability) || 0, units,
+        }));
+        const sourceHoldings = positions.map(p => ({
+          t: p.t, n: p.n, q: p.q, price: p.p, marketValue: p.mv, date: sourceDate,
+          buyCost: p.buyCost, sellProceeds: p.sellProceeds, dividend: p.dividend,
+          netCost: p.netCost, pnl: p.pnl,
+          exposureReturn: p.buyCost ? round(p.pnl / p.buyCost * 100, 8) : null,
+        }));
+        const sourceMv = sourceHoldings.reduce((s, h) => s + h.marketValue, 0);
+        sourceHoldings.forEach(h => { h.weight = sourceMv ? round(h.marketValue / sourceMv * 100, 6) : 0; });
+        const history = normalizeHistory(b.history || b.rets);
+        const navRows = normalizeNavRows(b.navRows);
+        const sourceMetrics = cleanMetrics(b.metrics || b.statistics || b.snap);
         const led = {
-          positions, cash: Number(b.cash) || 0,
-          lastDate: String(b.lastDate || '').slice(0, 10),
-          baseMV: Number(b.baseMV) || 0,
-          lastUnitNav: Number(b.lastUnitNav) || 0,
-          units: Number(b.units) || 0,
+          market: /^(us|hk|a)$/.test(String(b.market || '')) ? b.market : pf,
+          currency: String(b.currency || ({ us: 'USD', hk: 'HKD', a: 'CNY' }[pf])).slice(0, 3),
+          positions, sourceHoldings, cash: Number(b.cash) || 0, liability: Number(b.liability) || 0,
+          sourceDate, lastDate: sourceDate,
+          baseMarketValue: Number(b.baseMarketValue) || sourceMv,
+          baseTotalAssets: Number(b.baseTotalAssets) || sourceMv + (Number(b.cash) || 0),
+          baseNetValue, baseMV: baseNetValue,
+          lastUnitNav: Number(b.lastUnitNav) || (units > 0 ? baseNetValue / units : 0),
+          units, fingerprint, history, navRows, sourceMetrics,
+          snap: b.snap && typeof b.snap === 'object' ? {
+            totalRet: Number(b.snap.totalRet) || 0, annRet: Number(b.snap.annRet) || 0,
+            maxDD: Number(b.snap.maxDD) || 0, days: Number(b.snap.days) || 0,
+            start: String(b.snap.start || '').slice(0, 10), end: String(b.snap.end || '').slice(0, 10),
+            peakGrowth: Number(b.snap.peakGrowth) || 1, endGrowth: Number(b.snap.endGrowth) || 1,
+          } : null,
           savedBy: sess.u, savedAt: new Date().toISOString(),
         };
-        if (!led.lastDate || !led.baseMV) return J(env, { error: '缺 lastDate / baseMV' }, 400);
+        if (!led.lastDate || !isFinite(led.baseNetValue) || !(led.units > 0)) return J(env, { error: '缺 sourceDate / baseNetValue / units' }, 400);
+        const [oldLedRaw, oldLiveRaw] = await Promise.all([env.YC_KV.get('ledger:' + pf), env.YC_KV.get('live:' + pf)]);
+        const oldLed = oldLedRaw ? JSON.parse(oldLedRaw) : null;
+        const oldLive = oldLiveRaw ? JSON.parse(oldLiveRaw) : { rows: [] };
+        const sameSource = oldLed && oldLed.fingerprint === fingerprint;
+        if (!led.history.length && sameSource && oldLed.history) led.history = normalizeHistory(oldLed.history);
+        if (!led.navRows.length && sameSource && oldLed.navRows) led.navRows = normalizeNavRows(oldLed.navRows);
+        if (!Object.keys(led.sourceMetrics).length && sameSource && oldLed.sourceMetrics) led.sourceMetrics = cleanMetrics(oldLed.sourceMetrics);
+        // sourceDate 是新工作簿已覆蓋到的日期；只保留其後的自動日更，交易/份額改變則重置。
+        const rows = sameSource ? (oldLive.rows || []).filter(r => r.date > sourceDate) : [];
+        const live = {
+          rows, holdings: sameSource && oldLive.holdings ? oldLive.holdings : sourceHoldings,
+          updatedAt: new Date().toISOString(), marketDate: sameSource ? oldLive.marketDate || null : sourceDate,
+          reset: !sameSource,
+        };
+        const seedStatus = {
+          pf, seededAt: new Date().toISOString(), sourceDate,
+          historyPoints: led.history.length, preservedRows: rows.length, sourceChanged: !sameSource,
+        };
         await env.YC_KV.put('ledger:' + pf, JSON.stringify(led));
-        await env.YC_KV.put('live:' + pf, JSON.stringify({ rows: [], updatedAt: new Date().toISOString() }));   // 新賬本 → 清空舊實時行
-        return J(env, { ok: true, positions: positions.length, cash: led.cash, base: led.lastDate + ' / ' + led.baseMV });
+        await persistPortfolioCache(env, pf, led, live, seedStatus);
+        return J(env, {
+          ok: true, portfolio: pf, positions: positions.length, cash: led.cash,
+          liability: led.liability, units: led.units, base: led.lastDate + ' / ' + led.baseNetValue,
+          historyPoints: led.history.length, preservedRows: rows.length, sourceChanged: !sameSource,
+        });
       }
 
       if (path.startsWith('/api/nav/') && request.method === 'GET') {
         const pf = path.split('/')[3];
         if (!/^(us|hk|a)$/.test(pf)) return J(env, { error: 'not found' }, 404);
-        const [ledRaw, liveRaw, stRaw] = await Promise.all([
-          env.YC_KV.get('ledger:' + pf), env.YC_KV.get('live:' + pf), env.YC_KV.get('navstatus:' + pf)]);
-        if (!ledRaw) return J(env, { ok: true, enabled: false, rows: [] });
-        const led = JSON.parse(ledRaw); const live = liveRaw ? JSON.parse(liveRaw) : { rows: [] };
-        return J(env, { ok: true, enabled: true, base: { date: led.lastDate, unitNav: led.lastUnitNav, mv: led.baseMV }, rows: live.rows, updatedAt: live.updatedAt || null, status: stRaw ? JSON.parse(stRaw) : null });
+        const cached = await env.YC_KV.get('navcache:' + pf);
+        if (cached) return J(env, JSON.parse(cached));
+        return J(env, {
+          ok: false, enabled: false, portfolio: pf, pending: true,
+          history: [], rets: [], rows: [], holdings: [], assets: [],
+          error: '組合快照尚未建立，請等待每日任務或由管理員手動刷新',
+        }, 503);
       }
 
       /* ════ PDF 直傳：後台拖入 → 提交 GitHub assets/pdf/（新增或覆蓋同名）════ */
@@ -698,10 +1274,16 @@ export default {
 
       if (path === '/api/publish' && request.method === 'POST') {
         const deny = needAdmin(); if (deny) return deny;
-        const { content_b64, message } = await request.json();
+        const { content_b64, message, portfolio } = await request.json();
         if (!content_b64 || content_b64.length < 100) return J(env, { error: '文件內容為空' }, 400);
         if (content_b64.length > 30 * 1024 * 1024) return J(env, { error: '文件過大' }, 413);
-        const gh = 'https://api.github.com/repos/' + env.GH_OWNER + '/' + env.GH_REPO + '/contents/' + env.GH_PATH;
+        const pf = /^(us|hk|a)$/.test(String(portfolio || '').toLowerCase()) ? String(portfolio).toLowerCase() : 'us';
+        const paths = {
+          us: env.GH_PATH || 'assets/data/Yi_Capital_US.xlsx',
+          hk: env.GH_PATH_HK || 'assets/data/Yi_Capital_HK.xlsx',
+          a: env.GH_PATH_A || 'assets/data/Yi_Capital_A.xlsx',
+        };
+        const gh = 'https://api.github.com/repos/' + env.GH_OWNER + '/' + env.GH_REPO + '/contents/' + paths[pf];
         const ghHeaders = {
           'Authorization': 'Bearer ' + env.GH_TOKEN,
           'Accept': 'application/vnd.github+json',
@@ -711,7 +1293,7 @@ export default {
         let sha;
         const r0 = await fetch(gh + '?ref=' + env.GH_BRANCH, { headers: ghHeaders });
         if (r0.ok) sha = (await r0.json()).sha;
-        const body = { message: message || ('data: 更新淨值表（via Portal, ' + sess.u + '）'), content: content_b64, branch: env.GH_BRANCH };
+        const body = { message: message || ('data: 更新 ' + pf.toUpperCase() + ' 基金來源工作簿（via Portal, ' + sess.u + '）'), content: content_b64, branch: env.GH_BRANCH };
         if (sha) body.sha = sha;
         const r1 = await fetch(gh, { method: 'PUT', headers: { ...ghHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const j1 = await r1.json().catch(() => ({}));
@@ -721,7 +1303,7 @@ export default {
           if (r1.status === 404) hint = '｜提示：檢查 GH_OWNER / GH_REPO / GH_PATH 是否與倉庫一致，且 Token 有權訪問該倉庫。';
           return J(env, { error: 'GitHub ' + r1.status + ' ' + (j1.message || '') + hint }, 502);
         }
-        return J(env, { ok: true, commit: j1.commit && j1.commit.sha, url: j1.commit && j1.commit.html_url });
+        return J(env, { ok: true, portfolio: pf, path: paths[pf], commit: j1.commit && j1.commit.sha, url: j1.commit && j1.commit.html_url });
       }
 
       return J(env, { error: 'Not found' }, 404);
@@ -732,15 +1314,15 @@ export default {
 
   /* ⏰ Cron Triggers：Cloudflare → Worker → Settings → Triggers → Cron 添加
      "30 21 * * *"  美股收盤後約1小時（21:30 UTC ≈ 美東 4:30/5:30PM）→ 更新 US
-     "0 9 * * *"    北京時間 17:00 → HK / A（預留，賬本就緒後自動生效）＋ 基準預熱 */
+     "0 9 * * *"    北京時間 17:00 → HK / A ＋ 基準預熱 */
   async scheduled(event, env, ctx) {
     const cron = event.cron || '';
     if (cron === '30 21 * * *') {
-      ctx.waitUntil((async () => { await updatePortfolioNav(env, 'us'); await prewarmBenchmark(env); })());
+      ctx.waitUntil(refreshMarketCaches(env, ['us'], ['us'], 'cron:us'));
     } else if (cron === '0 9 * * *') {
-      ctx.waitUntil((async () => { await updatePortfolioNav(env, 'hk'); await updatePortfolioNav(env, 'a'); })());
+      ctx.waitUntil(refreshMarketCaches(env, ['hk', 'a'], ['hk', 'a'], 'cron:asia'));
     } else {
-      ctx.waitUntil((async () => { await updatePortfolioNav(env, 'us'); })());   // 手動觸發測試
+      ctx.waitUntil(refreshMarketCaches(env, ['us', 'hk', 'a'], ['us', 'hk', 'a'], 'cron:all'));
     }
   },
 

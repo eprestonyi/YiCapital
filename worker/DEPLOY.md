@@ -1,4 +1,4 @@
-Cloudflare Worker 部署步驟（約 10 分鐘，全程網頁操作，免費）
+Cloudflare Worker v8.2 部署步驟（約 10 分鐘，全程網頁操作，免費）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
@@ -8,6 +8,8 @@ Cloudflare Worker 部署步驟（約 10 分鐘，全程網頁操作，免費）
 ② 創建 Worker
    Workers & Pages → Create → Create Worker → 隨便命名（如 yicapital-portal）
    → Deploy → 點 Edit code → 刪掉默認代碼，把 worker.js 全文粘貼進去 → Deploy
+   ⚠ 升級現有網站時也必須先完成這一步，再上傳前端文件；v6 不認得 HK/A
+     的獨立 GitHub 路徑。
 
 ③ 綁定 KV
    該 Worker → Settings → Bindings → Add → KV namespace
@@ -23,6 +25,8 @@ Cloudflare Worker 部署步驟（約 10 分鐘，全程網頁操作，免費）
      GH_REPO          YiCapital
      GH_BRANCH        main
      GH_PATH          assets/data/Yi_Capital_US.xlsx
+     GH_PATH_HK       assets/data/Yi_Capital_HK.xlsx（可省略，這是默認值）
+     GH_PATH_A        assets/data/Yi_Capital_A.xlsx（可省略，這是默認值）
      ALLOWED_ORIGIN   https://你的網站域名（如 https://yicapital.com，不帶末尾斜杠）
    → Save and deploy
 
@@ -33,18 +37,32 @@ Cloudflare Worker 部署步驟（約 10 分鐘，全程網頁操作，免費）
 
 ⑥ 驗收
    你的域名/login.html → Admin Login 用 ④ 設的帳密登入 → 進入後台
-   → 拖入淨值表 → 發布 → 約 1 分鐘後 fund-us.html 更新
+   → 在「基金組合」選 US / HK / A → 拖入對應工作簿 → 發布
+   → 約 1 分鐘後首頁、組合頁和完整 US 檔案頁更新
    → Guest Sign up 註冊一個測試號 → 後台「帳號管理」應能看到並可停用/重置/刪除
 
 修改管理員密碼：回到 ④ 改 ADMIN_PASSWORD 這個 Secret 即可，即刻生效。
 
-附：/api/benchmark 基準行情接口（無需額外配置）
-  Worker 部署後自帶 GET /api/benchmark?symbols=spy.us,qqq.us
-  服務端從 Stooq 拉取日線收盤價，KV 緩存 12 小時。
-  前端（portfolios.html 與 fund-us.html）檢測到 portal-config.js
-  裡填了 YC_API 後，會自動調用它：淨值曲線疊加 SPY/QQQ，
-  指標卡自動多出「年化 Alpha」「Beta」。
-  （Worker 部署前，也可在 Excel 加 Benchmark 分頁實現同樣效果。）
+附：v8.2 自動淨值與基準行情（無需額外 API Key）
+  · POST /api/ledger 保存三個組合的持倉、現金、負債與總份額。
+  · 首次發布亦把 NAV 歷史寫入 KV，後台生成完整分析快照；公開 GET 只讀 KV，
+    不在訪客請求時抓行情、讀 Excel 或即時計算。
+  · 每日 Cron 以實際收盤行情計算市場價值、總資產、淨值與每份 NAV；
+    Excel 的 NAV Statement 只保留歷史曲線，不再要求每日手工上傳。
+  · GET /api/benchmark?set=us：S&P 500 / NASDAQ / DOW
+  · GET /api/benchmark?set=hk：國企 ETF 2828 / 恒生 ETF 2800 / 恒科 ETF 3032
+  · GET /api/benchmark?set=a：滬深 300
+  · 行情、基準、Sharpe、回撤、VaR、壓測及持倉資料全部寫入 KV；
+    首頁、portfolios 與 fund-us 直接展示同一份快照。
+
+⑦ 配置每日任務（Worker → Settings → Triggers → Cron Triggers）
+     30 21 * * *   US 收盤後更新 US + US 三大指數
+     0 9 * * *     北京 17:00 更新 HK/A + 三隻港股 ETF/滬深300
+
+⑧ 首次啟用
+   部署 v8.2 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
+   再點「立即刷新後台緩存」預熱三市場行情與基準。
+   以後只有交易、出入金、股息、公司行動或負債改變時才需重新發布。
 
 ════════ 可選登入方式（v6 新增）════════
 
