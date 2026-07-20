@@ -829,6 +829,7 @@ async function updatePortfolioNav(env, pf) {
       dividend: Number(p.dividend) || 0, netCost: Number(p.netCost) || 0,
       pnl: round(pnl, 2),
       exposureReturn: Number(p.buyCost) ? round(pnl / Number(p.buyCost) * 100, 8) : null,
+      weight: 0,
     });
   }
   if (missing.length) {
@@ -875,7 +876,7 @@ async function refreshMarketCaches(env, portfolios, benchmarkSets, trigger, by) 
 
 async function streamToText(stream) {
   const buf = await new Response(stream).arrayBuffer();
-  return new TextDecoder('utf-8', { fatal: false }).decode(buf);
+  return new TextDecoder('utf-8', { fatal: false, ignoreBOM: false }).decode(buf);
 }
 const latin1ToUtf8 = s => { try { return decodeURIComponent(escape(s)); } catch (e) { return s; } };
 const decodeQP = s => latin1ToUtf8(s.replace(/=\r?\n/g, '').replace(/=([0-9A-F]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16))));
