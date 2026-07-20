@@ -95,10 +95,11 @@
           <text x="430" y="62" fill="#5f6f85" font-size="10" font-family="IBM Plex Mono">恒指 HSI</text>
         </svg>
         <div class="mini-stats">
-          <div><div class="v u">+51%</div><div class="k" data-i18n="home.st.cum17">累计回报（17 个月）</div></div>
-          <div><div class="v">33.2%</div><div class="k" data-i18n="st.ann">年化收益率</div></div>
-          <div><div class="v">−23%</div><div class="k" data-i18n="st.mdd">最大回撤</div></div>
+          <div><div class="v u" id="hm-hk-cum">+51%</div><div class="k" data-i18n="home.st.cum17">累计回报（17 个月）</div></div>
+          <div><div class="v" id="hm-hk-ann">33.2%</div><div class="k" data-i18n="st.ann">年化收益率</div></div>
+          <div><div class="v" id="hm-hk-mdd">−23%</div><div class="k" data-i18n="st.mdd">最大回撤</div></div>
         </div>
+        <div class="legend" id="hm-hk-date">AUTO · 等待后台</div>
         <div class="go" data-i18n="home.hk.go">查看净值曲线、持仓与风险档案 →</div>
       </a>
       <div class="pf-side">
@@ -106,12 +107,16 @@
           <div class="kick" data-i18n="home.us.k">USD ｜ 多资产</div>
           <h3>Yi Capital US</h3>
           <p data-i18n="home.us.p">多资产配置的美金组合：股票、久期（duration）、黄金与短债的风险平衡，以厚尾（fat-tail）与压力测试框架管理回撤。</p>
+          <div class="mini-stats"><div><div class="v" id="hm-us-cum">—</div><div class="k">累计回报</div></div><div><div class="v" id="hm-us-ann">—</div><div class="k">年化收益率</div></div><span id="hm-us-mdd" hidden></span></div>
+          <div class="legend" id="hm-us-date">AUTO · 等待后台</div>
           <div class="go" data-i18n="home.enter">进入组合页 →</div>
         </a>
         <a class="pf-card" href="portfolios#ashare">
           <div class="kick" data-i18n="home.a.k">CNY ｜ A股</div>
           <h3>Yi Capital A Share</h3>
           <p data-i18n="home.a.p">A股优质资产的长期持有：聚焦竞争格局清晰、自由现金流充沛的龙头，换手极低、以年为单位计仓。</p>
+          <div class="mini-stats"><div><div class="v" id="hm-a-cum">—</div><div class="k">累计回报</div></div><div><div class="v" id="hm-a-ann">—</div><div class="k">年化收益率</div></div><span id="hm-a-mdd" hidden></span></div>
+          <div class="legend" id="hm-a-date">AUTO · 等待后台</div>
           <div class="go" data-i18n="home.enter">进入组合页 →</div>
         </a>
       </div>
@@ -154,6 +159,7 @@ renderPosts("home-posts",{limit:3});document.addEventListener("yc-content-posts"
 renderReports("home-reports","","");document.addEventListener("yc-content-reports",()=>{renderReports("home-reports","","");});
 </script>
 <script src="../assets/portal-config.js"></script>
+<script src="../assets/yc-home-live.js"></script>
 <script src="../assets/yc-i18n.js"></script>
 <script src="../assets/yc-session.js"></script>
 </body>

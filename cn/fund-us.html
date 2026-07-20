@@ -210,7 +210,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     Object.entries(R.benchmarks).forEach(([n,b],i)=>{
       series.push({name:n, color:[F.colors.blue,F.colors.violet,F.colors.orange][i%3], width:1.5, opacity:.75, data:b.curve});
     });
-    $('c-equity').innerHTML = F.lineChart(series, {yFmt:v=>(v/1000).toFixed(0)+'k', baseline:10000});
+    $('c-equity').innerHTML = F.lineChart(series, {yFmt:v=>(v/1000).toFixed(1).replace(/\.0$/,'')+'k', baseline:10000});
     $('c-underwater').innerHTML = F.underwaterChart(R.drawdown);
     $('c-heatmap').innerHTML = F.monthlyHeatmap(R.monthly);
     $('c-monthly').innerHTML = F.monthlyBars(R.monthly);
@@ -258,6 +258,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return 0;
     try{
       const j=await (await fetch(api+'/api/nav/us',{cache:'no-store'})).json();
+      window.__livePayload=j;
       if(j.ok && j.enabled && j.rows && j.rows.length) return YC.appendLive(sheets, j.rows);
     }catch(e){}
     return 0;
@@ -265,7 +266,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   async function fetchBenchmarks(R){
     const api=(window.YC_API||'').replace(/\/+$/,'');
     if(R.error||R.primaryBM||!api) return R;
-    try{ const j=await (await fetch(api+'/api/benchmark?symbols=spy.us,qqq.us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
+    try{ const j=await (await fetch(api+'/api/benchmark?set=us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
     return R;
   }
   async function loadArrayBuffer(buf, srcLabel){
@@ -274,7 +275,9 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       const wb = XLSX.read(buf, {type:'array', cellDates:false});
       const __sheets=workbookToSheets(wb);
       window.__liveAdded=await fetchLiveRows(__sheets);
-      render(await fetchBenchmarks(YC.analyze(__sheets)));
+      const R=YC.analyze(__sheets);
+      if(window.__livePayload&&window.__livePayload.holdings) YC.applyLiveHoldings(R,window.__livePayload.holdings);
+      render(await fetchBenchmarks(R));
       if(srcLabel) $('srcstate').textContent = '數据源：' + srcLabel;
       return true;
     }catch(e){
