@@ -185,11 +185,20 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 
   function statCard(v, k, cls){ return `<div class="stat"><div class="v ${cls||''}">${v}</div><div class="k">${k}</div></div>`; }
 
+  function validStress(s){
+    return !!s&&s.model==='noncentral-t'&&['crash','bear','grind'].every(k=>{
+      const r=s[k];
+      return !!r&&[r.nDays,r.p50,r.p5,r.p1,r.probHalf].every(v=>Number.isFinite(Number(v)))
+        &&['pathP5','pathP50','pathP95'].every(p=>Array.isArray(r[p])&&r[p].length>=2&&r[p].every(v=>Number.isFinite(Number(v))));
+    });
+  }
   function cachedReport(j){
     const required=j&&j.ok&&j.enabled&&Number(j.cacheVersion)>=2&&j.historyComplete===true&&j.metrics&&j.hist;
     if(!required||!Array.isArray(j.history)||j.history.length<5||!Array.isArray(j.curve)||!Array.isArray(j.varTable)||!Array.isArray(j.navRows)) return null;
-    const rp=Array.isArray(j.rp)?j.rp:j.history.map(x=>x.ret);
-    const stress=j.stress&&j.stress.model==='noncentral-t'?j.stress:YC.stressScenarios(rp);
+    const cleanRp=(Array.isArray(j.rp)?j.rp:[]).map(Number).filter(Number.isFinite);
+    const rp=cleanRp.length>=5?cleanRp:j.history.map(x=>Number(x.ret)).filter(Number.isFinite);
+    const stress=validStress(j.stress)?j.stress:YC.stressScenarios(rp);
+    if(!stress)return null;
     const assets=(j.assets||j.holdings||[]).map(h=>({
       ticker:String(h.ticker||h.t||''),name:String(h.name||h.n||h.ticker||h.t||''),
       qty:Number(h.qty??h.q)||0,price:Number(h.price??h.p)||0,marketValue:Number(h.marketValue??h.mv)||0,

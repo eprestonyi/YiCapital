@@ -120,15 +120,29 @@
       };
     }).filter(h => h.ticker);
   }
+  function normalizeReturns(items, history) {
+    const clean = (Array.isArray(items) ? items : []).map(Number).filter(Number.isFinite);
+    if (clean.length >= 5) return clean;
+    return history.map(x => Number(x.ret)).filter(Number.isFinite);
+  }
+  function validStress(s) {
+    if (!s || s.model !== 'noncentral-t') return false;
+    return ['crash', 'bear', 'grind'].every(key => {
+      const row = s[key];
+      return row && [row.nDays, row.p50, row.p5, row.p1, row.probHalf].every(v => Number.isFinite(Number(v)))
+        && ['pathP5', 'pathP50', 'pathP95'].every(path => Array.isArray(row[path])
+          && row[path].length >= 2 && row[path].every(v => Number.isFinite(Number(v))));
+    });
+  }
   function cachedResult(live) {
     if (!live || !live.enabled || Number(live.cacheVersion) < 2 || live.historyComplete !== true) return null;
     const history = Array.isArray(live.history) ? live.history : Array.isArray(live.rets) ? live.rets : [];
     const curve = Array.isArray(live.curve) ? live.curve : [];
     const metrics = live.metrics || live.statistics;
     if (history.length < 5 || curve.length < 5 || !metrics) return null;
-    const rp = Array.isArray(live.rp) ? live.rp : history.map(x => x.ret);
-    const stress = live.stress && live.stress.model === 'noncentral-t'
-      ? live.stress : A.stressScenarios(rp);
+    const rp = normalizeReturns(live.rp, history);
+    const stress = validStress(live.stress) ? live.stress : A.stressScenarios(rp);
+    if (!stress) return null;
     return {
       source: 'api', metrics, rets: history, rp,
       curve, drawdown: Array.isArray(live.drawdown) ? live.drawdown : [],
