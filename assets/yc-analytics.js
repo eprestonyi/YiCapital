@@ -83,18 +83,38 @@
     if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
     const d = new Date(s); return isNaN(d) ? null : d.toISOString().slice(0, 10);
   }
-  const num = v => { const x = typeof v === 'string' ? parseFloat(v.replace(/[,%$]/g, '')) : Number(v); return isFinite(x) ? x : null; };
+  const num = v => { const x = typeof v === 'string' ? parseFloat(v.replace(/[,%$¥￥,\s]/g, '')) : Number(v); return isFinite(x) ? x : null; };
+  const headerIndex = (hdr, exact, prefix) => {
+    const names = Array.isArray(exact) ? exact : [exact];
+    for (const name of names) {
+      const i = hdr.findIndex(h => h === name);
+      if (i >= 0) return i;
+    }
+    const prefixes = Array.isArray(prefix) ? prefix : prefix ? [prefix] : [];
+    for (const p of prefixes) {
+      const i = hdr.findIndex(h => String(h).startsWith(p));
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
+  const currencyFromHeader = hdr => {
+    for (const h of hdr || []) {
+      const m = String(h || '').match(/\((USD|HKD|CNY)\)/i);
+      if (m) return m[1].toUpperCase();
+    }
+    return null;
+  };
 
-  // NAV Statement（表頭在第1行）: Date / Total Assets (USD) / ... / NAV per Unit (USD) / Fund Action Adjustment (USD) / Total Units / Cash Balance (USD) / Market Value (USD)
+  // NAV Statement（表頭在第1行；USD / HKD / CNY 自動識別）
   function parseNavSheet(rows) {
     if (!rows || !rows.length) return [];
     const hdrIdx = rows.findIndex(r => r && r.some(c => String(c).trim() === 'Date'));
     if (hdrIdx < 0) return [];
     const hdr = rows[hdrIdx].map(c => String(c || '').trim());
-    const col = name => hdr.findIndex(h => h === name);
-    const iDate = col('Date'), iTA = col('Total Assets (USD)'), iTL = col('Total Liability (USD)'),
-      iNV = col('Net Value (USD)'), iU = col('Total Units'), iNAV = col('NAV per Unit (USD)'),
-      iAdj = col('Fund Action Adjustment (USD)'), iCash = col('Cash Balance (USD)'), iMV = col('Market Value (USD)');
+    const col = (name, prefix) => headerIndex(hdr, name, prefix);
+    const iDate = col('Date'), iTA = col('Total Assets', 'Total Assets ('), iTL = col('Total Liability', 'Total Liability ('),
+      iNV = col('Net Value', 'Net Value ('), iU = col('Total Units'), iNAV = col('NAV per Unit', 'NAV per Unit ('),
+      iAdj = col('Fund Action Adjustment', 'Fund Action Adjustment ('), iCash = col('Cash Balance', 'Cash Balance ('), iMV = col('Market Value', 'Market Value (');
     const out = [];
     for (let r = hdrIdx + 1; r < rows.length; r++) {
       const row = rows[r]; if (!row) continue;
@@ -125,12 +145,13 @@
     if (hdrIdx > 0 && rows[0] && rows[0][1] != null) asOf = excelDate(rows[0][1]);
     if (hdrIdx < 0) return { asOf, assets: [] };
     const hdr = rows[hdrIdx].map(c => String(c || '').trim());
-    const col = (...names) => { for (const n of names) { const i = hdr.indexOf(n); if (i >= 0) return i; } return -1; };
+    const col = (...names) => headerIndex(hdr, names);
+    const colP = prefix => headerIndex(hdr, [], prefix);
     const F = {
-      ticker: col('Ticker'), name: col('Name', 'Asset Name'), qty: col('Quantity'), netCost: col('Net Cost (USD)'),
-      price: col('Latest Price (USD)'), mv: col('Market Value (USD)'), w: col('Weight (%)'),
-      buyCost: col('Total Buy Cost (USD)'), sellProceeds: col('Total Sell Proceeds (USD)'),
-      div: col('Dividend Income (USD)'), pnl: col('Total P&L (USD)'),
+      ticker: col('Ticker'), name: col('Name', 'Asset Name'), qty: col('Quantity'), netCost: colP('Net Cost ('),
+      price: colP('Latest Price ('), mv: colP('Market Value ('), w: col('Weight (%)'),
+      buyCost: colP('Total Buy Cost ('), sellProceeds: colP('Total Sell Proceeds ('),
+      div: colP('Dividend Income ('), pnl: colP('Total P&L ('),
       nomRet: col('Nominal Return (%)'), expRet: col('Exposure Return (%)'),
     };
     const assets = [];
@@ -156,6 +177,93 @@
       if (a.nominalReturn != null) a.nominalReturn *= 100;
     });
     return { asOf, assets };
+  }
+
+  function parseCashSource(rows) {
+    if (!rows || !rows.length) return { date: null, cash: 0 };
+    const hdrIdx = rows.findIndex(r => r && r.some(c => String(c).trim() === 'Date') && r.some(c => String(c).trim().startsWith('Cash After')));
+    if (hdrIdx < 0) return { date: null, cash: 0 };
+    const hdr = rows[hdrIdx].map(c => String(c || '').trim());
+    const iDate = headerIndex(hdr, 'Date'), iCash = headerIndex(hdr, [], 'Cash After (');
+    let latest = { date: null, cash: 0 };
+    for (let r = hdrIdx + 1; r < rows.length; r++) {
+      const date = excelDate(rows[r] && rows[r][iDate]), cash = num(rows[r] && rows[r][iCash]);
+      if (date && cash != null && (!latest.date || date >= latest.date)) latest = { date, cash };
+    }
+    return latest;
+  }
+
+  function parseLiabilitySource(rows) {
+    if (!rows || !rows.length) return { date: null, liability: 0 };
+    const hdrIdx = rows.findIndex(r => r && r.some(c => String(c).trim() === 'Date') && r.some(c => String(c).trim().startsWith('Closing Liability')));
+    if (hdrIdx < 0) return { date: null, liability: 0 };
+    const hdr = rows[hdrIdx].map(c => String(c || '').trim());
+    const iDate = headerIndex(hdr, 'Date'), iClose = headerIndex(hdr, [], 'Closing Liability (');
+    let latest = { date: null, liability: 0 };
+    for (let r = hdrIdx + 1; r < rows.length; r++) {
+      const date = excelDate(rows[r] && rows[r][iDate]), liability = num(rows[r] && rows[r][iClose]);
+      if (date && liability != null && (!latest.date || date >= latest.date)) latest = { date, liability };
+    }
+    return latest;
+  }
+
+  function parseUnitsSource(capitalRows, actionRows) {
+    let units = 0, date = null;
+    const rows = capitalRows || [];
+    const hdrIdx = rows.findIndex(r => r && r.some(c => String(c).trim() === 'Execution Date') && r.some(c => String(c).trim() === 'Quantity'));
+    if (hdrIdx >= 0) {
+      const hdr = rows[hdrIdx].map(c => String(c || '').trim());
+      const iDate = headerIndex(hdr, 'Execution Date'), iQty = headerIndex(hdr, 'Quantity');
+      for (let r = hdrIdx + 1; r < rows.length; r++) {
+        const q = num(rows[r] && rows[r][iQty]), d = excelDate(rows[r] && rows[r][iDate]);
+        if (q != null) units += q;
+        if (d && (!date || d > date)) date = d;
+      }
+    }
+    const actions = actionRows || [];
+    const ah = actions.findIndex(r => r && r.some(c => String(c).trim() === 'Date') && r.some(c => String(c).trim() === 'Post Quantity'));
+    if (ah >= 0) {
+      const hdr = actions[ah].map(c => String(c || '').trim());
+      const iDate = headerIndex(hdr, 'Date'), iPost = headerIndex(hdr, 'Post Quantity');
+      let post = null, postDate = null;
+      for (let r = ah + 1; r < actions.length; r++) {
+        const q = num(actions[r] && actions[r][iPost]), d = excelDate(actions[r] && actions[r][iDate]);
+        if (q != null && (!postDate || (d && d >= postDate))) { post = q; postDate = d || postDate; }
+      }
+      if (post != null) units = post;
+      if (postDate && (!date || postDate > date)) date = postDate;
+    }
+    return { date, units };
+  }
+
+  /* 後台賬本只從交易衍生表取營運基準：持倉、現金、負債、份額。
+     NAV Statement 僅保留歷史曲線，不參與每日估值基準。 */
+  function extractLedger(workbookSheets, opts = {}) {
+    const assetRows = workbookSheets['Asset Position Record'] || [];
+    const parsed = parseAssetSheet(assetRows);
+    const cash = parseCashSource(workbookSheets['Cash Flow Statement'] || []);
+    const liability = parseLiabilitySource(workbookSheets['Liability Statement'] || []);
+    const unitInfo = parseUnitsSource(workbookSheets['Capital Record'] || [], workbookSheets['Fund Action Record'] || []);
+    if (!parsed.assets.length) return { error: 'Asset Position Record 沒有有效持倉' };
+    if (!(unitInfo.units > 0)) return { error: 'Capital Record 無法計算有效總份額' };
+    const hdrIdx = assetRows.findIndex(r => r && r.some(c => String(c).trim() === 'Ticker'));
+    const hdr = hdrIdx >= 0 ? assetRows[hdrIdx].map(c => String(c || '').trim()) : [];
+    const currency = currencyFromHeader(hdr) || ({ us: 'USD', hk: 'HKD', a: 'CNY' }[opts.portfolio] || 'USD');
+    const positions = parsed.assets.filter(a => a.ticker && a.qty != null && a.qty !== 0).map(a => ({
+      t: a.ticker, n: a.name, q: a.qty, p: a.price || 0, mv: a.marketValue || 0,
+      netCost: a.netCost || 0, buyCost: a.buyCost || 0, sellProceeds: a.sellProceeds || 0,
+      dividend: a.dividend || 0, pnl: a.pnl || 0,
+    }));
+    const marketValue = positions.reduce((s, p) => s + (p.mv || (p.q * p.p) || 0), 0);
+    const totalAssets = marketValue + cash.cash;
+    const netValue = totalAssets - liability.liability;
+    const sourceDate = [parsed.asOf, cash.date, liability.date, unitInfo.date].filter(Boolean).sort().pop() || null;
+    return {
+      portfolio: opts.portfolio || 'us', market: opts.portfolio || 'us', currency, positions,
+      cash: cash.cash, liability: liability.liability, units: unitInfo.units,
+      sourceDate, lastDate: sourceDate, baseMarketValue: marketValue, baseTotalAssets: totalAssets,
+      baseNetValue: netValue, baseMV: netValue, lastUnitNav: netValue / unitInfo.units,
+    };
   }
 
   // 可選 Benchmark sheet: Date | SPY | QQQ | DIA ...（收盤價）
@@ -369,9 +477,11 @@
     const hdrIdx = sheet.findIndex(r => r && r.some(c => String(c).trim() === 'Date'));
     if (hdrIdx < 0) return 0;
     const hdr = sheet[hdrIdx].map(c => String(c || '').trim());
-    const col = n => hdr.findIndex(h => h === n);
-    const iDate = col('Date'), iNAV = col('NAV per Unit (USD)'), iTA = col('Total Assets (USD)'),
-      iNV = col('Net Value (USD)'), iMV = col('Market Value (USD)'), iAdj = col('Fund Action Adjustment (USD)');
+    const col = (n, p) => headerIndex(hdr, n, p);
+    const iDate = col('Date'), iNAV = col('NAV per Unit', 'NAV per Unit ('), iTA = col('Total Assets', 'Total Assets ('),
+      iTL = col('Total Liability', 'Total Liability ('), iNV = col('Net Value', 'Net Value ('),
+      iCash = col('Cash Balance', 'Cash Balance ('), iMV = col('Market Value', 'Market Value ('),
+      iU = col('Total Units'), iAdj = col('Fund Action Adjustment', 'Fund Action Adjustment (');
     if (iDate < 0 || iNAV < 0) return 0;
     let lastIdx = -1;
     for (let r = sheet.length - 1; r > hdrIdx; r--) { if (sheet[r] && excelDate(sheet[r][iDate]) && num(sheet[r][iNAV]) != null) { lastIdx = r; break; } }
@@ -383,15 +493,37 @@
       const nr = lastRow.slice();
       const g = 1 + lr.ret;
       nr[iDate] = lr.date;
-      nr[iNAV] = (num(lastRow[iNAV]) || 0) * g;
-      if (iTA >= 0 && num(lastRow[iTA]) != null) nr[iTA] = num(lastRow[iTA]) * g;
-      if (iNV >= 0 && num(lastRow[iNV]) != null) nr[iNV] = num(lastRow[iNV]) * g;
-      if (iMV >= 0 && num(lastRow[iMV]) != null) nr[iMV] = num(lastRow[iMV]) * g;
+      nr[iNAV] = isFinite(lr.unitNav) ? lr.unitNav : (num(lastRow[iNAV]) || 0) * g;
+      if (iTA >= 0) nr[iTA] = isFinite(lr.totalAssets) ? lr.totalAssets : (num(lastRow[iTA]) != null ? num(lastRow[iTA]) * g : null);
+      if (iTL >= 0 && isFinite(lr.liability)) nr[iTL] = lr.liability;
+      if (iNV >= 0) nr[iNV] = isFinite(lr.netValue) ? lr.netValue : (num(lastRow[iNV]) != null ? num(lastRow[iNV]) * g : null);
+      if (iCash >= 0 && isFinite(lr.cash)) nr[iCash] = lr.cash;
+      if (iMV >= 0) nr[iMV] = isFinite(lr.marketValue) ? lr.marketValue : (num(lastRow[iMV]) != null ? num(lastRow[iMV]) * g : null);
+      if (iU >= 0 && isFinite(lr.units)) nr[iU] = lr.units;
       if (iAdj >= 0) nr[iAdj] = 0;
       sheet.push(nr);
       lastRow = nr; lastDate = lr.date; added++;
     }
     return added;
+  }
+
+  function applyLiveHoldings(R, holdings) {
+    if (!R || R.error || !Array.isArray(holdings) || !holdings.length) return R;
+    const live = new Map(holdings.map(h => [String(h.t || h.ticker || '').toUpperCase(), h]));
+    let total = 0;
+    R.assets.forEach(a => {
+      const h = live.get(String(a.ticker || '').toUpperCase()); if (!h) return;
+      const oldMv = a.marketValue || 0;
+      a.price = Number(h.price ?? h.p) || a.price;
+      a.marketValue = Number(h.marketValue ?? h.mv) || 0;
+      a.qty = Number(h.q ?? h.qty) || a.qty;
+      if (a.pnl != null) a.pnl += a.marketValue - oldMv;
+      if (a.buyCost) a.exposureReturn = a.pnl / a.buyCost * 100;
+      total += a.marketValue;
+    });
+    if (total > 0) R.assets.forEach(a => { a.weight = (a.marketValue || 0) / total * 100; });
+    R.asOf = holdings[0] && holdings[0].date ? holdings[0].date : R.asOf;
+    return R;
   }
 
   /* ───────────── 主入口：workbookSheets = {sheetName: rows[][]} ───────────── */
@@ -426,7 +558,7 @@
   }
 
   return {
-    analyze, appendLive, attachBenchmarks, parseNavSheet, parseAssetSheet, parseBenchmarkSheet,
+    analyze, appendLive, applyLiveHoldings, extractLedger, attachBenchmarks, parseNavSheet, parseAssetSheet, parseBenchmarkSheet,
     fundReturns, calcMetrics, equityCurve, drawdownSeries, monthlyReturns,
     rollingVol, rollingSharpe, rollingAlphaBeta, histogram, varTable,
     stressTest, stressScenarios, align, priceToReturns,

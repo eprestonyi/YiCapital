@@ -69,7 +69,16 @@
     nav.appendChild(wrap);
 
     const ava = wrap.querySelector('#ycAva'), menu = wrap.querySelector('#ycMenu');
-    ava.addEventListener('click', e => { e.stopPropagation(); menu.classList.toggle('open'); });
+    ava.addEventListener('click', e => {
+      e.stopPropagation();
+      const rect = wrap.getBoundingClientRect();
+      if (rect.left < window.innerWidth / 2) {
+        menu.style.left = '0'; menu.style.right = 'auto';
+      } else {
+        menu.style.right = '0'; menu.style.left = 'auto';
+      }
+      menu.classList.toggle('open');
+    });
     document.addEventListener('click', () => menu.classList.remove('open'));
     wrap.querySelector('#ycLogout').addEventListener('click', async () => {
       try { if (API) await fetch(API + '/api/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + tok } }); } catch (e) {}

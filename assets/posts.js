@@ -20,6 +20,7 @@ const POSTS = window.POSTS = [
     "moreLabel": {"tw": "閱讀全文＋PDF →", "cn": "阅读全文＋PDF →", "en": "Read + PDF →"}
   },
   {
+    "id": "tencent-gaming-model",
     "date": "2026-07-08",
     "pillStyle": "",
     "more": "posts/tencent-0700-ch12",
@@ -50,6 +51,7 @@ const POSTS = window.POSTS = [
     }
   },
   {
+    "id": "tencent-payments-moat",
     "date": "2026-07-08",
     "pillStyle": "",
     "more": "posts/tencent-0700-ch12",
@@ -80,6 +82,7 @@ const POSTS = window.POSTS = [
     }
   },
   {
+    "id": "yicapital-fat-tail-risk",
     "date": "2026-07-10",
     "pillStyle": "gray",
     "more": "posts/yicapital-risk-report",

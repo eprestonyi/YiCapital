@@ -4,6 +4,7 @@ const REPORTS = [
   {
     "id": "great-company-2026-07",
     "url": "posts/great-company-great-investment",
+    "pdf": "assets/pdf/great-company-great-investment-2026-07.pdf",
     "ticker": "ESSAY",
     "genre": ["other"],
     "title": {
@@ -16,13 +17,15 @@ const REPORTS = [
     "meta": {"tw": "投資隨筆 · 第003期", "cn": "投资随笔 · 第003期", "en": "Essay · No. 003"}
   },
   {
-    url: "posts/tencent-0700-ch12", ticker: "0700.HK", genre: ["company"], date: "2026-07-08",
+    id: "tencent-0700-ch12",
+    url: "posts/tencent-0700-ch12", pdf: "assets/pdf/tencent-0700-ch12.pdf", ticker: "0700.HK", genre: ["company"], date: "2026-07-08",
     tags: "騰訊 腾讯 tencent 港股 互聯網 互联网 遊戲 游戏 微信 wechat internet gaming initiation buy",
     title: { tw:"騰訊控股：流量帝國的價值重估時刻——深度研究報告（第一、二章）", cn:"腾讯控股：流量帝国的价值重估时刻——深度研究报告（第一、二章）", en:"Tencent Holdings: The Revaluation Moment of a Traffic Empire — Deep-Dive Report (Ch. 1–2)" },
     meta: { tw:"買入 · TP HK$770", cn:"买入 · TP HK$770", en:"BUY · TP HK$770" }
   },
   {
-    url: "posts/yicapital-risk-report", ticker: "PORTFOLIO", genre: ["quant","portfolio"], date: "2026-07-08",
+    id: "yicapital-risk-report",
+    url: "posts/yicapital-risk-report", pdf: "", ticker: "PORTFOLIO", genre: ["quant","portfolio"], date: "2026-07-08",
     tags: "風險 风险 量化 VaR CVaR 壓力測試 压力测试 skewed-t 厚尾 fat tail stress risk quant",
     title: { tw:"Yi Capital 高階矩深度分析：厚尾、偏度與三情景極端壓力測試", cn:"Yi Capital 高阶矩深度分析：厚尾、偏度与三情景极端压力测试", en:"Yi Capital Higher-Moment Analysis: Fat Tails, Skewness & Three-Scenario Extreme Stress Tests" },
     meta: { tw:"方法論", cn:"方法论", en:"Methodology" }

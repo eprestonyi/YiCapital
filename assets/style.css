@@ -301,7 +301,7 @@ a.more:hover{text-decoration:underline}
   .utility .wrap{display:flex;gap:18px;overflow-x:auto;white-space:nowrap;padding-top:8px;padding-bottom:8px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
   .utility .wrap::-webkit-scrollbar{display:none}
   /* 導航 */
-  header .nav{flex-wrap:wrap;gap:10px}
+  header .nav{flex-wrap:wrap;gap:10px;min-height:72px;height:auto;padding-top:12px;padding-bottom:12px}
   .menu-btn{display:inline-block}
   nav ul{display:none;width:100%;flex-direction:column;gap:2px;padding:10px 0 4px;border-top:1px solid var(--line);margin-top:10px}
   nav ul.open{display:flex}
@@ -310,10 +310,13 @@ a.more:hover{text-decoration:underline}
   /* HERO：故事卡完全縱向堆疊，每張全寬 */
   .hero{padding:0}
   .hero-inner{min-height:0}
-  .hero-cta{padding:26px 18px 4px}
-  .hero-stories{grid-template-columns:1fr !important;gap:0;align-items:stretch}
-  .hero-stories .story,.hero-stories .explore{border-right:none !important;border-top:1px solid rgba(255,255,255,.08);padding:20px 18px}
+  .hero-cta{padding:28px 18px 18px;background:linear-gradient(180deg,rgba(4,7,13,.04),rgba(4,7,13,.48))}
+  .hero-stories{display:flex !important;flex-direction:column;gap:0;align-items:stretch}
+  .hero-stories .story,.hero-stories .explore{width:100%;min-height:0;border-right:none !important;border-left:none !important;border-top:1px solid rgba(255,255,255,.1);padding:18px;background:rgba(4,7,13,.48)}
+  .hero-stories .explore{text-align:left;padding:18px}
   .story h3{font-size:16.5px;line-height:1.5}
+  .yc-ava-wrap{margin-left:auto !important;order:2}
+  .yc-menu{max-width:calc(100vw - 32px)}
   /* 首頁組合卡：精選+側欄 全部縱向 */
   .pf-featured{grid-template-columns:1fr !important;gap:16px}
   .pf-side{grid-template-columns:1fr !important}
