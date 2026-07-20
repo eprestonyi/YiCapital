@@ -37,21 +37,21 @@
   const text = {
     tw: {
       equity: '淨值曲線（模擬 10,000 投入）', heat: '月度收益率熱力圖',
-      draw: '回撤曲線與尾部風險', stress: '極端壓力測試', asof: '數據截至',
+      draw: '回撤曲線與尾部風險', stress: '非中心 t 左尾壓力測試（10,000 條路徑）', asof: '數據截至',
       days: '交易日', holdings: '持倉市值', loading: '正在讀取後台快照',
       failed: '數據載入失敗', syncing: '後台快照尚未包含此項，等待下次同步',
       benchWait: '等待基準快照', fallback: '相容模式：由工作簿載入',
     },
     cn: {
       equity: '净值曲线（模拟 10,000 投入）', heat: '月度收益率热力图',
-      draw: '回撤曲线与尾部风险', stress: '极端压力测试', asof: '数据截至',
+      draw: '回撤曲线与尾部风险', stress: '非中心 t 左尾压力测试（10,000 条路径）', asof: '数据截至',
       days: '交易日', holdings: '持仓市值', loading: '正在读取后台快照',
       failed: '数据加载失败', syncing: '后台快照尚未包含此项，等待下次同步',
       benchWait: '等待基准快照', fallback: '兼容模式：由工作簿加载',
     },
     en: {
       equity: 'Growth of 10,000 vs. benchmarks', heat: 'Monthly return heatmap',
-      draw: 'Drawdown and tail risk', stress: 'Extreme stress tests', asof: 'Data through',
+      draw: 'Drawdown and tail risk', stress: 'Noncentral-t tail stress tests (10,000 paths)', asof: 'Data through',
       days: 'trading days', holdings: 'holdings market value', loading: 'Loading backend snapshot',
       failed: 'Unable to load data', syncing: 'Not yet present in the backend snapshot; awaiting sync',
       benchWait: 'Awaiting benchmark snapshot', fallback: 'Compatibility mode: loaded from workbook',

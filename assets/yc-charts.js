@@ -226,8 +226,10 @@
   /* ── 壓力測試表 + 扇形路徑圖 ── */
   function stressTableHtml(stress) {
     let h = '<table class="m"><thead><tr><th>'+T('ch.scen','壓力場景')+'</th><th>'+T('ch.dur','持續')+'</th><th>'+T('ch.p50','P50 終值')+'</th><th>'+T('ch.p5','P5 終值')+'</th><th>'+T('ch.p1','P1 終值')+'</th><th>'+T('ch.half','腰斬概率')+'</th></tr></thead><tbody>';
-    [stress.crash, stress.bear, stress.grind].forEach(s => {
-      h += `<tr><td>${esc(s.label)}</td><td>${s.nDays}${T('ch.day','天')}</td><td class="${s.p50 >= 1 ? 'u' : 'd'}">${s.p50.toFixed(2)}</td><td class="d">${s.p5.toFixed(2)}（${pct(s.p5 - 1, 1, true)}）</td><td class="d">${s.p1.toFixed(2)}（${pct(s.p1 - 1, 1, true)}）</td><td>${pct(s.probHalf, 1)}</td></tr>`;
+    [stress.crash, stress.bear, stress.grind].forEach((s, i) => {
+      const key = ['sc.crash', 'sc.bear', 'sc.grind'][i];
+      const label = s.condition ? T(key, s.label) : s.label;
+      h += `<tr><td>${esc(label)}</td><td>${s.nDays}${T('ch.day','天')}</td><td class="${s.p50 >= 1 ? 'u' : 'd'}">${s.p50.toFixed(2)}</td><td class="d">${s.p5.toFixed(2)}（${pct(s.p5 - 1, 1, true)}）</td><td class="d">${s.p1.toFixed(2)}（${pct(s.p1 - 1, 1, true)}）</td><td>${pct(s.probHalf, 1)}</td></tr>`;
     });
     return h + '</tbody></table>';
   }

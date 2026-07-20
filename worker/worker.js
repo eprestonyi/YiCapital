@@ -375,7 +375,8 @@ function buildVarTable(rp, levels = [0.95, 0.98, 0.99]) {
     };
   });
 }
-function seededRandom(seed) {
+/* Noncentral-t 壓力測試：與 Manager 的 _fit_skewed_t / 圖17-19 同口徑。 */
+function mulberry32(seed) {
   return function () {
     seed |= 0; seed = seed + 0x6D2B79F5 | 0;
     let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
@@ -383,17 +384,149 @@ function seededRandom(seed) {
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
 }
-function stressTest(rp, nDays, seed, negativeShift) {
-  if (rp.length < 5) return null;
-  const random = seededRandom(seed), nSims = 10000;
-  let pool = rp.slice();
-  if (negativeShift) {
-    const m = mean(pool);
-    pool = pool.map(r => r - m - Math.abs(m) - 0.0005);
+function logGamma(z) {
+  const c = [
+    0.9999999999998099, 676.5203681218851, -1259.1392167224028,
+    771.3234287776531, -176.6150291621406, 12.507343278686905,
+    -0.13857109526572012, 9.984369578019572e-6, 1.5056327351493116e-7,
+  ];
+  if (z < 0.5) return Math.log(Math.PI) - Math.log(Math.sin(Math.PI * z)) - logGamma(1 - z);
+  z -= 1;
+  let x = c[0];
+  for (let i = 1; i < c.length; i++) x += c[i] / (z + i);
+  const t = z + 7.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+function nctShapeMoments(df, nc) {
+  if (!(df > 4)) return null;
+  const rawNormal = [1, nc, 1 + nc * nc, nc ** 3 + 3 * nc, nc ** 4 + 6 * nc * nc + 3];
+  const raw = [1];
+  for (let k = 1; k <= 4; k++) {
+    const inverseChiMoment = Math.exp(
+      0.5 * k * Math.log(df / 2) + logGamma((df - k) / 2) - logGamma(df / 2)
+    );
+    raw[k] = rawNormal[k] * inverseChiMoment;
   }
-  const finals = new Array(nSims), sampledPaths = [];
+  const mu = raw[1], variance = raw[2] - mu * mu;
+  if (!(variance > 0) || !isFinite(variance)) return null;
+  const central3 = raw[3] - 3 * mu * raw[2] + 2 * mu ** 3;
+  const central4 = raw[4] - 4 * mu * raw[3] + 6 * mu * mu * raw[2] - 3 * mu ** 4;
+  return {
+    mean: mu, variance,
+    skew: central3 / variance ** 1.5,
+    kurt: central4 / (variance * variance) - 3,
+  };
+}
+function populationMoments(values) {
+  const m = mean(values);
+  const variance = mean(values.map(v => (v - m) ** 2));
+  if (!(variance > 0)) return { mean: m, std: 0, skew: 0, kurt: 0 };
+  return {
+    mean: m,
+    std: Math.sqrt(variance),
+    skew: mean(values.map(v => (v - m) ** 3)) / variance ** 1.5,
+    kurt: mean(values.map(v => (v - m) ** 4)) / (variance * variance) - 3,
+  };
+}
+function fitNctMoments(values) {
+  const sample = populationMoments(values);
+  if (!sample.std || values.length < 5) {
+    return {
+      df: 200, nc: 0, loc: sample.mean, scale: Math.max(sample.std, 1e-9),
+      sampleMean: sample.mean, sampleStd: sample.std,
+      targetSkew: sample.skew, targetKurt: sample.kurt,
+      fittedSkew: 0, fittedKurt: 6 / 196, objective: 0,
+    };
+  }
+  const objective = shape => {
+    const skewScale = 0.25 + Math.abs(sample.skew);
+    const kurtScale = 1 + Math.abs(sample.kurt);
+    return ((shape.skew - sample.skew) / skewScale) ** 2
+      + ((shape.kurt - sample.kurt) / kurtScale) ** 2;
+  };
+  let best = null;
+  for (let di = 0; di <= 64; di++) {
+    const df = 4.05 * (200 / 4.05) ** (di / 64);
+    for (let ni = -48; ni <= 48; ni++) {
+      const nc = ni * 0.25, shape = nctShapeMoments(df, nc);
+      if (!shape) continue;
+      const score = objective(shape);
+      if (!best || score < best.score) best = { df, nc, shape, score };
+    }
+  }
+  let dfStep = Math.max(0.25, (best.df - 4) * 0.18), ncStep = 0.2;
+  for (let pass = 0; pass < 7; pass++) {
+    const centre = best;
+    for (let di = -3; di <= 3; di++) {
+      const df = Math.max(4.01, Math.min(300, centre.df + di * dfStep));
+      for (let ni = -3; ni <= 3; ni++) {
+        const nc = Math.max(-20, Math.min(20, centre.nc + ni * ncStep));
+        const shape = nctShapeMoments(df, nc);
+        if (!shape) continue;
+        const score = objective(shape);
+        if (score < best.score) best = { df, nc, shape, score };
+      }
+    }
+    dfStep *= 0.42; ncStep *= 0.42;
+  }
+  const scale = sample.std / Math.sqrt(best.shape.variance);
+  return {
+    df: best.df, nc: best.nc,
+    loc: sample.mean - scale * best.shape.mean, scale,
+    sampleMean: sample.mean, sampleStd: sample.std,
+    targetSkew: sample.skew, targetKurt: sample.kurt,
+    fittedSkew: best.shape.skew, fittedKurt: best.shape.kurt,
+    objective: best.score,
+  };
+}
+function standardNormal(random) {
+  let u = 0, v = 0;
+  while (u <= Number.EPSILON) u = random();
+  while (v <= Number.EPSILON) v = random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+function gammaRandom(shape, random) {
+  if (shape < 1) {
+    let u = 0;
+    while (u <= Number.EPSILON) u = random();
+    return gammaRandom(shape + 1, random) * u ** (1 / shape);
+  }
+  const d = shape - 1 / 3, c = 1 / Math.sqrt(9 * d);
+  for (;;) {
+    const x = standardNormal(random), base = 1 + c * x;
+    if (base <= 0) continue;
+    const v = base ** 3, u = random();
+    if (u < 1 - 0.0331 * x ** 4 || Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) {
+      return d * v;
+    }
+  }
+}
+function nctRandom(fit, random) {
+  const z = standardNormal(random);
+  const chiSquare = 2 * gammaRandom(fit.df / 2, random);
+  return fit.loc + fit.scale * (z + fit.nc) / Math.sqrt(chiSquare / fit.df);
+}
+function fittedNctPool(fit, size, seed) {
+  const random = mulberry32(seed), pool = new Array(size);
+  for (let i = 0; i < size; i++) pool[i] = nctRandom(fit, random);
+  return pool;
+}
+function sortedValue(sorted, p) {
+  if (!sorted.length) return null;
+  const index = (sorted.length - 1) * p, lo = Math.floor(index), hi = Math.ceil(index);
+  return lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (index - lo);
+}
+function maxValue(values) {
+  let out = -Infinity;
+  for (let i = 0; i < values.length; i++) if (values[i] > out) out = values[i];
+  return values.length ? out : null;
+}
+function stressTest(pool, nDays, opts = {}) {
+  const { nSims = 10000, pathSims = 1000, seed = 42, detDaily = null } = opts;
+  if (!pool.length) return null;
+  const random = mulberry32(seed), finals = new Array(nSims), sampledPaths = [];
   for (let sim = 0; sim < nSims; sim++) {
-    let value = 1, path = sim < 400 ? new Array(nDays) : null;
+    let value = 1, path = sim < pathSims ? new Float64Array(nDays) : null;
     for (let day = 0; day < nDays; day++) {
       value *= 1 + pool[Math.floor(random() * pool.length)];
       if (path) path[day] = value;
@@ -401,28 +534,62 @@ function stressTest(rp, nDays, seed, negativeShift) {
     finals[sim] = value;
     if (path) sampledPaths.push(path);
   }
-  finals.sort((a, b) => a - b);
-  const q = p => finals[Math.min(nSims - 1, Math.floor(p * nSims))];
+  const sorted = finals.slice().sort((a, b) => a - b);
   const pathP5 = [], pathP50 = [], pathP95 = [];
   for (let day = 0; day < nDays; day++) {
     const col = sampledPaths.map(path => path[day]).sort((a, b) => a - b);
-    pathP5.push(col[Math.floor(0.05 * col.length)]);
-    pathP50.push(col[Math.floor(0.50 * col.length)]);
-    pathP95.push(col[Math.floor(0.95 * col.length)]);
+    pathP5.push(sortedValue(col, 0.05));
+    pathP50.push(sortedValue(col, 0.50));
+    pathP95.push(sortedValue(col, 0.95));
   }
+  const deterministicDaily = detDaily == null ? mean(pool) : detDaily;
+  const detNav = (1 + deterministicDaily) ** nDays;
   return {
-    nDays, p1: q(0.01), p5: q(0.05), p50: q(0.50), p95: q(0.95),
+    nDays, p1: sortedValue(sorted, 0.01), p5: sortedValue(sorted, 0.05),
+    p50: sortedValue(sorted, 0.50), p95: sortedValue(sorted, 0.95),
     mean: mean(finals), probLoss: finals.filter(v => v < 1).length / nSims,
     probHalf: finals.filter(v => v < 0.5).length / nSims,
     pathP5, pathP50, pathP95,
+    detDaily: deterministicDaily, detNav, detDrawdown: detNav - 1,
+    conditionMean: mean(pool), poolSize: pool.length, pathSims,
   };
 }
 function stressScenarios(rp) {
   if (rp.length < 5) return null;
+  const fit = fitNctMoments(rp);
+  const fittedPool = fittedNctPool(fit, 200000, 0x59494341);
+  const sorted = fittedPool.slice().sort((a, b) => a - b);
+  const q1 = sortedValue(sorted, 0.01), q5 = sortedValue(sorted, 0.05);
+  const crashPool = fittedPool.filter(v => v <= q1);
+  const bearPool = fittedPool.filter(v => v <= q5);
+  const negativePool = fittedPool.filter(v => v < 0);
+  const historicalNegatives = rp.filter(v => v < 0);
+  const negMean = historicalNegatives.length ? mean(historicalNegatives) : Math.min(fit.sampleMean, -1e-9);
+  const meta = {
+    model: 'noncentral-t', method: 'moment-fit-conditional-monte-carlo',
+    fit, fittedPoolSize: fittedPool.length, nSims: 10000,
+  };
   return {
-    crash: { label: 'Black Swan Crash（10天，1%分位）', ...stressTest(rp, 10, 17, false) },
-    bear: { label: 'Prolonged Bear（21天，5%分位）', ...stressTest(rp, 21, 18, false) },
-    grind: { label: 'Slow Grind Down（126天，負收益均值）', ...stressTest(rp, 126, 19, true) },
+    model: meta.model, method: meta.method, fit, fittedPoolSize: fittedPool.length,
+    crash: {
+      label: 'Black Swan Crash（10天，NCT左尾≤1%分位）',
+      ...stressTest(crashPool, 10, { seed: 17, detDaily: q1 }),
+      ...meta, condition: 'nct<=q0.01', threshold: q1,
+      tailPoolMax: maxValue(crashPool),
+    },
+    bear: {
+      label: 'Prolonged Bear（21天，NCT左尾≤5%分位）',
+      ...stressTest(bearPool, 21, { seed: 18, detDaily: q5 }),
+      ...meta, condition: 'nct<=q0.05', threshold: q5,
+      tailPoolMax: maxValue(bearPool),
+    },
+    grind: {
+      label: 'Slow Grind Down（126天，NCT負收益）',
+      ...stressTest(negativePool, 126, { seed: 19, detDaily: negMean }),
+      ...meta, condition: 'nct<0', threshold: 0,
+      historicalNegativeMean: negMean,
+      tailPoolMax: maxValue(negativePool),
+    },
   };
 }
 function normalizeHistory(rows) {

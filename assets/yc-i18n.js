@@ -120,8 +120,8 @@
     'pn.unitnav':['每股淨資產走勢（Unit NAV）','每股净资产走势（Unit NAV）','Unit NAV History'],'pn.unitnav.en':'Unit NAV',
     'pn.var':['VaR（日，95/98/99）','VaR（日，95/98/99）','VaR (daily, 95/98/99)'],'pn.var.en':'Normal / Cornish-Fisher / Empirical',
     'pn.var.full':['VaR 多模型對比（日，95/98/99）','VaR 多模型对比（日，95/98/99）','VaR Model Comparison (daily, 95/98/99)'],
-    'pn.stress':['蒙特卡洛極端壓力測試（10,000 次歷史 bootstrap）','蒙特卡洛极端压力测试（10,000 次历史 bootstrap）','Monte Carlo Stress Tests (10,000 bootstrap paths)'],'pn.stress.en':'Monte Carlo Stress Tests',
-    'pn.skewt':['Skewed-t 極端壓力測試','Skewed-t 极端压力测试','Skewed-t Extreme Stress Tests'],
+    'pn.stress':['非中心 t 左尾壓力測試（10,000 條路徑）','非中心 t 左尾压力测试（10,000 条路径）','Noncentral-t Tail Stress Tests (10,000 paths)'],'pn.stress.en':'Noncentral-t Tail Stress Tests',
+    'pn.skewt':['非中心 t 極端壓力測試','非中心 t 极端压力测试','Noncentral-t Extreme Stress Tests'],
     /* ── 組合實錄 ── */
     'pf.crumbtitle':['組合實錄','组合实录','Our Portfolios'],
     'pf.intro':['三個獨立運作的個人組合，往下滑動依次為','三个独立运作的个人组合，往下滑动依次为','Three independently run portfolios; scroll for'],
@@ -169,9 +169,9 @@
     'ch.updown2':['綠漲紅跌；色深對應幅度。由淨值表逐日複利計算。','绿涨红跌；色深对应幅度。由净值表逐日复利计算。','Green = gains, red = losses; intensity scales with magnitude. Compounded daily from the NAV workbook.'],
     'ch.nodata':['無數據','无数据','No data'],
     'ch.dd':['回撤','回撤','Drawdown'],
-    'sc.crash':['Black Swan Crash（10天，1%分位）','Black Swan Crash（10天，1%分位）','Black Swan Crash (10d, 1st pct.)'],
-    'sc.bear':['Prolonged Bear（21天，5%分位）','Prolonged Bear（21天，5%分位）','Prolonged Bear (21d, 5th pct.)'],
-    'sc.grind':['Slow Grind Down（126天，負收益均值）','Slow Grind Down（126天，负收益均值）','Slow Grind Down (126d, negative drift)'],
+    'sc.crash':['Black Swan Crash（10天，NCT 左尾 ≤1%）','Black Swan Crash（10天，NCT 左尾 ≤1%）','Black Swan Crash (10d, NCT left tail ≤1%)'],
+    'sc.bear':['Prolonged Bear（21天，NCT 左尾 ≤5%）','Prolonged Bear（21天，NCT 左尾 ≤5%）','Prolonged Bear (21d, NCT left tail ≤5%)'],
+    'sc.grind':['Slow Grind Down（126天，NCT 負收益條件）','Slow Grind Down（126天，NCT 负收益条件）','Slow Grind Down (126d, NCT negative-return condition)'],
     'mon':['{n}月','{n}月','M{n}'],
   };
 

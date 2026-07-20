@@ -133,11 +133,11 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     <div class="sec-h"><span class="idx">03 | Risks</span><h2>Risk Analysis</h2></div>
     <div class="grid2">
       <div class="panel"><h4 data-i18n="pn.var">VaR (daily, 95/98/99)</h4><div id="c-var"></div><div class="risk-note" id="var-note"></div></div>
-      <div class="panel"><h4 data-i18n="pn.stress">Monte Carlo Stress Tests (10,000 bootstrap paths)</h4><div id="c-stress-table"></div><div class="risk-note" id="stress-note"></div></div>
+      <div class="panel"><h4 data-i18n="pn.stress">Noncentral-t Tail Stress Tests (10,000 paths)</h4><div id="c-stress-table"></div><div class="risk-note" id="stress-note"></div></div>
     </div>
     <div class="grid2" style="margin-top:22px">
       <div class="panel"><h4>Stress Path: Black Swan Crash (10d)</h4><div id="c-fan-crash"></div></div>
-      <div class="panel"><h4>Stress Path: Slow Grind Down (126d, negative drift)</h4><div id="c-fan-grind"></div></div>
+      <div class="panel"><h4>Stress Path: Slow Grind Down (126d, NCT negative-return condition)</h4><div id="c-fan-grind"></div></div>
     </div>
   </div>
 
@@ -282,7 +282,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     const cf99 = R.varTable.find(r=>r.level===0.99);
     $('var-note').innerHTML = `At 99% confidence the normal model ${Math.abs(cf99.cf)>Math.abs(cf99.normal)?`understates risk by <b>${((cf99.cf/cf99.normal-1)*100).toFixed(0)}%</b> (CF ${F.pct(cf99.cf,2)} vs normal ${F.pct(cf99.normal,2)})`:'is close to the Cornish-Fisher measure'}. All risk controls use Cornish-Fisher / empirical quantiles.`;
     $('c-stress-table').innerHTML = F.stressTableHtml(R.stress);
-    $('stress-note').innerHTML = `Bootstrap resampling of this portfolio's historical daily returns (10,000 paths per scenario). The Grind scenario shifts mean return negative to simulate a six-month slow bleed. Stress tests answer only one question: <b>do we survive?</b>`;
+    $('stress-note').innerHTML = `A noncentral-t distribution is fitted to the skewness and kurtosis of historical daily returns. Crash / Bear sample only from its 1% / 5% left tails; Grind samples only negative fitted returns (10,000 paths per scenario). Stress tests answer one question: <b>do we survive?</b>`;
     $('c-fan-crash').innerHTML = F.stressFanChart(R.stress.crash);
     $('c-fan-grind').innerHTML = F.stressFanChart(R.stress.grind);
   }
