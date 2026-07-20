@@ -172,6 +172,7 @@
   /* ── 水平條形圖（個股盈虧 / 敞口收益率）── */
   function hBarChart(items, opts = {}) {
     const { W = 560, valueFmt = v => money(v), title = '' } = opts;
+    if (!items || !items.length) return (title ? `<h4>${esc(title)}</h4>` : '') + '<div class="legend">'+T('ch.nodata','無數據')+'</div>';
     const rowH = 26, padT = 8, padB = 8, padL = 96, padR = 90;
     const H = padT + padB + items.length * rowH;
     const vals = items.map(it => it.v);
@@ -260,8 +261,8 @@
     let h = '<table class="m"><thead><tr><th>'+T('ch.ticker','代號')+'</th><th>'+T('ch.weight','權重')+'</th><th>'+T('ch.mv','市值')+'</th><th>'+T('ch.pnl','總盈虧')+'</th><th>'+T('ch.expret','敞口收益率')+'</th></tr></thead><tbody>';
     items.forEach(a => {
       const w = a.weight != null ? a.weight : (total ? a.marketValue / total * 100 : 0);
-      const er = a.exposureReturn;
-      h += `<tr><td>${esc(a.ticker)}</td><td>${fmt(w, 1)}%</td><td>${money(a.marketValue, cur)}</td><td class="${(a.pnl || 0) >= 0 ? 'u' : 'd'}">${money(a.pnl, cur)}</td><td class="${(er || 0) >= 0 ? 'u' : 'd'}">${er == null ? '—' : (er >= 0 ? '+' : '') + fmt(er, 1) + '%'}</td></tr>`;
+      const er = a.exposureReturn, pnl = a.pnl;
+      h += `<tr><td>${esc(a.ticker)}</td><td>${fmt(w, 1)}%</td><td>${money(a.marketValue, cur)}</td><td class="${pnl == null ? '' : pnl >= 0 ? 'u' : 'd'}">${pnl == null ? '—' : money(pnl, cur)}</td><td class="${er == null ? '' : er >= 0 ? 'u' : 'd'}">${er == null ? '—' : (er >= 0 ? '+' : '') + fmt(er, 1) + '%'}</td></tr>`;
     });
     return h + '</tbody></table>';
   }

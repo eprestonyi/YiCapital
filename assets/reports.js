@@ -32,23 +32,23 @@ const REPORTS = [
   }
 ];
 const _LANG = () => (window.YCI && YCI.lang) || window.YC_LANG || 'tw';
-const _T = (k, fb) => (window.YCI ? YCI.t(k) : fb);
-const _F = (o) => (typeof o === 'string') ? o : (o[_LANG()] || o.tw);
+const _RT = (k, fb) => (window.YCI ? YCI.t(k) : fb);
+const _RF = (o) => (typeof o === 'string') ? o : (o[_LANG()] || o.tw);
 let _activeGenres = new Set();
 function renderReports(listId, keyword, prefix) {
   const el = document.getElementById(listId); if (!el) return;
   const kw = (keyword || "").trim().toLowerCase();
   const hits = REPORTS.filter(r =>
-    (!kw || (r.ticker + " " + _F(r.title) + " " + r.title.tw + " " + r.tags).toLowerCase().includes(kw)) &&
+    (!kw || (r.ticker + " " + _RF(r.title) + " " + r.title.tw + " " + r.tags).toLowerCase().includes(kw)) &&
     (!_activeGenres.size || (r.genre || []).some(g => _activeGenres.has(g))));
-  if (!hits.length) { el.innerHTML = '<div class="no-result">' + _T('forum.noresult','沒有找到相關研報。') + '</div>'; return; }
+  if (!hits.length) { el.innerHTML = '<div class="no-result">' + _RT('forum.noresult','沒有找到相關研報。') + '</div>'; return; }
   el.innerHTML = '<ul class="forum">' + hits.map((r, i) => `
     <li><a href="${ (r.url||"").indexOf("assets/")===0 ? "/"+r.url : (prefix||"")+r.url }">
       <span class="f-num">${String(i+1).padStart(2,"0")}</span>
       <span class="f-num" style="color:#8b98ac">${r.ticker}</span>
-      <span>${_F(r.title)}${(r.genre||[]).map(g=>'<span class="g-tag">'+_T('g.'+g,g)+'</span>').join('')}</span>
+      <span>${_RF(r.title)}${(r.genre||[]).map(g=>'<span class="g-tag">'+_RT('g.'+g,g)+'</span>').join('')}</span>
       <span class="f-dots"></span>
-      <span class="f-meta">${_F(r.meta)} · ${r.date}</span>
+      <span class="f-meta">${_RF(r.meta)} · ${r.date}</span>
     </a></li>`).join("") + '</ul>';
 }
 function bindSearch(inputId, listId, prefix) {
@@ -58,8 +58,8 @@ function bindSearch(inputId, listId, prefix) {
 function renderGenreChips(chipId, inputId, listId, prefix) {
   const box = document.getElementById(chipId); if (!box) return;
   const draw = () => {
-    box.innerHTML = '<span class="g-chip'+(!_activeGenres.size?' on':'')+'" data-g="__all">'+_T('g.all','全部')+'</span>'
-      + REPORT_GENRES.map(g=>'<span class="g-chip'+(_activeGenres.has(g)?' on':'')+'" data-g="'+g+'">'+_T('g.'+g,g)+'</span>').join('');
+    box.innerHTML = '<span class="g-chip'+(!_activeGenres.size?' on':'')+'" data-g="__all">'+_RT('g.all','全部')+'</span>'
+      + REPORT_GENRES.map(g=>'<span class="g-chip'+(_activeGenres.has(g)?' on':'')+'" data-g="'+g+'">'+_RT('g.'+g,g)+'</span>').join('');
   };
   box.addEventListener('click', e => {
     const g = e.target.dataset && e.target.dataset.g; if (!g) return;
@@ -73,18 +73,22 @@ function renderGenreChips(chipId, inputId, listId, prefix) {
 
 /* ── 動態層：後端 KV 若已託管內容，覆蓋內置種子並重繪（後台可增改停刪，無需改代碼）── */
 (function ycLoadContent(){
-  const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return;
-  fetch(api+'/api/content',{cache:'no-store'}).then(r=>r.json()).then(j=>{
-    if(!j.ok||!j.managed) return;
-    if(Array.isArray(j.reports)){
-      REPORTS.length=0; j.reports.forEach(x=>REPORTS.push(x));
-      REPORTS.sort((a,b)=>String(b.date).localeCompare(String(a.date)));
-      document.dispatchEvent(new CustomEvent('yc-content-reports'));
-    }
-    if(Array.isArray(j.posts)&&window.POSTS){
-      POSTS.length=0; j.posts.forEach(x=>POSTS.push(x));
-      POSTS.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
-      document.dispatchEvent(new CustomEvent('yc-content-posts'));
-    }
-  }).catch(()=>{});
+  const load=()=>{
+    const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return;
+    fetch(api+'/api/content',{cache:'no-store'}).then(r=>r.json()).then(j=>{
+      if(!j.ok||!j.managed) return;
+      if(Array.isArray(j.reports)){
+        REPORTS.length=0; j.reports.forEach(x=>REPORTS.push(x));
+        REPORTS.sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+        document.dispatchEvent(new CustomEvent('yc-content-reports'));
+      }
+      if(Array.isArray(j.posts)&&window.POSTS){
+        POSTS.length=0; j.posts.forEach(x=>POSTS.push(x));
+        POSTS.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+        document.dispatchEvent(new CustomEvent('yc-content-posts'));
+      }
+    }).catch(()=>{});
+  };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',load,{once:true});
+  else load();
 })();

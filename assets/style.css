@@ -217,6 +217,14 @@ a.tab{display:inline-block;text-decoration:none}
 .mini-stats div .v{font-family:var(--mono);font-weight:600;font-size:20px;color:#fff}
 .mini-stats div .v.u{color:var(--up)}
 .mini-stats div .k{font-size:11.5px;color:var(--muted)}
+.yc-home-chart-loading{height:130px;margin:14px 0 4px;border-radius:4px;background:linear-gradient(100deg,rgba(95,111,133,.08) 20%,rgba(95,111,133,.18) 38%,rgba(95,111,133,.08) 56%);background-size:220% 100%;animation:yc-shimmer 1.35s ease-in-out infinite}
+.yc-home-chart-empty{height:130px;margin:14px 0 4px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--line);border-radius:4px;color:var(--muted);font-family:var(--mono);font-size:11px;letter-spacing:.5px}
+.fund.yc-live-pending .stats,.fund.yc-live-pending .tab-panel:not([id$="-methodology"]) .panel{position:relative;min-height:116px;overflow:hidden}
+.fund.yc-live-pending .stats>*,.fund.yc-live-pending .tab-panel:not([id$="-methodology"]) .panel>*{visibility:hidden}
+.fund.yc-live-pending .stats::after,.fund.yc-live-pending .tab-panel:not([id$="-methodology"]) .panel::after,.yc-data-loading::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,rgba(95,111,133,.06) 20%,rgba(95,111,133,.16) 38%,rgba(95,111,133,.06) 56%);background-size:220% 100%;animation:yc-shimmer 1.35s ease-in-out infinite}
+.yc-data-loading{height:210px;position:relative;overflow:hidden;border-radius:4px}
+.yc-data-message{min-height:110px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-family:var(--mono);font-size:12px;text-align:center}
+@keyframes yc-shimmer{to{background-position:-220% 0}}
 
 /* ═══ 報告頁 PDF 嵌入 ═══ */
 .pdf-frame{width:100%;height:760px;border:1px solid var(--line);border-radius:6px;background:#0b1220;margin-top:14px}
