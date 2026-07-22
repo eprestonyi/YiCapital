@@ -3,6 +3,7 @@
   --bg:#04070d; --bg2:#070c15; --panel:#0b1220; --line:#1a2436;
   --txt:#e8edf5; --muted:#8b98ac;
   --cyan:#22d3ee; --blue:#3b82f6; --violet:#8b5cf6;
+  --brand-yi:#FFFFFF; --brand-capital-start:#6E9AF4; --brand-capital-end:#B54BFA;
   --up:#34d399; --down:#ff5c47;
   --sans:'Space Grotesk','Noto Sans TC',sans-serif;
   --zh:'Noto Sans TC',sans-serif;
@@ -24,8 +25,8 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--cyan);outline-offse
 /* 主導航 */
 header{position:sticky;top:0;z-index:100;background:rgba(4,7,13,.85);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
 .nav{display:flex;align-items:center;justify-content:space-between;height:84px}
-.logo{font-family:var(--sans);font-weight:700;font-size:30px;letter-spacing:-.5px}
-.logo b{background:linear-gradient(90deg,var(--cyan),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent}
+.logo{font-family:var(--sans);font-weight:700;font-size:30px;letter-spacing:-.5px;color:var(--brand-yi);white-space:nowrap}
+.logo b{font-weight:700;background:linear-gradient(90deg,var(--brand-capital-start),var(--brand-capital-end));-webkit-background-clip:text;background-clip:text;color:transparent}
 nav ul{display:flex;gap:6px;list-style:none;align-items:center}
 nav a.link{display:block;padding:30px 18px 26px;font-family:var(--sans);font-weight:500;font-size:16.5px;position:relative;color:#c9d3e2}
 nav a.link::after{content:"";position:absolute;left:18px;right:18px;bottom:0;height:3px;background:linear-gradient(90deg,var(--cyan),var(--blue));transform:scaleX(0);transform-origin:left;transition:transform .22s ease}

@@ -76,10 +76,16 @@ async function newSession(env, username, role) {
 
 const isUsername = u => /^[a-zA-Z0-9_\-\u4e00-\u9fff]{2,24}$/.test(u || '');
 const isEmail = e => /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(e || '');
+const brandWordmark = (size = '20px') =>
+  '<span style="display:inline-block;background:#0B1E3F;padding:3px 8px;font-family:Arial,sans-serif;font-weight:800;font-size:' + size + ';letter-spacing:0;white-space:nowrap">'
+  + '<span style="color:#FFFFFF">Yi</span>'
+  + '<span style="color:#6E9AF4">C</span><span style="color:#7A8CF5">a</span><span style="color:#867EF6">p</span>'
+  + '<span style="color:#9270F7">i</span><span style="color:#9E63F8">t</span><span style="color:#AA57F9">a</span><span style="color:#B54BFA">l</span>'
+  + '</span>';
 
 async function sendResetCode(env, email, code) {
   const html = '<div style="max-width:560px;margin:0 auto;font-family:Georgia,\'Noto Serif TC\',serif;color:#1a1a1a;background:#ffffff">'
-    + '<div style="border-bottom:3px solid #0e7490;padding:20px 0 12px"><span style="font-family:Arial,sans-serif;font-weight:800;font-size:20px;letter-spacing:1px">YI<span style="color:#0e7490">CAPITAL</span></span><span style="float:right;font-family:Arial,sans-serif;font-size:11px;color:#888;letter-spacing:2px;padding-top:6px">PASSWORD RESET</span></div>'
+    + '<div style="border-bottom:3px solid #0e7490;padding:20px 0 12px">' + brandWordmark('20px') + '<span style="float:right;font-family:Arial,sans-serif;font-size:11px;color:#888;letter-spacing:2px;padding-top:6px">PASSWORD RESET</span></div>'
     + '<div style="padding:26px 0 4px">'
     + '<p style="font-size:15px;line-height:1.9;margin:0 0 6px">您好，</p>'
     + '<p style="font-size:15px;line-height:1.9;margin:0 0 18px">我們收到了重設您 Yi Capital 帳號密碼的請求。請在頁面輸入以下驗證碼以繼續：</p>'
@@ -89,7 +95,7 @@ async function sendResetCode(env, email, code) {
     + '· 驗證碼於 <b>15 分鐘</b>內有效。若您並未發起此請求，請忽略本郵件，密碼不會被更改。<br>'
     + '· This code expires in <b>15 minutes</b>. If you did not request this, ignore this email — your password will not change.'
     + '</td></tr></table>'
-    + '<p style="font-size:15px;line-height:1.9;margin:26px 0 0">Preston<br><span style="color:#777">YiCapital</span></p>'
+    + '<p style="font-size:15px;line-height:1.9;margin:26px 0 0">Preston<br>' + brandWordmark('15px') + '</p>'
     + '</div>'
     + '<hr style="border:none;border-top:1px solid #ddd;margin:26px 0 12px">'
     + '<p style="color:#999;font-size:11.5px;font-family:Arial,sans-serif;line-height:1.8">此為系統郵件（服務條款 04）。Yi Capital · <a href="https://www.yicapital.co" style="color:#0e7490">yicapital.co</a></p></div>';
@@ -103,7 +109,7 @@ async function sendResetCode(env, email, code) {
 
 async function sendCode(env, email, code) {
   const html = '<div style="max-width:560px;margin:0 auto;font-family:Georgia,\'Noto Serif TC\',serif;color:#1a1a1a;background:#ffffff">'
-    + '<div style="border-bottom:3px solid #0e7490;padding:20px 0 12px"><span style="font-family:Arial,sans-serif;font-weight:800;font-size:20px;letter-spacing:1px">YI<span style="color:#0e7490">CAPITAL</span></span><span style="float:right;font-family:Arial,sans-serif;font-size:11px;color:#888;letter-spacing:2px;padding-top:6px">ACCOUNT VERIFICATION</span></div>'
+    + '<div style="border-bottom:3px solid #0e7490;padding:20px 0 12px">' + brandWordmark('20px') + '<span style="float:right;font-family:Arial,sans-serif;font-size:11px;color:#888;letter-spacing:2px;padding-top:6px">ACCOUNT VERIFICATION</span></div>'
     + '<div style="padding:26px 0 4px">'
     + '<p style="font-size:15px;line-height:1.9;margin:0 0 6px">您好，</p>'
     + '<p style="font-size:15px;line-height:1.9;margin:0 0 18px">感謝您註冊 Yi Capital。請在註冊頁面輸入以下驗證碼以完成郵箱驗證：</p>'
@@ -115,7 +121,7 @@ async function sendCode(env, email, code) {
     + '· 若您並未發起此次註冊，請忽略本郵件，您的郵箱不會被註冊。<br>'
     + '· If you did not request this, please disregard this email — no account will be created.'
     + '</td></tr></table>'
-    + '<p style="font-size:15px;line-height:1.9;margin:26px 0 0">Preston<br><span style="color:#777">YiCapital</span></p>'
+    + '<p style="font-size:15px;line-height:1.9;margin:26px 0 0">Preston<br>' + brandWordmark('15px') + '</p>'
     + '</div>'
     + '<hr style="border:none;border-top:1px solid #ddd;margin:26px 0 12px">'
     + '<p style="color:#999;font-size:11.5px;font-family:Arial,sans-serif;line-height:1.8">此為系統郵件，由 Yi Capital 帳號服務發出（服務條款 04）。This is an automated message from Yi Capital account services.<br>Yi Capital · <a href="https://www.yicapital.co" style="color:#0e7490">yicapital.co</a> · Key to Extraordinary Research and Opensource Portfolio</p></div>';
@@ -135,13 +141,13 @@ async function sendWelcome(env, email, username) {
   if (!env.RESEND_API_KEY) return;
   const domain = env.MAIL_DOMAIN || 'yicapital.co';
   const html = '<div style="font-family:Georgia,\'Noto Serif TC\',serif;max-width:560px;margin:0 auto;color:#1a1a1a;line-height:1.9;font-size:15.5px">'
-    + '<div style="border-bottom:3px solid #0e7490;padding:18px 0 10px"><span style="font-family:Arial,sans-serif;font-weight:800;font-size:20px;letter-spacing:1px">YI<span style="color:#0e7490">CAPITAL</span></span></div>'
+    + '<div style="border-bottom:3px solid #0e7490;padding:18px 0 10px">' + brandWordmark('20px') + '</div>'
     + '<p style="margin-top:26px">' + username + '，你好：</p>'
     + '<p>歡迎加入 Yi Capital——Key to Extraordinary Research and Opensource Portfolio。</p>'
     + '<p>這裡是一個開源的個人投資組合：全部淨值、持倉與風險數據由淨值表即時計算，全部研究公開可讀，<b>歡迎抄作業</b>（註明出處即可），更歡迎來信交流——回覆本郵件就能找到我。</p>'
     + '<p>先從這三處開始：<br>· 組合實錄：<a href="https://www.yicapital.co/portfolios.html" style="color:#0e7490">yicapital.co/portfolios.html</a><br>· 研究觀點：<a href="https://www.yicapital.co/insights.html" style="color:#0e7490">yicapital.co/insights.html</a><br>· 致股東的信：<a href="https://www.yicapital.co/filings.html" style="color:#0e7490">yicapital.co/filings.html</a></p>'
     + '<p style="margin-top:30px">坐在牌桌上，是一切正期望值交易兌現的前提。</p>'
-    + '<p style="margin-top:26px">Preston<br><span style="color:#777">YiCapital</span></p>'
+    + '<p style="margin-top:26px">Preston<br>' + brandWordmark('15px') + '</p>'
     + '<hr style="border:none;border-top:1px solid #ddd;margin:28px 0 12px"><p style="color:#999;font-size:12px;font-family:Arial,sans-serif">此為帳號服務通知（服務條款 04）。Yi Capital · yicapital.co</p></div>';
   try {
     await fetch('https://api.resend.com/emails', {
