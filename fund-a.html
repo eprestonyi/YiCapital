@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yi Capital A Share ｜ 完整檔案 ｜ Yi Capital</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/portal-config.js"></script>
+<script src="assets/yc-i18n.js"></script>
+<script>
+/* Safari 偶發 XLSX CDN 加載失敗 → 備援 jsdelivr/unpkg */
+window.ensureXLSX=function(){return new Promise(function(res,rej){
+  if(window.XLSX)return res();
+  var urls=['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'],i=0;
+  (function next(){ if(window.XLSX)return res();
+    if(i>=urls.length)return rej(new Error('表格解析庫加載失敗，請刷新或更換瀏覽器'));
+    var s=document.createElement('script');s.src=urls[i++];s.onload=function(){window.XLSX?res():next()};s.onerror=next;document.head.appendChild(s);
+  })();
+});}
+</script>
+<script src="assets/yc-analytics.js"></script>
+<script src="assets/yc-charts.js"></script>
+<style>
+  .sec-h{margin:60px 0 22px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  .sec-h h2{font-family:var(--sans);font-size:clamp(24px,2.4vw,32px);color:#fff}
+  .sec-h .idx{font-family:var(--mono);font-size:12px;letter-spacing:2.5px;color:var(--cyan);text-transform:uppercase}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}}
+  .panel h4{font-family:var(--sans);font-size:15.5px;color:#fff;margin-bottom:14px}
+  #loader{padding:70px 0;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px;letter-spacing:1.5px}
+  #loader .drop{margin-top:26px;display:inline-block;border:1px dashed var(--line);border-radius:8px;padding:26px 40px;cursor:pointer}
+  #loader .drop:hover{border-color:var(--cyan);color:var(--cyan)}
+  .logic p{color:#cdd6e3;font-size:15.5px;line-height:2;margin-bottom:18px}
+  .logic b{color:#fff}
+  .logic .pull{border-left:3px solid var(--cyan);padding:6px 0 6px 20px;margin:26px 0;color:#e8edf5;font-size:16.5px;font-family:var(--zh)}
+  .asof{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:1.5px}
+</style>
+</head>
+<body>
+
+<div class="utility"><div class="wrap">
+  <a href="./#sec-portfolios" data-i18n="ut.live">實時組合</a>
+  <a href="./#sec-forum" data-i18n="ut.forum">研報庫</a>
+  <a href="./#sec-insights" data-i18n="ut.insights">最新觀點</a>
+  <a href="about" data-i18n="ut.contact">聯繫我們</a>
+  <a href="login" style="color:var(--cyan)" data-i18n="ut.login">登入</a>
+</div></div>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <button class="menu-btn" aria-label="開啟選單" onclick="document.getElementById('m').classList.toggle('open')">選單 ≡</button>
+  <nav><ul id="m">
+    <li><a class="link" href="insights" data-i18n="nav.insights">研究觀點</a></li>
+    <li><a class="link" href="forum" data-i18n="nav.forum">研究論壇</a></li>
+    <li><a class="link active" href="portfolios" data-i18n="nav.portfolios">組合實錄</a></li>
+    <li><a class="link" href="about" data-i18n="nav.about">關於我們</a></li>
+  </ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb"><a href="./">首頁</a> / <a href="portfolios">組合實錄</a> / YI CAPITAL A SHARE</div>
+    <h1><small>基金檔案 ｜ CNY ｜ A 股長期持有</small>Yi Capital A Share</h1>
+    <p>本頁所有數據與圖表均讀取後台持久化快照。Excel 只作交易、出入金與公司行動變更時的來源；日常估值、指標與曲線由後台更新並覆蓋緩存，頁面只負責展示。</p>
+    <p class="asof" id="asof"></p>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="yc-lock">
+  <div id="srcbar" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:12px 18px;margin-bottom:8px;font-family:var(--mono);font-size:12px;color:var(--muted)">
+    <span id="srcstate">數據源：載入中…</span>
+    <button id="bindbtn" class="menu-btn" style="display:inline-block">🔗 綁定本地淨值表（持續同步）</button>
+    <button id="unbindbtn" class="menu-btn" style="display:none">解除綁定</button>
+    <span id="synctick" style="color:var(--up);display:none">● LIVE</span>
+  </div>
+</div>
+
+<div class="wrap" id="loader">
+  正在載入後台快照 …
+  <div><label class="drop" id="dropzone">或點此 / 拖入基金 Excel（Yi_Capital_Manager 導出的工作簿，僅本次預覽）<input type="file" id="filepick" accept=".xlsx,.xlsm" style="display:none"></label></div>
+</div>
+
+<div id="report" style="display:none">
+
+  <!-- ══ 關鍵指標 ══ -->
+  <div class="wrap">
+    <div class="stats" id="statCards"></div>
+  </div>
+
+  <!-- ══ 01 Performance ══ -->
+  <div class="wrap">
+    <div class="sec-h"><span class="idx">01 ｜ 業績</span><h2>業績分析</h2></div>
+    <div class="grid2">
+      <div class="panel"><h4 data-i18n="pn.equity">淨值曲線（模擬 ¥10,000 投入）</h4><div id="c-equity"></div></div>
+      <div class="panel"><h4 data-i18n="pn.underwater">水下圖（回撤路徑 Underwater）</h4><div id="c-underwater"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4 data-i18n="pn.heatmap">月度收益率熱力圖</h4><div id="c-heatmap"></div></div>
+      <div class="panel"><h4 data-i18n="pn.monthly">月度收益柱狀圖</h4><div id="c-monthly"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4 data-i18n="pn.rollvol">滾動年化波動率（20日窗口）</h4><div id="c-rollvol"></div></div>
+      <div class="panel"><h4 data-i18n="pn.rollsharpe">滾動夏普比率（20日窗口）</h4><div id="c-rollsharpe"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4 data-i18n="pn.dist">日收益率分佈 vs 正態擬合</h4><div id="c-dist"></div><div class="risk-note" id="dist-note"></div></div>
+      <div class="panel"><h4 data-i18n="pn.metrics">完整指標表</h4><div id="c-metrics"></div></div>
+    </div>
+  </div>
+
+  <!-- ══ 02 Holdings ══ -->
+  <div class="wrap">
+    <div class="sec-h"><span class="idx">02 ｜ 持倉</span><h2>持倉分析</h2></div>
+    <div class="grid2">
+      <div class="panel"><h4 data-i18n="pn.donut">持倉市值分佈（環形圖）</h4><div id="c-donut"></div></div>
+      <div class="panel"><h4 data-i18n="pn.holdings">持倉明細</h4><div id="c-holdings-table"></div><div class="legend" style="margin-top:12px">盈虧含已實現＋未實現＋股息（全歷史口徑，同 Asset Position Record）。</div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><div id="c-pnl-bars"></div></div>
+      <div class="panel"><div id="c-expret-bars"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4 data-i18n="pn.stacked">資產構成（現金 vs 持倉市值）</h4><div id="c-stacked"></div></div>
+      <div class="panel"><h4 data-i18n="pn.unitnav">每股淨資產走勢（Unit NAV）</h4><div id="c-unitnav"></div></div>
+    </div>
+  </div>
+
+  <!-- ══ 03 Risks ══ -->
+  <div class="wrap">
+    <div class="sec-h"><span class="idx">03 ｜ 風險</span><h2>風險分析</h2></div>
+    <div class="grid2">
+      <div class="panel"><h4 data-i18n="pn.var">VaR（日，95/98/99）</h4><div id="c-var"></div><div class="risk-note" id="var-note"></div></div>
+      <div class="panel"><h4 data-i18n="pn.stress">非中心 t 左尾壓力測試（10,000 條路徑）</h4><div id="c-stress-table"></div><div class="risk-note" id="stress-note"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:22px">
+      <div class="panel"><h4>壓測路徑：Black Swan Crash（10天）</h4><div id="c-fan-crash"></div></div>
+      <div class="panel"><h4>壓測路徑：Slow Grind Down（126天，NCT 負收益條件）</h4><div id="c-fan-grind"></div></div>
+    </div>
+  </div>
+
+  <!-- ══ 04 Methodology / 投資邏輯 ══ -->
+  <div class="wrap logic">
+    <div class="sec-h"><span class="idx">04 ｜ 方法論</span><h2>投資邏輯</h2></div>
+    <div class="panel" style="padding:34px 38px">
+      <p><b>選股先問三個問題。</b>生意是否足夠好——ROE 的持續性與自由現金流能否驗證；格局是否足夠清——份額集中且競爭對手理性；價格是否足夠低——以十年持有期倒算的隱含回報是否有安全邊際。</p>
+      <p><b>以年為單位持有。</b>Yi Capital A Share 不靠短期行情兌現，買入後以年報、現金流與資本配置為跟蹤節奏。低換手不是被動不作為，而是讓企業內生增長與分紅再投資成為主要收益來源。</p>
+      <p><b>現金流底座加成長期權。</b>高分紅、資產質量可追蹤的金融與公用事業提供現金流底座；消費與製造龍頭提供長期份額提升和效率改善的期權。行業與單一持倉上限用來避免任何一個判斷摧毀組合。</p>
+      <p><b>賣出只有三個理由。</b>核心邏輯被證偽、估值已透支長期回報，或出現風險收益比顯著更優的機會。價格波動本身不是理由；如果基本面仍然成立，回撤是重新檢查倉位與安全邊際的觸發器。</p>
+      <p><b>時間不能替代風控。</b>長期持有仍要正視厚尾、相關性上升與流動性收縮。本頁以 Cornish-Fisher／經驗分位、回撤路徑和非中心 t 壓測衡量極端損失，確保組合在深回撤中仍有資金與耐心完成持有期。</p>
+      <div class="pull">用時間換取複利，但只為仍在創造現金流的企業等待。</div>
+      <p style="margin-bottom:0">完整的投資哲學（七條原則、錯誤復盤、保險思考）見 <a href="filings" style="color:var(--cyan)">申報文件 ↗ 2025 財年致股東的信</a>。</p>
+    </div>
+  </div>
+
+  <div class="wrap" style="padding:40px 0 0">
+    </div><!-- /yc-lock -->
+    <p class="disc">免責聲明：以上為個人實盤之模擬淨值化處理，非受監管之集合投資計劃，不接受任何形式之申購；數據含全部交易成本，過往表現不代表未來回報。圖表讀取後台持久化快照；如與致股東信存在口徑差異，以致股東信為準。</p>
+  </div>
+</div>
+
+<footer><div class="wrap">
+  <div class="logo">Yi<b>Capital</b></div>
+  <p>© 2026 Yi Capital.</p>
+</div></footer>
+
+<script>
+(function(){
+  const DATA_URL = 'assets/data/Yi_Capital_A.xlsx';
+  const CURRENCY = '¥';
+  const $ = id => document.getElementById(id);
+  const IS_ADMIN = localStorage.getItem('yc-role')==='admin';
+  if(!IS_ADMIN){
+    // 訪客/未登入：純展示，不出現任何上傳/綁定控件
+    const sb=$('srcbar'); if(sb) sb.style.display='none';
+    const dz=document.getElementById('dropzone'); if(dz) dz.style.display='none';
+    $('loader').firstChild.textContent='正在載入數據…';
+  }
+
+  function workbookToSheets(wb){
+    const out = {};
+    wb.SheetNames.forEach(n => out[n] = XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:true, defval:null}));
+    return out;
+  }
+
+  function statCard(v, k, cls){ return `<div class="stat"><div class="v ${cls||''}">${v}</div><div class="k">${k}</div></div>`; }
+
+  function validStress(s){
+    return !!s&&s.model==='noncentral-t'&&['crash','bear','grind'].every(k=>{
+      const r=s[k];
+      return !!r&&[r.nDays,r.p50,r.p5,r.p1,r.probHalf].every(v=>Number.isFinite(Number(v)))
+        &&['pathP5','pathP50','pathP95'].every(p=>Array.isArray(r[p])&&r[p].length>=2&&r[p].every(v=>Number.isFinite(Number(v))));
+    });
+  }
+  function cachedReport(j){
+    const required=j&&j.ok&&j.enabled&&Number(j.cacheVersion)>=2&&j.historyComplete===true&&j.metrics&&j.hist;
+    if(!required||!Array.isArray(j.history)||j.history.length<5||!Array.isArray(j.curve)||!Array.isArray(j.varTable)||!Array.isArray(j.navRows)) return null;
+    const cleanRp=(Array.isArray(j.rp)?j.rp:[]).map(Number).filter(Number.isFinite);
+    const rp=cleanRp.length>=5?cleanRp:j.history.map(x=>Number(x.ret)).filter(Number.isFinite);
+    const stress=validStress(j.stress)?j.stress:YC.stressScenarios(rp);
+    if(!stress)return null;
+    const assets=(j.assets||j.holdings||[]).map(h=>({
+      ticker:String(h.ticker||h.t||''),name:String(h.name||h.n||h.ticker||h.t||''),
+      qty:Number(h.qty??h.q)||0,price:Number(h.price??h.p)||0,marketValue:Number(h.marketValue??h.mv)||0,
+      weight:Number.isFinite(Number(h.weight))?Number(h.weight):null,
+      pnl:Number.isFinite(Number(h.pnl))?Number(h.pnl):null,
+      exposureReturn:Number.isFinite(Number(h.exposureReturn))?Number(h.exposureReturn):null,
+    })).filter(h=>h.ticker);
+    return {
+      source:'api',metrics:j.metrics,rets:j.history,rp,
+      curve:j.curve,drawdown:j.drawdown||[],monthly:j.monthly||[],rollVol:j.rollVol||[],
+      rollSharpe:j.rollSharpe||[],hist:j.hist,varTable:j.varTable,stress,
+      navRows:j.navRows,assets,benchmarks:{},primaryBM:null,
+      start:(j.summary&&j.summary.start)||j.history[0].date,
+      end:j.end||(j.summary&&j.summary.end)||j.history[j.history.length-1].date,
+      asOf:j.asOf||j.marketDate||j.end,
+    };
+  }
+  async function bootCache(){
+    if(new URLSearchParams(location.search).has('data')) return false;
+    const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return false;
+    try{
+      const j=await (await fetch(api+'/api/nav/a',{cache:'no-store'})).json();
+      const R=cachedReport(j); if(!R) return false;
+      render(await fetchBenchmarks(R));
+      $('srcstate').textContent='數據源：後台持久化快照（AUTO · CACHE）';
+      return true;
+    }catch(e){ return false; }
+  }
+
+  function render(R){
+    if(R.error){ $('loader').firstChild.textContent = '⚠ ' + R.error; return; }
+    const M = R.metrics, F = YCC;
+    $('loader').style.display='none'; $('report').style.display='block';
+    const __auto=window.__liveAdded?((window.YCI&&YCI.lang==='en')?` | incl. ${window.__liveAdded} auto-updated day(s)`:`｜ 含 ${window.__liveAdded} 個自動更新日`):'';
+    $('asof').textContent = R.source==='api'
+      ? `數據截至 ${R.end} ｜ 回測區間 ${R.start} → ${R.end}（${M.days} 交易日）｜ 後台持久化快照 AUTO · CACHE`
+      : (((window.YCI&&YCI.lang==='en')?`Data as of ${R.end} | Window ${R.start} → ${R.end} (${M.days} trading days) | compatibility workbook mode`:`數據截至 ${R.end} ｜ 回測區間 ${R.start} → ${R.end}（${M.days} 交易日）｜ 工作簿相容模式`)+__auto);
+
+    // 指標卡
+    const endVal = Math.round(10000*(1+M.totalRet));
+    const L=window.YCI?YCI.lbl.bind(YCI):(k=>k);
+    $('statCards').innerHTML =
+      statCard(F.pct(M.totalRet,1,true), L('st.cum'), M.totalRet>=0?'u':'d') +
+      statCard(F.pct(M.annRet,1), L('st.ann')) +
+      statCard(F.pct(M.vol,1), L('st.vol')) +
+      statCard(F.pct(M.maxDD,1), L('st.mdd'), 'd') +
+      statCard(F.pct(M.var95,2), L('st.var')) +
+      statCard(F.pct(M.winRate,1), L('st.win'));
+
+    // 01 Performance
+    const series = [{name:'Yi Capital A Share', color:F.colors.cyan, width:3, data:R.curve}];
+    Object.entries(R.benchmarks).forEach(([n,b],i)=>{
+      series.push({name:n, color:[F.colors.blue,F.colors.violet,F.colors.orange][i%3], width:1.5, opacity:.75, data:b.curve});
+    });
+    $('c-equity').innerHTML = F.lineChart(series, {yFmt:v=>(v/1000).toFixed(1).replace(/\.0$/,'')+'K', baseline:10000});
+    $('c-underwater').innerHTML = F.underwaterChart(R.drawdown);
+    $('c-heatmap').innerHTML = F.monthlyHeatmap(R.monthly);
+    $('c-monthly').innerHTML = F.monthlyBars(R.monthly);
+    $('c-rollvol').innerHTML = F.lineChart([{name:'20日滾動年化波動率', color:F.colors.violet, width:2, data:R.rollVol.map(x=>({date:x.date,v:x.v*100})), fill:true}], {yFmt:v=>v.toFixed(0)+'%', baseline:0});
+    $('c-rollsharpe').innerHTML = F.lineChart([{name:'20日滾動夏普', color:F.colors.up, width:2, data:R.rollSharpe}], {yFmt:v=>v.toFixed(1), baseline:0});
+    $('c-dist').innerHTML = F.distributionChart(R.hist);
+    $('dist-note').innerHTML = `偏度 <b>${M.skew.toFixed(2)}</b>、超額峰度 <b>${M.kurt.toFixed(2)}</b>${M.kurt>1?' —— 分佈厚尾，正態假設低估極端風險，風控採用 Cornish-Fisher / 經驗分位口徑。':'。'}`;
+
+    // 指標表
+    const rows = [
+      [L('st.cum'), F.pct(M.totalRet,2,true)], [L('st.ann'), F.pct(M.annRet,2)], [L('st.vol'), F.pct(M.vol,2)],
+      [L('st.sharpe'), M.sharpe.toFixed(2)], [L('st.sortino'), M.sortino.toFixed(2)], [L('st.calmar'), M.calmar.toFixed(2)],
+      [L('st.mdd'), F.pct(M.maxDD,2)], [L('st.win'), F.pct(M.winRate,1)], [L('st.pl'), M.plRatio.toFixed(2)],
+      [L('st.var'), F.pct(M.var95,2)], [L('st.cvar'), F.pct(M.cvar95,2)],
+      [L('st.skew'), M.skew.toFixed(2)], [L('st.kurt'), M.kurt.toFixed(2)],
+    ];
+    if(R.primaryBM) rows.push([L('st.alpha')+'（vs '+R.primaryBM+'）', F.pct(M.alpha,1,true)], [L('st.beta'), M.beta.toFixed(2)], [L('st.ir'), M.infoRatio.toFixed(2)], ['R²', M.r2.toFixed(2)]);
+    $('c-metrics').innerHTML = '<table class="m"><tbody>' + rows.map(r=>`<tr><td>${r[0]}</td><td style="text-align:right;font-family:var(--mono)">${r[1]}</td></tr>`).join('') + '</tbody></table>' + (R.primaryBM?'':'<div class="legend" style="margin-top:12px">等待後台滬深 300 基準快照。</div>');
+
+    // 02 Holdings
+    if(R.assets.length){
+      $('c-donut').innerHTML = F.donutChart(R.assets, {cur:CURRENCY});
+      $('c-holdings-table').innerHTML = F.holdingsTableHtml(R.assets, CURRENCY);
+      const byPnl = [...R.assets].filter(a=>a.pnl!=null).sort((a,b)=>a.pnl-b.pnl);
+      $('c-pnl-bars').innerHTML = F.hBarChart(byPnl.map(a=>({label:a.ticker, v:a.pnl})), {title:'個股總盈虧（已實現＋未實現＋股息，¥）', valueFmt:v=>F.money(v,CURRENCY)});
+      const byER = [...R.assets].filter(a=>a.exposureReturn!=null).sort((a,b)=>a.exposureReturn-b.exposureReturn);
+      $('c-expret-bars').innerHTML = F.hBarChart(byER.map(a=>({label:a.ticker, v:a.exposureReturn})), {title:'個股敞口收益率（總盈虧 ÷ 總買入成本）', valueFmt:v=>(v>=0?'+':'')+v.toFixed(1)+'%'});
+    } else {
+      $('c-donut').innerHTML = $('c-holdings-table').innerHTML = '<div class="legend">工作簿中未找到 Asset Position Record 分頁。</div>';
+    }
+    $('c-stacked').innerHTML = F.stackedArea(R.navRows, {cur:CURRENCY});
+    $('c-unitnav').innerHTML = F.lineChart([{name:'每股淨資產', color:F.colors.up, width:2, data:R.navRows.map(r=>({date:r.date, v:r.nav})), fill:true}], {yFmt:v=>v.toFixed(2)});
+
+    // 03 Risks
+    $('c-var').innerHTML = F.varTableHtml(R.varTable);
+    const cf99 = R.varTable.find(r=>r.level===0.99);
+    $('var-note').innerHTML = `正態模型在 99% 置信水平下${Math.abs(cf99.cf)>Math.abs(cf99.normal)?`低估風險 <b>${((cf99.cf/cf99.normal-1)*100).toFixed(0)}%</b>（CF ${F.pct(cf99.cf,2)} vs 正態 ${F.pct(cf99.normal,2)}）`:'與 Cornish-Fisher 口徑接近'}。風控一律採用 Cornish-Fisher / 經驗分位口徑。`;
+    $('c-stress-table').innerHTML = F.stressTableHtml(R.stress);
+    $('stress-note').innerHTML = `以歷史日收益的偏度與峰度擬合非中心 t 分佈；Crash / Bear 分別只從擬合分佈的 1% / 5% 左尾抽樣，Grind 只從負收益條件分佈抽樣（每場景 10,000 條路徑）。壓測回答的唯一問題：<b>會不會死？</b>`;
+    $('c-fan-crash').innerHTML = F.stressFanChart(R.stress.crash);
+    $('c-fan-grind').innerHTML = F.stressFanChart(R.stress.grind);
+  }
+
+  async function fetchLiveRows(sheets){
+    const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return 0;
+    try{
+      const j=await (await fetch(api+'/api/nav/a',{cache:'no-store'})).json();
+      window.__livePayload=j;
+      if(j.ok && j.enabled && j.rows && j.rows.length) return YC.appendLive(sheets, j.rows);
+    }catch(e){}
+    return 0;
+  }
+  async function fetchBenchmarks(R){
+    const api=(window.YC_API||'').replace(/\/+$/,'');
+    if(R.error||!api) return R;
+    R.benchmarks={}; R.primaryBM=null;
+    try{
+      const j=await (await fetch(api+'/api/benchmark?set=a')).json();
+      if(j.ok) YC.attachBenchmarks(R,Object.fromEntries(Object.entries({'滬深 300':j.data&&j.data.HS300}).filter(([,rows])=>Array.isArray(rows))));
+    }catch(e){}
+    return R;
+  }
+  async function loadArrayBuffer(buf, srcLabel){
+    try{
+      await ensureXLSX();
+      const wb = XLSX.read(buf, {type:'array', cellDates:false});
+      const __sheets=workbookToSheets(wb);
+      window.__liveAdded=await fetchLiveRows(__sheets);
+      const R=YC.analyze(__sheets);
+      if(window.__livePayload&&window.__livePayload.holdings) YC.applyLiveHoldings(R,window.__livePayload.holdings);
+      render(await fetchBenchmarks(R));
+      if(srcLabel) $('srcstate').textContent = '數據源：' + srcLabel;
+      return true;
+    }catch(e){
+      $('loader').style.display='block';
+      $('loader').firstChild.textContent = '⚠ 解析失敗：' + e.message + ' ';
+      return false;
+    }
+  }
+
+  /* ══════════ 數據源管理 ══════════
+     優先級：①已綁定的本地文件（File System Access API，持續同步）
+             ②URL 參數 ?data=https://…（遠程託管，如 GitHub raw）
+             ③站內 assets/data/Yi_Capital_A.xlsx
+             ④拖入/選擇文件（單次預覽）                       */
+
+  // — IndexedDB 保存文件句柄（跨會話）—
+  const idb = {
+    open: () => new Promise((res,rej)=>{ const q=indexedDB.open('yc-fund',1);
+      q.onupgradeneeded=()=>q.result.createObjectStore('kv');
+      q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }),
+    get: async k => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); },
+    set: async (k,v) => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv','readwrite').objectStore('kv').put(v,k); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); }); },
+    del: async k => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv','readwrite').objectStore('kv').delete(k); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); }); },
+  };
+
+  let liveHandle=null, liveTimer=null, lastMod=0;
+
+  async function startLiveSync(handle){
+    liveHandle=handle;
+    const f=await handle.getFile();
+    lastMod=f.lastModified;
+    if(loadArrayBuffer(await f.arrayBuffer(), '本地文件「'+f.name+'」（持續同步中）')){
+      $('bindbtn').style.display='none'; $('unbindbtn').style.display='inline-block'; $('synctick').style.display='inline';
+    }
+    clearInterval(liveTimer);
+    liveTimer=setInterval(async ()=>{
+      try{
+        const nf=await liveHandle.getFile();
+        if(nf.lastModified!==lastMod){       // Python 一保存，這裡自動重算重畫
+          lastMod=nf.lastModified;
+          $('synctick').textContent='● 更新中…';
+          loadArrayBuffer(await nf.arrayBuffer(), '本地文件「'+nf.name+'」（持續同步中）');
+          $('synctick').textContent='● LIVE · '+new Date().toLocaleTimeString();
+        }
+      }catch(e){ /* 文件被暫時鎖定（Excel 寫入瞬間）→ 下一輪重試 */ }
+    }, 4000);
+  }
+
+  // 綁定按鈕：選一次文件，句柄存入 IndexedDB，下次打開頁面自動恢復
+  $('bindbtn').addEventListener('click', async ()=>{
+    if(!window.showOpenFilePicker){ alert('此瀏覽器不支持持續同步（需 Chrome / Edge 桌面版）。可用拖入方式單次預覽。'); return; }
+    try{
+      const [h]=await showOpenFilePicker({types:[{description:'Excel',accept:{'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx','.xlsm']}}]});
+      await idb.set('handle-a', h);
+      startLiveSync(h);
+    }catch(e){ /* 用戶取消 */ }
+  });
+  $('unbindbtn').addEventListener('click', async ()=>{
+    await idb.del('handle-a'); clearInterval(liveTimer); liveHandle=null;
+    $('bindbtn').style.display='inline-block'; $('unbindbtn').style.display='none'; $('synctick').style.display='none';
+    $('srcstate').textContent='數據源：已解除綁定（改用站內數據）';
+    bootFetch();
+  });
+
+  // 頁面打開：先嘗試恢復已綁定的句柄
+  async function bootHandle(){
+    if(!window.showOpenFilePicker) return false;
+    try{
+      const h=await idb.get('handle-a'); if(!h) return false;
+      let perm=await h.queryPermission({mode:'read'});
+      if(perm==='prompt'){
+        // 重新授權需要一次點擊：把綁定按鈕變成「重新連接」
+        $('srcstate').textContent='數據源：檢測到已綁定的本地文件，點擊重新連接 →';
+        $('bindbtn').textContent='🔗 重新連接本地淨值表';
+        $('bindbtn').onclick=async ()=>{ if(await h.requestPermission({mode:'read'})==='granted') startLiveSync(h); };
+        return 'pending';
+      }
+      if(perm==='granted'){ startLiveSync(h); return true; }
+    }catch(e){}
+    return false;
+  }
+
+  // 遠程/站內 fetch
+  function bootFetch(){
+    const remote=new URLSearchParams(location.search).get('data');
+    const url=remote||DATA_URL;
+    // cache-bust：避免瀏覽器/CDN 緩存舊淨值表
+    const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
+    fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+      .then(buf=>loadArrayBuffer(buf, remote?('遠程 '+url):('站內 '+DATA_URL+'（隨部署更新）')))
+      .catch(()=>{ $('loader').style.display='block'; $('loader').firstChild.textContent=IS_ADMIN?('未找到 '+url+'（可綁定本地文件持續同步，或拖入文件預覽）'):'數據暫時不可用，請稍後再試。'; $('srcstate').textContent='數據源：無'; });
+  }
+
+  (async ()=>{
+    if(await bootCache()) return;
+    if(!IS_ADMIN){ bootFetch(); return; }
+    const st=await bootHandle();
+    if(st!==true) bootFetch();   // pending 時也先顯示站內數據，連接後自動切換
+  })();
+
+  // 拖入 / 選擇文件（單次預覽）
+  $('filepick').addEventListener('change', e=>{
+    const f=e.target.files[0]; if(!f) return;
+    f.arrayBuffer().then(b=>loadArrayBuffer(b,'拖入文件「'+f.name+'」（單次預覽）'));
+  });
+  if(IS_ADMIN){
+  ['dragover','drop'].forEach(ev=>document.addEventListener(ev, e=>e.preventDefault()));
+  document.addEventListener('drop', e=>{
+    const f=e.dataTransfer && e.dataTransfer.files[0];
+    if(f) f.arrayBuffer().then(b=>loadArrayBuffer(b,'拖入文件「'+f.name+'」（單次預覽）'));
+  });
+  }
+})();
+</script>
+<script src="assets/yc-gate.js"></script>
+<script src="assets/yc-session.js"></script>
+</body>
+</html>

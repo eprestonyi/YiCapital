@@ -202,7 +202,7 @@
   function pageTarget(l) {
     const parts = location.pathname.split('/').filter(Boolean);
     let file = (parts[parts.length - 1] || '').replace(/\.html$/, '');
-    const TRIPLED = ['index','portfolios','fund-us','insights','insights-archive','forum','filings','about','login','terms'];
+    const TRIPLED = ['index','portfolios','fund-us','fund-hk','fund-a','insights','insights-archive','forum','filings','about','login','terms'];
     const TRIPLED_POSTS = ['tencent-0700-ch12','yicapital-risk-report','great-company-great-investment'];
     const root = (l === 'tw' ? '/' : '/' + l + '/');
     if (parts.indexOf('posts') >= 0) {

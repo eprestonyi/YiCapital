@@ -10,7 +10,7 @@
   if (!zone) return;
   zone.classList.add('locked');
   var t = (k,fb)=> (window.YCI ? YCI.t(k) : fb);
-  var isPf = /portfolios|fund-us/.test(location.pathname);
+  var isPf = /portfolios|fund-(?:us|hk|a)/.test(location.pathname);
   var body = isPf ? t('gate.pf','免費註冊即可查看完整組合檔案。') : t('gate.forum','免費註冊即可閱讀全部深度研報。');
   var card = document.createElement('div');
   card.className = 'yc-gatecard';
