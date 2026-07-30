@@ -652,7 +652,7 @@
   let lastMetricsAt = 0;
   const sceneDuration = 32000;
   const drawDuration = 32000;
-  const crossfadeDuration = 1250;
+  const crossfadeDuration = 2400;
   let sceneTransitioning = false;
   let sceneTransitionToken = 0;
   let sceneTransitionTimer = 0;
@@ -694,7 +694,7 @@
     const values = pf.concat(bm).map(point => point.value);
     const rawMin = Math.min(...values);
     const rawMax = Math.max(...values);
-    const chartPadding = Math.max(0.75, (rawMax - rawMin) * 0.06);
+    const chartPadding = Math.max(1.25, (rawMax - rawMin) * 0.11);
     const gaps = commonDates.reduce((count, date, index) => {
       if (!index) return count;
       return count + (parseDate(date) - parseDate(commonDates[index - 1]) > 12 * 86400000 ? 1 : 0);
@@ -781,7 +781,6 @@
     const index = lowerBoundTime(series, time);
     const next = series[index];
     const previous = series[index - 1];
-    if (next.time - previous.time > 6 * 86400000) return previous;
     const ratio = (time - previous.time) / Math.max(1, next.time - previous.time);
     return {
       date: previous.date,
@@ -901,7 +900,7 @@
     };
   }
 
-  function pathSeries(points, startTime, endTime, x, y, color, width, dashed) {
+  function pathSeries(points, startTime, endTime, x, y, color, width, muted) {
     const first = pointAtTime(points, startTime);
     const last = pointAtTime(points, endTime);
     if (!first || !last || endTime <= startTime) return last || first;
@@ -911,8 +910,8 @@
     context.lineWidth = width;
     context.lineJoin = 'round';
     context.lineCap = 'round';
-    if (dashed) context.setLineDash([5, 7]);
-    if (!dashed) {
+    if (muted) context.globalAlpha = 0.72;
+    if (!muted) {
       context.shadowColor = color;
       context.shadowBlur = 13;
     }
@@ -925,13 +924,11 @@
       if (point.time >= endTime) break;
       const px = x(point.time);
       const py = y(point.value);
-      if (point.time - previous.time > 6 * 86400000) context.moveTo(px, py);
-      else context.lineTo(px, py);
+      context.lineTo(px, py);
       previous = point;
     }
     if (last.time > previous.time) {
-      if (last.time - previous.time > 6 * 86400000) context.moveTo(x(last.time), y(last.value));
-      else context.lineTo(x(last.time), y(last.value));
+      context.lineTo(x(last.time), y(last.value));
     }
     context.stroke();
     context.restore();
@@ -945,8 +942,8 @@
     const data = marketData.get(scene.id);
     const left = 30;
     const right = chartWidth - 24;
-    const top = 58;
-    const bottom = chartHeight - 22;
+    const top = 68;
+    const bottom = chartHeight - 26;
     if (!scenePalette) scenePalette = readScenePalette();
     const lineColor = scenePalette.line;
     const benchmarkColor = scenePalette.benchmark;
