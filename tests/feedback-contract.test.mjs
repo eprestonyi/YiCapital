@@ -33,7 +33,7 @@ test('health exposes the feedback store without leaking configuration', async ()
   );
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.version, 'v8.4-entry');
+  assert.equal(body.version, 'v8.5-entry');
   assert.equal(body.feedback, true);
   assert.equal(body.feedback_rate_limit, true);
   assert.equal('database_id' in body, false);

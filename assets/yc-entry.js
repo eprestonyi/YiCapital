@@ -21,7 +21,8 @@
     tw: {
       language: '繁',
       intro: '投資市場裡，真正賺錢的只有少數人。',
-      sixMonths: '最近六個月 · 共同收市日',
+      fullHistory: '全部可追溯歷史 · 共同收市日',
+      closes: '個共同收市日',
       live: 'LIVE · VERIFIED SNAPSHOT',
       review: 'LIVE · DATA REVIEW',
       gap: '資料缺口',
@@ -83,7 +84,8 @@
     cn: {
       language: '简',
       intro: '投资市场里，真正赚钱的只有少数人。',
-      sixMonths: '最近六个月 · 共同收市日',
+      fullHistory: '全部可追溯历史 · 共同收市日',
+      closes: '个共同收市日',
       live: 'LIVE · VERIFIED SNAPSHOT',
       review: 'LIVE · DATA REVIEW',
       gap: '数据缺口',
@@ -145,7 +147,8 @@
     en: {
       language: 'EN',
       intro: 'Only a few make money in investing.',
-      sixMonths: 'Trailing six months · common closes',
+      fullHistory: 'Full trackable history · common closes',
+      closes: 'common closes',
       live: 'LIVE · VERIFIED SNAPSHOT',
       review: 'LIVE · DATA REVIEW',
       gap: 'data gap',
@@ -241,14 +244,14 @@
           <div class="yc-entry-chart-meta">
             <div>
               <div class="yc-entry-market-name" id="yc-entry-market">${copy.scene.hk.market}</div>
-              <div class="yc-entry-period" id="yc-entry-period">${copy.sixMonths}</div>
+              <div class="yc-entry-period" id="yc-entry-period">${copy.fullHistory}</div>
             </div>
             <div class="yc-entry-live" id="yc-entry-live">${copy.live}</div>
           </div>
           <canvas class="yc-entry-canvas" id="yc-entry-canvas" role="img"></canvas>
           <div class="yc-entry-sr" id="yc-entry-chart-summary" aria-live="polite"></div>
         </div>
-        <div>
+        <div class="yc-entry-story-footer">
           <div class="yc-entry-metrics">
             <div class="yc-entry-metric">
               <div class="yc-entry-metric-label" id="yc-entry-pf-label">${copy.portfolio}</div>
@@ -636,9 +639,9 @@
 
   /* ── Market data and trailing chart ───────────────────────────── */
   const scenes = [
-    { id: 'hk', benchmarkKey: 'HSI ETF' },
-    { id: 'us', benchmarkKey: 'S&P 500' },
-    { id: 'a', benchmarkKey: 'HS300' },
+    { id: 'hk' },
+    { id: 'us' },
+    { id: 'a' },
   ];
   const marketData = new Map();
   const canvas = $('yc-entry-canvas');
@@ -648,63 +651,38 @@
   let manualScene = false;
   let chartWidth = 0;
   let chartHeight = 0;
-  const sceneDuration = 7000;
-  const drawDuration = 5000;
+  let scenePalette = null;
+  let lastMetricsAt = 0;
+  const sceneDuration = 22000;
+  const drawDuration = 18500;
+  const fadeDuration = 1200;
+  let sceneTransitioning = false;
+  root.style.setProperty('--yc-entry-scene-duration', sceneDuration + 'ms');
 
   function parseDate(value) {
     const time = Date.parse(String(value || '') + 'T00:00:00Z');
     return Number.isFinite(time) ? time : NaN;
   }
 
-  function buildPortfolioSeries(rows) {
-    const clean = (Array.isArray(rows) ? rows : [])
-      .map(row => ({
-        date: String(row.date || '').slice(0, 10),
-        time: parseDate(row.date),
-        unitNav: Number(row.unitNav ?? row.nav),
-        dividend: Number(row.divPerUnit || 0),
-        ret: Number(row.ret),
-      }))
-      .filter(row => Number.isFinite(row.time) && Number.isFinite(row.unitNav) && row.unitNav > 0)
-      .sort((a, b) => a.time - b.time);
-    if (clean.length < 2) return [];
-    let value = 100;
-    const out = [{ date: clean[0].date, time: clean[0].time, value }];
-    for (let index = 1; index < clean.length; index += 1) {
-      const current = clean[index];
-      const previous = clean[index - 1];
-      const dailyReturn = (current.unitNav + current.dividend) / previous.unitNav - 1;
-      if (!Number.isFinite(dailyReturn) || dailyReturn <= -1) continue;
-      value *= 1 + dailyReturn;
-      out.push({ date: current.date, time: current.time, value });
-    }
-    return out;
-  }
-
-  function buildBenchmarkSeries(rows) {
+  function buildEntryPointSeries(rows, valueIndex) {
     return (Array.isArray(rows) ? rows : [])
       .map(row => ({
-        date: String(row.date || '').slice(0, 10),
-        time: parseDate(row.date),
-        value: Number(row.close),
+        date: String(Array.isArray(row) ? row[0] : '').slice(0, 10),
+        time: parseDate(Array.isArray(row) ? row[0] : ''),
+        value: Number(Array.isArray(row) ? row[valueIndex] : NaN),
       }))
       .filter(row => Number.isFinite(row.time) && Number.isFinite(row.value) && row.value > 0)
       .sort((a, b) => a.time - b.time);
   }
 
-  function normalizeWindow(portfolio, benchmark, quality) {
+  function normalizeHistory(portfolio, benchmark, quality) {
     if (portfolio.length < 20 || benchmark.length < 20) throw new Error('insufficient data');
     const pfByDate = new Map(portfolio.map(point => [point.date, point]));
     const bmByDate = new Map(benchmark.map(point => [point.date, point]));
-    const allCommonDates = [...pfByDate.keys()].filter(date => bmByDate.has(date)).sort();
-    if (allCommonDates.length < 20) throw new Error('insufficient common closes');
-    const commonEndDate = allCommonDates[allCommonDates.length - 1];
+    const commonDates = [...pfByDate.keys()].filter(date => bmByDate.has(date)).sort();
+    if (commonDates.length < 20) throw new Error('insufficient common closes');
+    const commonEndDate = commonDates[commonDates.length - 1];
     const commonEnd = parseDate(commonEndDate);
-    const cutoffDate = new Date(commonEnd);
-    cutoffDate.setUTCMonth(cutoffDate.getUTCMonth() - 6);
-    const cutoff = cutoffDate.getTime();
-    const commonDates = allCommonDates.filter(date => parseDate(date) >= cutoff && parseDate(date) <= commonEnd);
-    if (commonDates.length < 20) throw new Error('insufficient six-month data');
     let pf = commonDates.map(date => pfByDate.get(date));
     let bm = commonDates.map(date => bmByDate.get(date));
     const commonStart = pf[0].time;
@@ -712,13 +690,17 @@
     const bmBase = bm[0].value;
     pf = pf.map(point => ({ ...point, value: point.value / pfBase * 100 }));
     bm = bm.map(point => ({ ...point, value: point.value / bmBase * 100 }));
+    const values = pf.concat(bm).map(point => point.value);
+    const rawMin = Math.min(...values);
+    const rawMax = Math.max(...values);
+    const chartPadding = Math.max(2, (rawMax - rawMin) * 0.16);
     const gaps = commonDates.reduce((count, date, index) => {
       if (!index) return count;
-      return count + (parseDate(date) - parseDate(commonDates[index - 1]) > 5 * 86400000 ? 1 : 0);
+      return count + (parseDate(date) - parseDate(commonDates[index - 1]) > 12 * 86400000 ? 1 : 0);
     }, 0);
-    const pfWindowCount = portfolio.filter(point => point.time >= cutoff && point.time <= commonEnd).length;
-    const bmWindowCount = benchmark.filter(point => point.time >= cutoff && point.time <= commonEnd).length;
-    const coverage = commonDates.length / Math.max(1, Math.min(pfWindowCount, bmWindowCount));
+    const pfHistoryCount = portfolio.filter(point => point.time >= commonStart && point.time <= commonEnd).length;
+    const bmHistoryCount = benchmark.filter(point => point.time >= commonStart && point.time <= commonEnd).length;
+    const coverage = commonDates.length / Math.max(1, Math.min(pfHistoryCount, bmHistoryCount));
     const review = !!(quality && quality.review) || gaps > 0 || coverage < 0.98;
     return {
       portfolio: pf,
@@ -728,6 +710,8 @@
       gaps,
       coverage,
       review,
+      chartMin: rawMin - chartPadding,
+      chartMax: rawMax + chartPadding,
     };
   }
 
@@ -740,36 +724,13 @@
   async function loadSceneData(scene) {
     const entrySnapshot = await entrySnapshotPromise;
     const compact = entrySnapshot && entrySnapshot.ok && entrySnapshot.markets && entrySnapshot.markets[scene.id];
-    if (compact) {
-      const pf = buildPortfolioSeries(compact.navRows);
-      const bm = buildBenchmarkSeries(compact.benchmarkRows);
-      const benchmarkStatus = compact.benchmarkStatus || {};
-      const review = !!(
-        compact.navStatus && Array.isArray(compact.navStatus.stale) && compact.navStatus.stale.length
-        || benchmarkStatus.stale
-        || Array.isArray(benchmarkStatus.missing) && benchmarkStatus.missing.length
-        || Array.isArray(benchmarkStatus.unavailable) && benchmarkStatus.unavailable.length
-      );
-      if (compact.historyComplete !== true || Number(compact.cacheVersion || 0) < 2) throw new Error('incomplete portfolio snapshot');
-      return normalizeWindow(pf, bm, { review });
+    if (!compact || !Array.isArray(compact.points)) throw new Error('market snapshot');
+    if (compact.historyComplete !== true || Number(compact.cacheVersion || 0) < 3) {
+      throw new Error('incomplete portfolio snapshot');
     }
-    const [navResponse, benchmarkResponse] = await Promise.all([
-      fetch(API + '/api/nav/' + scene.id, { cache: 'no-store' }),
-      fetch(API + '/api/benchmark?set=' + scene.id, { cache: 'no-store' }),
-    ]);
-    if (!navResponse.ok || !benchmarkResponse.ok) throw new Error('market API');
-    const [nav, benchmark] = await Promise.all([navResponse.json(), benchmarkResponse.json()]);
-    if (!nav.ok || !nav.enabled || !benchmark.ok) throw new Error('market snapshot');
-    if (nav.historyComplete !== true || Number(nav.cacheVersion || 0) < 2) throw new Error('incomplete portfolio snapshot');
-    const pf = buildPortfolioSeries(nav.navRows);
-    const bm = buildBenchmarkSeries(benchmark.data && benchmark.data[scene.benchmarkKey]);
-    const review = !!(
-      nav.status && Array.isArray(nav.status.stale) && nav.status.stale.length
-      || benchmark.stale
-      || Array.isArray(benchmark.missing) && benchmark.missing.length
-      || Array.isArray(benchmark.unavailable) && benchmark.unavailable.length
-    );
-    return normalizeWindow(pf, bm, { review });
+    const pf = buildEntryPointSeries(compact.points, 1);
+    const bm = buildEntryPointSeries(compact.points, 2);
+    return normalizeHistory(pf, bm, { review: compact.review === true });
   }
 
   if (API) {
@@ -800,28 +761,78 @@
     return (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
   }
 
-  function currentPoint(series, time) {
-    let selected = series[0];
-    for (const point of series) {
-      if (point.time > time) break;
-      selected = point;
+  function lowerBoundTime(series, time) {
+    let low = 0;
+    let high = series.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (series[middle].time < time) low = middle + 1;
+      else high = middle;
     }
-    return selected;
+    return low;
   }
 
-  function updateSceneText(progress) {
+  function pointAtTime(series, time) {
+    if (!series.length) return null;
+    if (time <= series[0].time) return series[0];
+    const last = series[series.length - 1];
+    if (time >= last.time) return last;
+    const index = lowerBoundTime(series, time);
+    const next = series[index];
+    const previous = series[index - 1];
+    if (next.time - previous.time > 6 * 86400000) return previous;
+    const ratio = (time - previous.time) / Math.max(1, next.time - previous.time);
+    return {
+      date: previous.date,
+      time,
+      value: previous.value + (next.value - previous.value) * ratio,
+    };
+  }
+
+  function chartTimeline(data, progress, overview) {
+    if (overview) {
+      return { cursor: data.end, viewStart: data.start, viewEnd: data.end };
+    }
+    const span = Math.max(1, data.end - data.start);
+    const travelEnd = 0.84;
+    const viewportSpan = span * 0.38;
+    if (progress <= travelEnd) {
+      const travel = Math.max(0, Math.min(1, progress / travelEnd));
+      const cursor = data.start + span * travel;
+      const viewEnd = Math.min(data.end, Math.max(data.start + viewportSpan, cursor));
+      return {
+        cursor,
+        viewStart: Math.max(data.start, viewEnd - viewportSpan),
+        viewEnd,
+      };
+    }
+    const zoom = Math.max(0, Math.min(1, (progress - travelEnd) / (1 - travelEnd)));
+    const easedZoom = 1 - Math.pow(1 - zoom, 3);
+    return {
+      cursor: data.end,
+      viewStart: data.end - viewportSpan - (span - viewportSpan) * easedZoom,
+      viewEnd: data.end,
+    };
+  }
+
+  function updateSceneText(progress, force) {
+    const now = performance.now();
+    if (!force && now - lastMetricsAt < 90) return;
+    lastMetricsAt = now;
     const scene = scenes[sceneIndex];
     const labels = copy.scene[scene.id];
     const data = marketData.get(scene.id);
-    $('yc-entry-eyebrow').textContent = labels.eyebrow;
-    $('yc-entry-market').textContent = labels.market;
-    $('yc-entry-pf-label').textContent = labels.market;
-    $('yc-entry-bm-label').textContent = labels.benchmark;
-    root.querySelectorAll('.yc-entry-scene-btn').forEach((button, index) => {
-      button.setAttribute('aria-pressed', String(index === sceneIndex));
-    });
+    if (force) {
+      $('yc-entry-eyebrow').textContent = labels.eyebrow;
+      $('yc-entry-market').textContent = labels.market;
+      $('yc-entry-pf-label').textContent = labels.market;
+      $('yc-entry-bm-label').textContent = labels.benchmark;
+      root.querySelectorAll('.yc-entry-scene-btn').forEach((button, index) => {
+        button.setAttribute('aria-pressed', String(index === sceneIndex));
+      });
+    }
     if (!data || data.error) {
-      $('yc-entry-period').textContent = data && data.error ? copy.dataUnavailable : copy.sixMonths;
+      $('yc-entry-period').textContent = data && data.error ? copy.dataUnavailable : copy.fullHistory;
       $('yc-entry-live').textContent = copy.dataPending;
       $('yc-entry-pf-ret').textContent = '—';
       $('yc-entry-bm-ret').textContent = '—';
@@ -829,12 +840,13 @@
       return;
     }
     const effectiveProgress = Number.isFinite(progress) ? progress : 0;
-    const time = data.start + (data.end - data.start) * effectiveProgress;
-    const pf = currentPoint(data.portfolio, time);
-    const bm = currentPoint(data.benchmark, time);
+    const timeline = chartTimeline(data, effectiveProgress, reduceMotion || manualScene);
+    const pf = pointAtTime(data.portfolio, timeline.cursor);
+    const bm = pointAtTime(data.benchmark, timeline.cursor);
     const pfReturn = pf.value - 100;
     const bmReturn = bm.value - 100;
-    $('yc-entry-period').textContent = formatDate(data.start) + ' — ' + formatDate(data.end);
+    $('yc-entry-period').textContent = formatDate(data.start) + ' — ' + formatDate(data.end)
+      + ' · ' + data.portfolio.length + ' ' + copy.closes;
     $('yc-entry-live').textContent = (data.review ? copy.review : copy.live)
       + (data.gaps ? ' · ' + data.gaps + ' ' + copy.gap : '');
     $('yc-entry-pf-ret').textContent = formatPct(pfReturn);
@@ -865,7 +877,7 @@
 
   function refreshActiveScene() {
     const progress = currentProgress();
-    updateSceneText(progress);
+    updateSceneText(progress, true);
     drawChart(progress);
     announceScene();
   }
@@ -884,9 +896,19 @@
     return getComputedStyle(root).getPropertyValue(name).trim() || fallback;
   }
 
-  function pathSeries(points, endTime, x, y, color, width, dashed) {
-    const visible = points.filter(point => point.time <= endTime);
-    if (visible.length < 2) return visible[0] || null;
+  function readScenePalette() {
+    return {
+      line: cssVar('--scene-line', '#55d6ff'),
+      benchmark: cssVar('--scene-benchmark', '#8b9aae'),
+      grid: cssVar('--scene-grid', 'rgba(255,255,255,.1)'),
+      muted: cssVar('--scene-muted', '#8291a7'),
+    };
+  }
+
+  function pathSeries(points, startTime, endTime, x, y, color, width, dashed) {
+    const first = pointAtTime(points, startTime);
+    const last = pointAtTime(points, endTime);
+    if (!first || !last || endTime <= startTime) return last || first;
     context.save();
     context.beginPath();
     context.strokeStyle = color;
@@ -898,17 +920,26 @@
       context.shadowColor = color;
       context.shadowBlur = 13;
     }
-    let previous = null;
-    for (const point of visible) {
+    let previous = first;
+    context.moveTo(x(first.time), y(first.value));
+    const startIndex = lowerBoundTime(points, startTime);
+    for (let index = startIndex; index < points.length; index += 1) {
+      const point = points[index];
+      if (point.time <= startTime) continue;
+      if (point.time >= endTime) break;
       const px = x(point.time);
       const py = y(point.value);
-      if (!previous || point.time - previous.time > 6 * 86400000) context.moveTo(px, py);
+      if (point.time - previous.time > 6 * 86400000) context.moveTo(px, py);
       else context.lineTo(px, py);
       previous = point;
     }
+    if (last.time > previous.time) {
+      if (last.time - previous.time > 6 * 86400000) context.moveTo(x(last.time), y(last.value));
+      else context.lineTo(x(last.time), y(last.value));
+    }
     context.stroke();
     context.restore();
-    return visible[visible.length - 1];
+    return last;
   }
 
   function drawChart(progress) {
@@ -920,26 +951,20 @@
     const right = chartWidth - 24;
     const top = 78;
     const bottom = chartHeight - 30;
-    const lineColor = cssVar('--scene-line', '#55d6ff');
-    const benchmarkColor = cssVar('--scene-benchmark', '#8b9aae');
-    const gridColor = cssVar('--scene-grid', 'rgba(255,255,255,.1)');
-    const muted = cssVar('--scene-muted', '#8291a7');
+    if (!scenePalette) scenePalette = readScenePalette();
+    const lineColor = scenePalette.line;
+    const benchmarkColor = scenePalette.benchmark;
+    const gridColor = scenePalette.grid;
+    const muted = scenePalette.muted;
 
     context.save();
     context.strokeStyle = gridColor;
     context.lineWidth = 1;
-    for (let row = 0; row < 4; row += 1) {
-      const py = top + (bottom - top) * row / 3;
+    for (let row = 0; row < 3; row += 1) {
+      const py = top + (bottom - top) * row / 2;
       context.beginPath();
       context.moveTo(left, py);
       context.lineTo(right, py);
-      context.stroke();
-    }
-    for (let col = 0; col < 7; col += 1) {
-      const px = left + (right - left) * col / 6;
-      context.beginPath();
-      context.moveTo(px, top);
-      context.lineTo(px, bottom);
       context.stroke();
     }
     context.restore();
@@ -951,27 +976,23 @@
       return;
     }
 
-    const allValues = data.portfolio.concat(data.benchmark).map(point => point.value);
-    let min = Math.min(...allValues);
-    let max = Math.max(...allValues);
-    const padding = Math.max(2, (max - min) * 0.16);
-    min -= padding;
-    max += padding;
-    const x = time => left + (time - data.start) / Math.max(1, data.end - data.start) * (right - left);
+    const min = data.chartMin;
+    const max = data.chartMax;
+    const timeline = chartTimeline(data, progress, reduceMotion || manualScene);
+    const x = time => left + (time - timeline.viewStart)
+      / Math.max(1, timeline.viewEnd - timeline.viewStart) * (right - left);
     const y = value => bottom - (value - min) / Math.max(0.0001, max - min) * (bottom - top);
-    const endTime = data.start + (data.end - data.start) * progress;
 
     context.fillStyle = muted;
     context.font = '500 9px "IBM Plex Mono", monospace';
-    context.fillText(max.toFixed(1), left, top - 8);
-    context.fillText(min.toFixed(1), left, bottom + 19);
+    context.fillText(formatDate(timeline.viewStart), left, bottom + 19);
     context.textAlign = 'right';
-    context.fillText(formatDate(data.end), right, bottom + 19);
+    context.fillText(formatDate(timeline.viewEnd), right, bottom + 19);
     context.textAlign = 'left';
 
-    pathSeries(data.benchmark, endTime, x, y, benchmarkColor, 1.25, true);
-    const last = pathSeries(data.portfolio, endTime, x, y, lineColor, 2.4, false);
-    const scanX = x(endTime);
+    pathSeries(data.benchmark, timeline.viewStart, timeline.cursor, x, y, benchmarkColor, 1.25, true);
+    const last = pathSeries(data.portfolio, timeline.viewStart, timeline.cursor, x, y, lineColor, 2.4, false);
+    const scanX = x(timeline.cursor);
     context.save();
     context.strokeStyle = lineColor;
     context.globalAlpha = 0.28;
@@ -992,19 +1013,37 @@
     }
   }
 
-  function setScene(next, manual) {
+  function activateScene(next, manual) {
     sceneIndex = (next + scenes.length) % scenes.length;
     sceneStarted = performance.now();
     manualScene = !!manual;
+    scenePalette = null;
     root.classList.toggle('is-manual', manualScene || reduceMotion);
     root.dataset.scene = scenes[sceneIndex].id;
-    updateSceneText(reduceMotion || manualScene ? 1 : 0);
+    updateSceneText(reduceMotion || manualScene ? 1 : 0, true);
     drawChart(reduceMotion || manualScene ? 1 : 0);
     announceScene();
   }
 
+  function transitionScene(next, manual) {
+    if (reduceMotion) {
+      activateScene(next, manual);
+      return;
+    }
+    if (sceneTransitioning) return;
+    sceneTransitioning = true;
+    root.classList.add('is-scene-fading');
+    window.setTimeout(() => {
+      activateScene(next, manual);
+      requestAnimationFrame(() => {
+        root.classList.remove('is-scene-fading');
+        window.setTimeout(() => { sceneTransitioning = false; }, fadeDuration);
+      });
+    }, Math.round(fadeDuration * 0.46));
+  }
+
   root.querySelectorAll('.yc-entry-scene-btn').forEach(button => {
-    button.addEventListener('click', () => setScene(Number(button.dataset.sceneIndex), true));
+    button.addEventListener('click', () => transitionScene(Number(button.dataset.sceneIndex), true));
   });
 
   function animationFrame(now) {
@@ -1012,13 +1051,13 @@
     if (reduceMotion || manualScene) return;
     const elapsed = now - sceneStarted;
     if (elapsed >= sceneDuration) {
-      setScene(sceneIndex + 1, false);
+      transitionScene(sceneIndex + 1, false);
       requestAnimationFrame(animationFrame);
       return;
     }
     const progress = Math.min(1, elapsed / drawDuration);
     drawChart(progress);
-    updateSceneText(progress);
+    updateSceneText(progress, false);
     requestAnimationFrame(animationFrame);
   }
 
@@ -1033,6 +1072,6 @@
     window.addEventListener('resize', handleResize);
   }
   resizeCanvas();
-  setScene(0, false);
+  activateScene(0, false);
   if (!reduceMotion) requestAnimationFrame(animationFrame);
 })();

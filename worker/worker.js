@@ -5,7 +5,7 @@ import {
 import { createTerminalWarehouseAdapter } from './warehouse.js';
 
 /* ═══════════════════════════════════════════════════════════════
-   Yi Capital Portal Backend v8.4 — Cloudflare Worker（單文件，粘貼即部署）
+   Yi Capital Portal Backend v8.5 — Cloudflare Worker（全歷史極簡入口）
    ─────────────────────────────────────────────────────────────
    帳號模型：
      · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則發 6 位驗證碼）
@@ -23,7 +23,7 @@ import { createTerminalWarehouseAdapter } from './warehouse.js';
      GET  /api/feedback         [admin] 查詢、篩選及匯出 user log
      POST /api/feedback/update  [admin] 分流、排期、處理及關聯 Issue / PR
      GET  /api/benchmark?set=us|hk|a               三市場基準行情（只讀 KV 快照）
-     GET  /api/entry-market                          登入入口六個月精簡快照
+     GET  /api/entry-market                          登入入口全歷史精簡快照
      POST /api/refresh          [admin] 手動重算 NAV / 統計 / 基準並覆蓋 KV
      GET  /api/users            [admin]
      POST /api/users/update     [admin] disable/enable/delete/resetpw
@@ -383,17 +383,17 @@ async function stooqSeries(symbol) {
   const r = await fetch('https://stooq.com/q/d/l/?s=' + encodeURIComponent(symbol) + '&i=d', { headers: { 'User-Agent': 'yicapital-portal' } });
   if (!r.ok) return null;
   const rows = (await r.text()).trim().split('\n').slice(1).map(l => l.split(','));
-  const series = rows.filter(c => c.length >= 5 && c[4] && c[4] !== 'N/D').slice(-1300).map(c => ({ date: c[0], close: parseFloat(c[4]) })).filter(p => isFinite(p.close));
+  const series = rows.filter(c => c.length >= 5 && c[4] && c[4] !== 'N/D').map(c => ({ date: c[0], close: parseFloat(c[4]) })).filter(p => isFinite(p.close));
   return series.length > 20 ? series : null;
 }
 async function yahooSeries(symbol) {
-  const res = await yahooChart(symbol, '5y');
+  const res = await yahooChart(symbol, 'max');
   if (!res || !res.timestamp || !res.indicators || !res.indicators.quote) return null;
   const close = res.indicators.quote[0].close || [], out = [];
   for (let i = 0; i < res.timestamp.length; i++) {
     if (isFinite(close[i]) && close[i] > 0) out.push({ date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), close: close[i] });
   }
-  return out.length > 20 ? out.slice(-1300) : null;
+  return out.length > 20 ? out : null;
 }
 async function hangSengSeries(code) {
   const r = await fetch('https://www.hsi.com.hk/data/eng/indexes/' + encodeURIComponent(code) + '/chart.json', { headers: { 'User-Agent': 'Mozilla/5.0 yicapital-portal' } });
@@ -407,7 +407,7 @@ async function hangSengSeries(code) {
 async function tushareIndexSeries(token, tsCode) {
   if (!token || !tsCode) return null;
   const end = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const start = String(Number(end.slice(0, 4)) - 5) + end.slice(4);
+  const start = '19900101';
   const response = await fetch('https://api.tushare.pro', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'User-Agent': 'yicapital-portal' },
@@ -444,6 +444,19 @@ const BM_SETS = {
   ],
   a: [{ label: 'HS300', stooq: '000300.cn', yahoo: '000300.SS', tushare: '000300.SH' }],
 };
+function mergeBenchmarkSeries(oldRows, freshRows) {
+  const byDate = new Map();
+  [oldRows, freshRows].forEach(rows => {
+    (Array.isArray(rows) ? rows : []).forEach(row => {
+      const date = String(row && row.date || '').slice(0, 10);
+      const close = Number(row && row.close);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date) && isFinite(close) && close > 0) {
+        byDate.set(date, { date, close });
+      }
+    });
+  });
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
 async function fetchBenchmarkSet(set, env) {
   const cfg = BM_SETS[set]; if (!cfg) return null;
   const data = {}, sources = {};
@@ -500,7 +513,7 @@ async function prewarmBenchmark(env, sets) {
     const data = {}, sources = {};
     expected.forEach(label => {
       if (fresh && fresh.data[label]) {
-        data[label] = fresh.data[label];
+        data[label] = mergeBenchmarkSeries(old && old.data && old.data[label], fresh.data[label]);
         sources[label] = fresh.sources[label];
       }
       else if (old && old.data && old.data[label]) {
@@ -530,6 +543,43 @@ async function prewarmBenchmark(env, sets) {
   }));
 }
 const round = (v, n) => Math.round(v * 10 ** n) / 10 ** n;
+function buildEntryMarketPoints(navRows, benchmarkRows) {
+  const navByDate = new Map();
+  (Array.isArray(navRows) ? navRows : []).forEach(row => {
+    const date = String(row && row.date || '').slice(0, 10);
+    const nav = Number(row && (row.unitNav ?? row.nav));
+    const dividend = Number(row && row.divPerUnit || 0);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && isFinite(nav) && nav > 0 && isFinite(dividend)) {
+      navByDate.set(date, { date, nav, dividend });
+    }
+  });
+  const nav = [...navByDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  if (nav.length < 20) return null;
+  let value = 100;
+  const portfolio = new Map([[nav[0].date, value]]);
+  for (let index = 1; index < nav.length; index += 1) {
+    const current = nav[index], previous = nav[index - 1];
+    const dailyReturn = (current.nav + current.dividend) / previous.nav - 1;
+    if (!isFinite(dailyReturn) || dailyReturn <= -1) continue;
+    value *= 1 + dailyReturn;
+    portfolio.set(current.date, value);
+  }
+  const benchmark = new Map();
+  (Array.isArray(benchmarkRows) ? benchmarkRows : []).forEach(row => {
+    const date = String(row && row.date || '').slice(0, 10), close = Number(row && row.close);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && isFinite(close) && close > 0) benchmark.set(date, close);
+  });
+  const dates = [...portfolio.keys()].filter(date => benchmark.has(date)).sort();
+  if (dates.length < 20) return null;
+  const portfolioBase = portfolio.get(dates[0]);
+  const benchmarkBase = benchmark.get(dates[0]);
+  const points = dates.map(date => [
+    date,
+    round(portfolio.get(date) / portfolioBase * 100, 6),
+    round(benchmark.get(date) / benchmarkBase * 100, 6),
+  ]);
+  return { points, start: dates[0], end: dates[dates.length - 1] };
+}
 const pxRecord = v => typeof v === 'number' ? { close: v, date: null } : v;
 
 const TRADING_DAYS = 252;
@@ -847,7 +897,7 @@ function normalizeHistory(rows) {
       byDate.set(date, { date, ret: round(ret, 10) });
     }
   });
-  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-5000);
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 function normalizeNavRows(rows) {
   const byDate = new Map();
@@ -865,7 +915,7 @@ function normalizeNavRows(rows) {
     });
     byDate.set(date, clean);
   });
-  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-5000);
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 function cleanMetrics(value) {
   const out = {};
@@ -1101,7 +1151,6 @@ async function updatePortfolioNav(env, pf) {
     marketValue: round(marketValue, 2), cash: round(cash, 2), liability: round(liability, 2),
     totalAssets: round(totalAssets, 2), netValue: round(netValue, 2), mv: round(netValue, 2),
   });
-  if (live.rows.length > 1300) live.rows = live.rows.slice(-1300);
   live.holdings = holdings; live.updatedAt = now.toISOString(); live.marketDate = marketDate;
   live.note = stale.length ? 'stale:' + stale.join(',') : null;
   Object.assign(st, { appended: marketDate, marketValue: round(marketValue, 2), netValue: round(netValue, 2), stale });
@@ -1202,7 +1251,7 @@ export default {
           }
         } catch (e) {}
         return J(env, {
-          ok: true, version: 'v8.4-entry',
+          ok: true, version: 'v8.5-entry',
           kv: kvOk,
           feedback: feedbackOk,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
@@ -1386,7 +1435,7 @@ export default {
         }, 503);
       }
 
-      /* ════ 登入首屏：僅返回三市場六個月繪圖所需資料，不暴露持倉 ════ */
+      /* ════ 登入首屏：返回三市場全部共同歷史的歸一化點，不暴露金額/持倉 ════ */
       if (path === '/api/entry-market' && request.method === 'GET') {
         const specs = {
           hk: { benchmark: 'HSI ETF' },
@@ -1410,19 +1459,32 @@ export default {
             markets[market] = null;
             return;
           }
+          const history = buildEntryMarketPoints(nav.navRows, benchmarkRows);
+          if (!history) {
+            markets[market] = null;
+            return;
+          }
+          const navReview = !!(
+            nav.status && Array.isArray(nav.status.stale) && nav.status.stale.length
+            || nav.status && Array.isArray(nav.status.missing) && nav.status.missing.length
+          );
+          const benchmarkReview = benchmark.stale === true
+            || Array.isArray(benchmark.missing) && benchmark.missing.length > 0
+            || Array.isArray(benchmark.unavailable) && benchmark.unavailable.length > 0;
           markets[market] = {
-            navRows: nav.navRows.slice(-190),
+            formatVersion: 3,
+            points: history.points,
+            start: history.start,
+            end: history.end,
+            pointCount: history.points.length,
             historyComplete: nav.historyComplete === true,
-            cacheVersion: Number(nav.cacheVersion || 0),
-            navStatus: nav.status || null,
+            cacheVersion: 3,
+            review: navReview || benchmarkReview,
             navAsOf: nav.asOf || nav.marketDate || null,
             benchmarkLabel: spec.benchmark,
             benchmarkSource: benchmark.sources && benchmark.sources[spec.benchmark] || null,
-            benchmarkRows: benchmarkRows.slice(-190),
             benchmarkStatus: {
               stale: benchmark.stale === true,
-              missing: Array.isArray(benchmark.missing) ? benchmark.missing : [],
-              unavailable: Array.isArray(benchmark.unavailable) ? benchmark.unavailable : [],
               fetched: benchmark.fetched || null,
             },
           };

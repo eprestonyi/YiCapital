@@ -35,15 +35,17 @@ test('anonymous Guest never receives an authentication token', async () => {
   assert.doesNotMatch(entry, /\/api\/guest/);
 });
 
-test('entry chart uses real portfolio snapshots and explicit market benchmarks', async () => {
+test('entry chart uses all common closes from the privacy-minimized market snapshot', async () => {
   const entry = await read('assets/yc-entry.js');
   assert.match(entry, /\/api\/entry-market/);
-  assert.match(entry, /navRows/);
-  assert.match(entry, /HSI ETF/);
-  assert.match(entry, /S&P 500/);
-  assert.match(entry, /HS300/);
+  assert.match(entry, /compact\.points/);
+  assert.match(entry, /buildEntryPointSeries/);
+  assert.match(entry, /fullHistory/);
   assert.match(entry, /commonDates/);
   assert.match(entry, /DATA REVIEW/);
+  assert.doesNotMatch(entry, /setUTCMonth/);
+  assert.doesNotMatch(entry, /\/api\/nav\//);
+  assert.doesNotMatch(entry, /\/api\/benchmark\?set=/);
 });
 
 test('worker exposes a compact entry snapshot and keeps external data credentials server-side', async () => {
@@ -51,8 +53,17 @@ test('worker exposes a compact entry snapshot and keeps external data credential
   const config = await read('assets/portal-config.js');
   assert.match(worker, /\/api\/entry-market/);
   assert.match(worker, /TUSHARE_TOKEN/);
+  assert.match(worker, /formatVersion:\s*3/);
+  assert.match(worker, /buildEntryMarketPoints/);
   assert.match(worker, /benchmarkSource/);
   assert.match(worker, /sources\[b\.label\]/);
+  const entryBranch = worker.slice(
+    worker.indexOf("if (path === '/api/entry-market'"),
+    worker.indexOf('/* ════ 會話 ════'),
+  );
+  assert.doesNotMatch(entryBranch, /slice\(-190\)/);
+  assert.doesNotMatch(entryBranch, /navRows:/);
+  assert.doesNotMatch(entryBranch, /navStatus/);
   assert.match(worker, /ADMIN_GOOGLE_EMAILS/);
   assert.match(worker, /verificationCode/);
   assert.doesNotMatch(worker, /Math\.random/);
@@ -66,8 +77,31 @@ test('static motion modes stop the animation loop and session login refreshes th
   assert.match(entry, /if \(!reduceMotion\) requestAnimationFrame\(animationFrame\)/);
   assert.match(entry, /if \(reduceMotion \|\| manualScene\) return/);
   assert.match(entry, /location\.reload\(\)/);
+  const sceneDuration = Number(entry.match(/const sceneDuration = (\d+);/)[1]);
+  const drawDuration = Number(entry.match(/const drawDuration = (\d+);/)[1]);
+  assert.ok(sceneDuration >= 18000);
+  assert.ok(drawDuration >= 15000);
+  assert.match(entry, /chartTimeline/);
+  assert.match(entry, /pointAtTime/);
+  assert.match(entry, /is-scene-fading/);
+  assert.match(entry, /lastMetricsAt < 90/);
+  const pathBody = entry.slice(entry.indexOf('function pathSeries'), entry.indexOf('function drawChart'));
+  assert.doesNotMatch(pathBody, /\.filter\(/);
   const frameBody = entry.slice(entry.indexOf('function animationFrame'), entry.indexOf('function handleResize'));
   assert.doesNotMatch(frameBody, /yc-entry-chart-summary/);
+});
+
+test('minimal entry styling removes card chrome and uses a slow fade transition', async () => {
+  const css = await read('assets/yc-entry.css');
+  assert.match(css, /\.yc-entry-root\.is-scene-fading[\s\S]*?opacity:\s*0;/);
+  assert.match(css, /opacity 760ms cubic-bezier/);
+  assert.match(css, /--yc-entry-scene-duration,\s*22000ms/);
+  assert.match(css, /\.yc-entry-chart,[\s\S]*?border:\s*0;/);
+  assert.match(css, /\.yc-entry-metrics[\s\S]*?border:\s*0;/);
+  assert.match(css, /\.yc-entry-scene-btn[\s\S]*?border:\s*0;/);
+  assert.match(css, /\.yc-entry-auth\s*\{[\s\S]*?border:\s*0;/);
+  assert.doesNotMatch(css, /transition-duration:\s*170ms/);
+  assert.match(css, /prefers-reduced-motion:\s*reduce[\s\S]*?transition-duration:\s*1ms/);
 });
 
 test('locked YiCapital wordmark stays intact in the entry surface', async () => {
