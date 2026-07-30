@@ -15,7 +15,11 @@ function testEnv(overrides = {}) {
       put: async () => {},
       delete: async () => {},
     },
-    FEEDBACK_DB: {},
+    FEEDBACK_DB: {
+      prepare: () => ({
+        first: async () => ({ count: 3 }),
+      }),
+    },
     FEEDBACK_RATE_SALT: 'unit-test-only',
     ALLOWED_ORIGIN: 'https://www.yicapital.co',
     ...overrides,
@@ -33,6 +37,21 @@ test('health exposes the feedback store without leaking configuration', async ()
   assert.equal(body.feedback, true);
   assert.equal(body.feedback_rate_limit, true);
   assert.equal('database_id' in body, false);
+});
+
+test('health fails closed when the D1 schema is incomplete', async () => {
+  const env = testEnv({
+    FEEDBACK_DB: {
+      prepare: () => ({
+        first: async () => ({ count: 2 }),
+      }),
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://portal.test/api/health'),
+    env,
+  );
+  assert.equal((await response.json()).feedback, false);
 });
 
 test('public feedback rejects cross-site requests before touching D1', async () => {
@@ -172,6 +191,7 @@ test('deleting an account anonymizes its linked feedback', async () => {
   assert.match(source, /'account_anonymized', status, status/);
   assert.match(source, /SET actor_type = 'deleted_user', username = NULL/);
   assert.match(source, /DELETE FROM feedback_rate_limits[\s\S]*substr\(bucket, -length\(\?\)\) = \?/);
+  assert.match(source, /hmacSha256Hex\(env\.FEEDBACK_RATE_SALT, actorReference\)/);
 });
 
 test('all three terms pages disclose feedback data handling', async () => {

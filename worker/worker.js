@@ -94,6 +94,16 @@ const FEEDBACK_PRIORITIES = new Set(['p0', 'p1', 'p2', 'p3']);
 async function sha256Hex(value) {
   return hex(await crypto.subtle.digest('SHA-256', enc.encode(String(value || ''))));
 }
+async function hmacSha256Hex(secret, value) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(String(secret || '')),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  return hex(await crypto.subtle.sign('HMAC', key, enc.encode(String(value || ''))));
+}
 function cleanPlain(value, max) {
   return String(value == null ? '' : value)
     .replace(/\r\n?/g, '\n')
@@ -139,9 +149,10 @@ async function consumeFeedbackRateLimit(request, env, sess) {
   const ip = String(request.headers.get('CF-Connecting-IP')
     || request.headers.get('X-Forwarded-For')
     || 'unknown').split(',')[0].trim();
-  const identity = sess
-    ? 'user:' + sess.u
-    : 'anon:' + (await sha256Hex(env.FEEDBACK_RATE_SALT + ':' + ip)).slice(0, 24);
+  const actorKind = sess ? 'user' : 'anon';
+  const actorReference = sess ? 'user:' + sess.u : 'anon:' + ip;
+  const identity = actorKind + ':'
+    + (await hmacSha256Hex(env.FEEDBACK_RATE_SALT, actorReference)).slice(0, 24);
   const bucket = windowId + ':' + identity;
   await env.FEEDBACK_DB.prepare(`
     INSERT INTO feedback_rate_limits (bucket, count, reset_at)
@@ -1070,12 +1081,23 @@ export default {
     try {
       /* ════ 健康檢查：各配置是否被運行時讀到（只返回布爾）════ */
       if (path === '/api/health' && request.method === 'GET') {
-        let kvOk = false;
+        let kvOk = false, feedbackOk = false;
         try { await env.YC_KV.get('__ping__'); kvOk = true; } catch (e) {}
+        try {
+          if (env.FEEDBACK_DB) {
+            const schema = await env.FEEDBACK_DB.prepare(`
+              SELECT COUNT(*) AS count
+              FROM sqlite_master
+              WHERE type = 'table'
+                AND name IN ('feedback_entries', 'feedback_changes', 'feedback_rate_limits')
+            `).first();
+            feedbackOk = Number(schema && schema.count || 0) === 3;
+          }
+        } catch (e) {}
         return J(env, {
           ok: true, version: 'v8.3',
           kv: kvOk,
-          feedback: !!env.FEEDBACK_DB,
+          feedback: feedbackOk,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
           admin: !!(env.ADMIN_USERNAME && env.ADMIN_PASSWORD),
           github: !!(env.GH_TOKEN && env.GH_OWNER && env.GH_REPO),
@@ -1524,7 +1546,7 @@ export default {
         if (action === 'delete') {
           if (env.FEEDBACK_DB) {
             const now = Date.now();
-            await env.FEEDBACK_DB.batch([
+            const statements = [
               env.FEEDBACK_DB.prepare(`
                 INSERT INTO feedback_changes (
                   id, feedback_id, changed_at, changed_by_type, changed_by_ref,
@@ -1543,11 +1565,17 @@ export default {
                 SET actor_type = 'deleted_user', username = NULL, updated_at = ?
                 WHERE username = ?
               `).bind(now, username),
-              env.FEEDBACK_DB.prepare(`
+            ];
+            if (env.FEEDBACK_RATE_SALT) {
+              const rateIdentity = 'user:' + (
+                await hmacSha256Hex(env.FEEDBACK_RATE_SALT, 'user:' + username)
+              ).slice(0, 24);
+              statements.push(env.FEEDBACK_DB.prepare(`
                 DELETE FROM feedback_rate_limits
                 WHERE substr(bucket, -length(?)) = ?
-              `).bind('user:' + username, 'user:' + username),
-            ]);
+              `).bind(rateIdentity, rateIdentity));
+            }
+            await env.FEEDBACK_DB.batch(statements);
           }
           await env.YC_KV.delete(key);
           if (u.email) await env.YC_KV.delete('email:' + u.email);
