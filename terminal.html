@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YiCapital 易終端 ｜ 市場、供應鏈與財務資料</title>
+<meta name="description" content="YiCapital Terminal 原型：市場快照、AI 算力供應鏈、公司 X-ray、標準化財務與資料狀態。">
+<meta property="og:type" content="website"><meta property="og:site_name" content="YiCapital">
+<meta property="og:title" content="YiCapital 易終端 ｜ 市場、供應鏈與財務資料">
+<meta property="og:description" content="從三市場快照進入 AI 算力供應鏈，再縮放到公司 X-ray、標準化財務與資料狀態。">
+<meta property="og:image" content="https://www.yicapital.co/terminal-og.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="https://www.yicapital.co/terminal-og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=Noto+Sans+TC:wght@400;500;700;900&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/terminal.css">
+<script src="assets/portal-config.js" defer></script>
+<script src="assets/yc-i18n.js" defer></script>
+<script src="assets/yc-terminal.js" defer></script>
+</head>
+<body class="terminal-page" data-terminal-lang="tw">
+<a class="terminal-skip" href="#terminal-main">跳到主要內容</a>
+
+<header class="terminal-site-header">
+  <div class="terminal-header-inner">
+    <a class="terminal-brand-link" href="./" aria-label="YiCapital 首頁"><span class="logo">Yi<b>Capital</b></span></a>
+    <button class="menu-btn terminal-menu-button" type="button" aria-expanded="false" aria-controls="terminal-site-menu">選單 ≡</button>
+    <nav class="terminal-site-nav" aria-label="主導航">
+      <ul id="terminal-site-menu">
+        <li><a class="link" href="insights" data-i18n="nav.insights">研究觀點</a></li>
+        <li><a class="link" href="forum" data-i18n="nav.forum">研究論壇</a></li>
+        <li><a class="link" href="portfolios" data-i18n="nav.portfolios">組合實錄</a></li>
+        <li><a class="link active" href="terminal" aria-current="page" data-i18n="nav.terminal">易終端</a></li>
+      </ul>
+    </nav>
+    <div class="terminal-header-tools">
+      <a class="terminal-about" href="about" data-i18n="nav.about">關於我們</a>
+      <div class="terminal-language" aria-label="語言">
+        <a class="on" href="terminal.html" lang="zh-Hant" aria-current="page" data-language-link>繁</a>
+        <a href="cn/terminal.html" lang="zh-Hans" data-language-link>简</a>
+        <a href="en/terminal.html" lang="en" data-language-link>EN</a>
+      </div>
+      <a class="terminal-login" href="login">登入</a>
+    </div>
+  </div>
+</header>
+
+<main id="terminal-main">
+  <section class="terminal-hero" aria-labelledby="terminal-title">
+    <div class="terminal-hero-copy">
+      <p class="terminal-eyebrow">YICAPITAL TERMINAL · PROTOTYPE</p>
+      <h1 id="terminal-title">把市場、供應鏈與財務真相放在同一張圖上。</h1>
+      <p>從三市場快照進入 AI 算力產業鏈，再縮放到單一公司的供應商、ToB／ToC 下游、會計 flow 與標準化年報。所有缺口、估算與候選資料都會明確標示。</p>
+    </div>
+    <div class="terminal-hero-status" aria-label="資料狀態摘要">
+      <span class="terminal-status-chip is-neutral" id="terminal-publication-chip">正在讀取快照</span>
+      <span class="terminal-status-chip is-neutral" id="terminal-coverage-chip">正在讀取覆蓋</span>
+      <span class="terminal-status-chip is-neutral" id="terminal-pipeline-chip">正在讀取隊列</span>
+    </div>
+  </section>
+
+  <section class="terminal-workspace" aria-label="YiCapital Terminal 工作區">
+    <div class="terminal-command-bar">
+      <div class="terminal-module-tabs" role="tablist" aria-label="Terminal 模組">
+        <button type="button" role="tab" aria-selected="true" aria-controls="terminal-panel-markets" id="terminal-tab-markets" data-terminal-module="markets">市場</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-supply" id="terminal-tab-supply" data-terminal-module="supply" tabindex="-1">供應鏈</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-financials" id="terminal-tab-financials" data-terminal-module="financials" tabindex="-1">財務／FA</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-status" id="terminal-tab-status" data-terminal-module="status" tabindex="-1">資料狀態</button>
+      </div>
+      <div class="terminal-global-controls">
+        <label class="terminal-control terminal-year-control">
+          <span>標準年度</span>
+          <select id="terminal-year" aria-label="標準年度"></select>
+        </label>
+        <div class="terminal-search-wrap">
+          <label for="terminal-company-search">搜尋公司或代號</label>
+          <input id="terminal-company-search" type="search" autocomplete="off" spellcheck="false" placeholder="例如 NVIDIA、NVDA、TSMC" role="combobox" aria-haspopup="listbox" aria-autocomplete="list" aria-controls="terminal-search-results" aria-expanded="false">
+          <div id="terminal-search-results" class="terminal-search-results" role="listbox" hidden></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="terminal-live" class="terminal-sr-only" aria-live="polite"></div>
+    <div id="terminal-alert" class="terminal-alert" role="alert" hidden></div>
+
+    <section id="terminal-panel-markets" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-markets" data-terminal-panel="markets">
+      <p class="terminal-loading" role="status">正在讀取已持久化的市場快照…</p>
+    </section>
+    <section id="terminal-panel-supply" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-supply" data-terminal-panel="supply" hidden>
+      <p class="terminal-loading" role="status">正在讀取 AI 算力供應鏈原型資料…</p>
+    </section>
+    <section id="terminal-panel-financials" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-financials" data-terminal-panel="financials" hidden>
+      <p class="terminal-loading" role="status">正在讀取標準化財務資料…</p>
+    </section>
+    <section id="terminal-panel-status" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-status" data-terminal-panel="status" hidden>
+      <p class="terminal-loading" role="status">正在檢查資料覆蓋與發布狀態…</p>
+    </section>
+  </section>
+
+  <noscript>
+    <div class="terminal-noscript">YiCapital Terminal 需要 JavaScript 才能載入只讀快照。未啟用時不會顯示任何替代或推測數字。</div>
+  </noscript>
+</main>
+
+<footer class="terminal-footer">
+  <div><span class="logo">Yi<b>Capital</b></span></div>
+  <p>本頁為研究原型，僅展示已標記來源、期間與狀態的資料，不構成投資建議。缺失值不等於零，關係存在不等於已知金額。</p>
+  <p>© 2026 YiCapital.</p>
+</footer>
+</body>
+</html>

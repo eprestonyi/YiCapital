@@ -15,12 +15,13 @@
     'ut.live':['實時組合','实时组合','LIVE PORTFOLIO'],
     'ut.forum':['研報庫','研报库','RESEARCH FORUM'],
     'ut.insights':['最新觀點','最新观点','LATEST INSIGHTS'],
-    'ut.contact':['聯繫我們','联系我们','CONTACT'],
+    'ut.contact':['關於我們','关于我们','ABOUT'],
     'ut.login':['登入','登入','LOGIN'],
     'nav.insights':['研究觀點','研究观点','Our Insights'],
     'nav.forum':['研究論壇','研究论坛','Research Forum'],
     'nav.portfolios':['組合實錄','组合实录','Our Portfolios'],
     'nav.about':['關於我們','关于我们','About Us'],
+    'nav.terminal':['易終端','易终端','Yi Terminal'],
     'footer.disc':['免責聲明：本網站所載之研究報告、組合數據與論壇內容，均基於公開資料與個人判斷撰寫，僅供研究與學習參考，不構成任何證券之買賣要約、招攬或投資建議。','免责声明：本网站所载之研究报告、组合数据与论坛内容，均基于公开资料与个人判断撰写，仅供研究与学习参考，不构成任何证券之买卖要约、招揽或投资建议。','Disclaimer: All research, portfolio data and forum content on this site are prepared from public information and personal judgment, for research and educational reference only, and do not constitute an offer, solicitation or investment advice with respect to any security.'],
     /* ── 用戶意見 / User feedback ── */
     'fb.button':['意見回饋','意见反馈','Feedback'],
@@ -226,14 +227,15 @@
   function pageTarget(l) {
     const parts = location.pathname.split('/').filter(Boolean);
     let file = (parts[parts.length - 1] || '').replace(/\.html$/, '');
-    const TRIPLED = ['index','portfolios','fund-us','fund-hk','fund-a','insights','insights-archive','forum','filings','about','login','terms'];
+    const TRIPLED = ['index','portfolios','fund-us','fund-hk','fund-a','insights','insights-archive','forum','filings','about','terminal','login','terms'];
     const TRIPLED_POSTS = ['tencent-0700-ch12','yicapital-risk-report','great-company-great-investment'];
     const root = (l === 'tw' ? '/' : '/' + l + '/');
+    const suffix = location.search + location.hash;
     if (parts.indexOf('posts') >= 0) {
-      return TRIPLED_POSTS.indexOf(file) >= 0 ? root + 'posts/' + file + location.hash : root;
+      return TRIPLED_POSTS.indexOf(file) >= 0 ? root + 'posts/' + file + suffix : root + suffix;
     }
-    if (!file || file === 'index' || TRIPLED.indexOf(file) < 0) return root + location.hash;
-    return root + file + location.hash;
+    if (!file || file === 'index' || TRIPLED.indexOf(file) < 0) return root + suffix;
+    return root + file + suffix;
   }
   window.YCI = { lang, t, f, lbl, set: l => { localStorage.setItem('yc-lang', l); location.href = pageTarget(l); } };
 

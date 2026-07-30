@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YiCapital Yi Terminal | Markets, supply chain and financial data</title>
+<meta name="description" content="YiCapital Terminal prototype: market snapshots, the AI compute supply chain, company X-ray, standardized financials and data status.">
+<meta property="og:type" content="website"><meta property="og:site_name" content="YiCapital">
+<meta property="og:title" content="YiCapital Yi Terminal | Markets, supply chain and financial data">
+<meta property="og:description" content="Move from three market snapshots into the AI compute chain, then zoom to company X-ray, standardized financials and data status.">
+<meta property="og:image" content="https://www.yicapital.co/terminal-og.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="https://www.yicapital.co/terminal-og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=Noto+Sans+TC:wght@400;500;700;900&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/terminal.css">
+<script src="../assets/portal-config.js" defer></script>
+<script src="../assets/yc-i18n.js" defer></script>
+<script src="../assets/yc-terminal.js" defer></script>
+</head>
+<body class="terminal-page" data-terminal-lang="en">
+<a class="terminal-skip" href="#terminal-main">Skip to main content</a>
+
+<header class="terminal-site-header">
+  <div class="terminal-header-inner">
+    <a class="terminal-brand-link" href="./" aria-label="YiCapital home"><span class="logo">Yi<b>Capital</b></span></a>
+    <button class="menu-btn terminal-menu-button" type="button" aria-expanded="false" aria-controls="terminal-site-menu">MENU ≡</button>
+    <nav class="terminal-site-nav" aria-label="Primary navigation">
+      <ul id="terminal-site-menu">
+        <li><a class="link" href="insights" data-i18n="nav.insights">Our Insights</a></li>
+        <li><a class="link" href="forum" data-i18n="nav.forum">Research Forum</a></li>
+        <li><a class="link" href="portfolios" data-i18n="nav.portfolios">Our Portfolios</a></li>
+        <li><a class="link active" href="terminal" aria-current="page" data-i18n="nav.terminal">Yi Terminal</a></li>
+      </ul>
+    </nav>
+    <div class="terminal-header-tools">
+      <a class="terminal-about" href="about" data-i18n="nav.about">About Us</a>
+      <div class="terminal-language" aria-label="Language">
+        <a href="../terminal.html" lang="zh-Hant" data-language-link>繁</a>
+        <a href="../cn/terminal.html" lang="zh-Hans" data-language-link>简</a>
+        <a class="on" href="terminal.html" lang="en" aria-current="page" data-language-link>EN</a>
+      </div>
+      <a class="terminal-login" href="login">Login</a>
+    </div>
+  </div>
+</header>
+
+<main id="terminal-main">
+  <section class="terminal-hero" aria-labelledby="terminal-title">
+    <div class="terminal-hero-copy">
+      <p class="terminal-eyebrow">YICAPITAL TERMINAL · PROTOTYPE</p>
+      <h1 id="terminal-title">Put markets, supply chains and financial truth on one map.</h1>
+      <p>Move from three market snapshots into the AI compute chain, then zoom to one company’s suppliers, ToB and ToC demand, accounting flow and standardized annual filing. Every gap, estimate and candidate record stays visible.</p>
+    </div>
+    <div class="terminal-hero-status" aria-label="Data status summary">
+      <span class="terminal-status-chip is-neutral" id="terminal-publication-chip">Loading snapshot</span>
+      <span class="terminal-status-chip is-neutral" id="terminal-coverage-chip">Loading coverage</span>
+      <span class="terminal-status-chip is-neutral" id="terminal-pipeline-chip">Loading queue</span>
+    </div>
+  </section>
+
+  <section class="terminal-workspace" aria-label="YiCapital Terminal workspace">
+    <div class="terminal-command-bar">
+      <div class="terminal-module-tabs" role="tablist" aria-label="Terminal modules">
+        <button type="button" role="tab" aria-selected="true" aria-controls="terminal-panel-markets" id="terminal-tab-markets" data-terminal-module="markets">Markets</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-supply" id="terminal-tab-supply" data-terminal-module="supply" tabindex="-1">Supply Chain</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-financials" id="terminal-tab-financials" data-terminal-module="financials" tabindex="-1">Financials / FA</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-status" id="terminal-tab-status" data-terminal-module="status" tabindex="-1">Data Status</button>
+      </div>
+      <div class="terminal-global-controls">
+        <label class="terminal-control terminal-year-control">
+          <span>Canonical year</span>
+          <select id="terminal-year" aria-label="Canonical year"></select>
+        </label>
+        <div class="terminal-search-wrap">
+          <label for="terminal-company-search">Search company or ticker</label>
+          <input id="terminal-company-search" type="search" autocomplete="off" spellcheck="false" placeholder="Try NVIDIA, NVDA or TSMC" role="combobox" aria-haspopup="listbox" aria-autocomplete="list" aria-controls="terminal-search-results" aria-expanded="false">
+          <div id="terminal-search-results" class="terminal-search-results" role="listbox" hidden></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="terminal-live" class="terminal-sr-only" aria-live="polite"></div>
+    <div id="terminal-alert" class="terminal-alert" role="alert" hidden></div>
+
+    <section id="terminal-panel-markets" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-markets" data-terminal-panel="markets">
+      <p class="terminal-loading" role="status">Loading persisted market snapshots…</p>
+    </section>
+    <section id="terminal-panel-supply" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-supply" data-terminal-panel="supply" hidden>
+      <p class="terminal-loading" role="status">Loading the AI compute supply-chain prototype…</p>
+    </section>
+    <section id="terminal-panel-financials" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-financials" data-terminal-panel="financials" hidden>
+      <p class="terminal-loading" role="status">Loading standardized financial data…</p>
+    </section>
+    <section id="terminal-panel-status" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-status" data-terminal-panel="status" hidden>
+      <p class="terminal-loading" role="status">Checking data coverage and publication state…</p>
+    </section>
+  </section>
+
+  <noscript>
+    <div class="terminal-noscript">YiCapital Terminal needs JavaScript to load its read-only snapshots. It will not show substitute or inferred numbers when JavaScript is unavailable.</div>
+  </noscript>
+</main>
+
+<footer class="terminal-footer">
+  <div><span class="logo">Yi<b>Capital</b></span></div>
+  <p>This research prototype shows only data carrying an explicit source, period and status. It is not investment advice. Missing does not mean zero, and a known relationship does not imply a known amount.</p>
+  <p>© 2026 YiCapital.</p>
+</footer>
+</body>
+</html>

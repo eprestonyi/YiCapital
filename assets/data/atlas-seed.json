@@ -1,0 +1,1046 @@
+{
+  "schemaVersion": "atlas-seed-v1",
+  "snapshotId": "ai-compute-2025-prototype-v1",
+  "snapshotAt": "2026-07-30T07:30:00Z",
+  "knowledgeCutoff": "2026-07-30",
+  "taxonomyVersion": "ai-compute-v1",
+  "annualPolicyVersion": "canonical-nearest-fy-v1",
+  "status": "partial",
+  "scope": {
+    "industry": "ai-compute",
+    "canonicalYearStart": 2010,
+    "canonicalYearEnd": 2025,
+    "marketCapThresholdUsd": 10000000000,
+    "marketCapThresholdAsOf": null,
+    "universeStatus": "candidate-universe-requires-point-in-time-market-cap-check"
+  },
+  "sources": [
+    {
+      "id": "sec-nvda-fy2025",
+      "type": "regulatory-filing",
+      "title": "NVIDIA FY2025 Form 10-K",
+      "publisher": "U.S. Securities and Exchange Commission",
+      "filedAt": "2025-02-26",
+      "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000023/nvda-20250126.htm",
+      "evidenceTier": "primary"
+    },
+    {
+      "id": "sec-nvda-fy2026",
+      "type": "regulatory-filing",
+      "title": "NVIDIA FY2026 Form 10-K",
+      "publisher": "U.S. Securities and Exchange Commission",
+      "filedAt": "2026-02-25",
+      "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000021/nvda-20260125.htm",
+      "evidenceTier": "primary"
+    }
+  ],
+  "layers": [
+    {
+      "id": "physical",
+      "order": 0,
+      "label": {
+        "tw": "物理底座",
+        "cn": "物理底座",
+        "en": "Physical Base"
+      },
+      "description": {
+        "tw": "能源、土地、建築、機架、冷卻、儲存與材料",
+        "cn": "能源、土地、建筑、机架、冷却、存储与材料",
+        "en": "Energy, land, construction, racks, cooling, storage and materials"
+      }
+    },
+    {
+      "id": "manufacturing",
+      "order": 1,
+      "label": {
+        "tw": "製造與封測",
+        "cn": "制造与封测",
+        "en": "Manufacturing"
+      },
+      "description": {
+        "tw": "晶圓代工、記憶體、封裝、組裝與測試",
+        "cn": "晶圆代工、存储、封装、组装与测试",
+        "en": "Foundry, memory, packaging, assembly and test"
+      }
+    },
+    {
+      "id": "compute",
+      "order": 2,
+      "label": {
+        "tw": "算力與雲",
+        "cn": "算力与云",
+        "en": "Compute & Cloud"
+      },
+      "description": {
+        "tw": "加速器、伺服器、資料中心與雲服務",
+        "cn": "加速器、服务器、数据中心与云服务",
+        "en": "Accelerators, servers, data centers and cloud services"
+      }
+    },
+    {
+      "id": "ai",
+      "order": 3,
+      "label": {
+        "tw": "AI 與模型",
+        "cn": "AI 与模型",
+        "en": "AI & Models"
+      },
+      "description": {
+        "tw": "模型公司、AI 企業與最終需求",
+        "cn": "模型公司、AI 企业与最终需求",
+        "en": "Model companies, AI enterprises and end demand"
+      }
+    }
+  ],
+  "entities": [
+    {
+      "id": "energy-grid",
+      "name": "Power & Grid",
+      "kind": "category",
+      "layer": "physical",
+      "cluster": "energy",
+      "role": {
+        "tw": "電力、電網與備援能源",
+        "cn": "电力、电网与备用能源",
+        "en": "Power, grid and backup energy"
+      },
+      "x": 8,
+      "y": 18
+    },
+    {
+      "id": "land-buildings",
+      "name": "Land & Buildings",
+      "kind": "category",
+      "layer": "physical",
+      "cluster": "real-assets",
+      "role": {
+        "tw": "土地、建築與資料中心土建",
+        "cn": "土地、建筑与数据中心土建",
+        "en": "Land, buildings and data-center construction"
+      },
+      "x": 12,
+      "y": 48
+    },
+    {
+      "id": "racks-cooling",
+      "name": "Racks & Cooling",
+      "kind": "category",
+      "layer": "physical",
+      "cluster": "equipment",
+      "role": {
+        "tw": "機架、液冷、電源與網路佈線",
+        "cn": "机架、液冷、电源与网络布线",
+        "en": "Racks, liquid cooling, power and cabling"
+      },
+      "x": 16,
+      "y": 76
+    },
+    {
+      "id": "tsmc",
+      "name": "TSMC",
+      "ticker": "2330.TW / TSM",
+      "kind": "company",
+      "layer": "manufacturing",
+      "cluster": "foundry",
+      "role": {
+        "tw": "晶圓代工",
+        "cn": "晶圆代工",
+        "en": "Semiconductor foundry"
+      },
+      "x": 31,
+      "y": 12
+    },
+    {
+      "id": "samsung",
+      "name": "Samsung Electronics",
+      "ticker": "005930.KS",
+      "kind": "company",
+      "layer": "manufacturing",
+      "cluster": "foundry-memory",
+      "role": {
+        "tw": "晶圓代工與記憶體",
+        "cn": "晶圆代工与存储",
+        "en": "Foundry and memory"
+      },
+      "x": 34,
+      "y": 29
+    },
+    {
+      "id": "sk-hynix",
+      "name": "SK hynix",
+      "ticker": "000660.KS",
+      "kind": "company",
+      "layer": "manufacturing",
+      "cluster": "memory",
+      "role": {
+        "tw": "記憶體與 HBM",
+        "cn": "存储与 HBM",
+        "en": "Memory and HBM"
+      },
+      "x": 27,
+      "y": 45
+    },
+    {
+      "id": "micron",
+      "name": "Micron",
+      "ticker": "MU",
+      "kind": "company",
+      "layer": "manufacturing",
+      "cluster": "memory",
+      "role": {
+        "tw": "記憶體與 HBM",
+        "cn": "存储与 HBM",
+        "en": "Memory and HBM"
+      },
+      "x": 38,
+      "y": 54
+    },
+    {
+      "id": "hon-hai",
+      "name": "Hon Hai",
+      "ticker": "2317.TW",
+      "kind": "company",
+      "layer": "manufacturing",
+      "cluster": "assembly",
+      "role": {
+        "tw": "系統組裝與製造",
+        "cn": "系统组装与制造",
+        "en": "System assembly and manufacturing"
+      },
+      "x": 28,
+      "y": 68
+    },
+    {
+      "id": "wistron",
+      "name": "Wistron",
+      "ticker": "3231.TW",
+      "kind": "company",
+      "layer": "manufacturing",
+      "cluster": "assembly",
+      "role": {
+        "tw": "系統組裝與製造",
+        "cn": "系统组装与制造",
+        "en": "System assembly and manufacturing"
+      },
+      "x": 39,
+      "y": 77
+    },
+    {
+      "id": "fabrinet",
+      "name": "Fabrinet",
+      "ticker": "FN",
+      "kind": "company",
+      "layer": "manufacturing",
+      "cluster": "assembly-test",
+      "role": {
+        "tw": "組裝、測試與封裝",
+        "cn": "组装、测试与封装",
+        "en": "Assembly, test and packaging"
+      },
+      "x": 34,
+      "y": 91
+    },
+    {
+      "id": "intel",
+      "name": "Intel",
+      "ticker": "INTC",
+      "kind": "company",
+      "layer": "manufacturing",
+      "cluster": "integrated-device",
+      "role": {
+        "tw": "CPU、晶圓製造與代工",
+        "cn": "CPU、晶圆制造与代工",
+        "en": "CPU, fabrication and foundry"
+      },
+      "x": 23,
+      "y": 88
+    },
+    {
+      "id": "nvda",
+      "name": "NVIDIA",
+      "ticker": "NVDA",
+      "kind": "company",
+      "layer": "compute",
+      "cluster": "accelerated-compute",
+      "role": {
+        "tw": "加速運算平台、網路與軟體",
+        "cn": "加速计算平台、网络与软件",
+        "en": "Accelerated computing, networking and software"
+      },
+      "x": 52,
+      "y": 46
+    },
+    {
+      "id": "cloud-class",
+      "name": "Cloud Service Providers",
+      "kind": "category",
+      "layer": "compute",
+      "cluster": "cloud",
+      "role": {
+        "tw": "大規模雲服務客戶類別",
+        "cn": "大规模云服务客户类别",
+        "en": "Mass-market cloud customer class"
+      },
+      "x": 66,
+      "y": 26
+    },
+    {
+      "id": "microsoft",
+      "name": "Microsoft Azure",
+      "ticker": "MSFT",
+      "kind": "company",
+      "layer": "compute",
+      "cluster": "cloud",
+      "role": {
+        "tw": "雲服務與 AI 基礎設施",
+        "cn": "云服务与 AI 基础设施",
+        "en": "Cloud and AI infrastructure"
+      },
+      "x": 70,
+      "y": 10
+    },
+    {
+      "id": "amazon",
+      "name": "Amazon Web Services",
+      "ticker": "AMZN",
+      "kind": "company",
+      "layer": "compute",
+      "cluster": "cloud",
+      "role": {
+        "tw": "雲服務與 AI 基礎設施",
+        "cn": "云服务与 AI 基础设施",
+        "en": "Cloud and AI infrastructure"
+      },
+      "x": 75,
+      "y": 22
+    },
+    {
+      "id": "google-cloud",
+      "name": "Google Cloud",
+      "ticker": "GOOGL",
+      "kind": "company",
+      "layer": "compute",
+      "cluster": "cloud",
+      "role": {
+        "tw": "雲服務與 AI 基礎設施",
+        "cn": "云服务与 AI 基础设施",
+        "en": "Cloud and AI infrastructure"
+      },
+      "x": 72,
+      "y": 38
+    },
+    {
+      "id": "oracle",
+      "name": "Oracle Cloud",
+      "ticker": "ORCL",
+      "kind": "company",
+      "layer": "compute",
+      "cluster": "cloud",
+      "role": {
+        "tw": "雲服務與 AI 基礎設施",
+        "cn": "云服务与 AI 基础设施",
+        "en": "Cloud and AI infrastructure"
+      },
+      "x": 65,
+      "y": 11
+    },
+    {
+      "id": "coreweave",
+      "name": "CoreWeave",
+      "ticker": "CRWV",
+      "kind": "company",
+      "layer": "compute",
+      "cluster": "gpu-cloud",
+      "role": {
+        "tw": "GPU 雲與專用算力",
+        "cn": "GPU 云与专用算力",
+        "en": "GPU cloud and specialized compute"
+      },
+      "x": 61,
+      "y": 38
+    },
+    {
+      "id": "consumer-internet-class",
+      "name": "Consumer Internet",
+      "kind": "category",
+      "layer": "ai",
+      "cluster": "consumer-demand",
+      "role": {
+        "tw": "搜尋、推薦、社交、電商與內容平台",
+        "cn": "搜索、推荐、社交、电商与内容平台",
+        "en": "Search, recommendation, social, commerce and content"
+      },
+      "x": 83,
+      "y": 70
+    },
+    {
+      "id": "enterprise-ai-class",
+      "name": "Enterprise & AI Startups",
+      "kind": "category",
+      "layer": "ai",
+      "cluster": "enterprise-demand",
+      "role": {
+        "tw": "企業 AI、模型與新創需求",
+        "cn": "企业 AI、模型与创业公司需求",
+        "en": "Enterprise AI, models and startup demand"
+      },
+      "x": 83,
+      "y": 34
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "kind": "company",
+      "layer": "ai",
+      "cluster": "models",
+      "role": {
+        "tw": "模型與 AI 產品公司",
+        "cn": "模型与 AI 产品公司",
+        "en": "Model and AI product company"
+      },
+      "x": 92,
+      "y": 18
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "kind": "company",
+      "layer": "ai",
+      "cluster": "models",
+      "role": {
+        "tw": "模型與 AI 產品公司",
+        "cn": "模型与 AI 产品公司",
+        "en": "Model and AI product company"
+      },
+      "x": 95,
+      "y": 33
+    },
+    {
+      "id": "xai",
+      "name": "xAI",
+      "kind": "company",
+      "layer": "ai",
+      "cluster": "models",
+      "role": {
+        "tw": "模型與 AI 產品公司",
+        "cn": "模型与 AI 产品公司",
+        "en": "Model and AI product company"
+      },
+      "x": 91,
+      "y": 48
+    },
+    {
+      "id": "meta-ai",
+      "name": "Meta AI",
+      "ticker": "META",
+      "kind": "company",
+      "layer": "ai",
+      "cluster": "models-consumer",
+      "role": {
+        "tw": "模型、廣告與消費者 AI",
+        "cn": "模型、广告与消费者 AI",
+        "en": "Models, advertising and consumer AI"
+      },
+      "x": 94,
+      "y": 65
+    },
+    {
+      "id": "deepmind",
+      "name": "Google DeepMind",
+      "ticker": "GOOGL",
+      "kind": "company",
+      "layer": "ai",
+      "cluster": "models",
+      "role": {
+        "tw": "模型與 AI 研究",
+        "cn": "模型与 AI 研究",
+        "en": "Models and AI research"
+      },
+      "x": 89,
+      "y": 82
+    }
+  ],
+  "relationships": [
+    {
+      "id": "energy-to-cloud",
+      "from": "energy-grid",
+      "to": "cloud-class",
+      "type": "value-chain",
+      "evidenceStatus": "modelled-category-link",
+      "amountStatus": "relationship-only",
+      "confidence": 0.5,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "land-to-cloud",
+      "from": "land-buildings",
+      "to": "cloud-class",
+      "type": "value-chain",
+      "evidenceStatus": "modelled-category-link",
+      "amountStatus": "relationship-only",
+      "confidence": 0.5,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "racks-to-cloud",
+      "from": "racks-cooling",
+      "to": "cloud-class",
+      "type": "value-chain",
+      "evidenceStatus": "modelled-category-link",
+      "amountStatus": "relationship-only",
+      "confidence": 0.5,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "tsmc-to-nvda",
+      "from": "tsmc",
+      "to": "nvda",
+      "type": "supplier",
+      "evidenceStatus": "disclosed-named",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "samsung-to-nvda",
+      "from": "samsung",
+      "to": "nvda",
+      "type": "supplier",
+      "evidenceStatus": "disclosed-named",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "skhynix-to-nvda",
+      "from": "sk-hynix",
+      "to": "nvda",
+      "type": "supplier",
+      "evidenceStatus": "disclosed-named",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "micron-to-nvda",
+      "from": "micron",
+      "to": "nvda",
+      "type": "supplier",
+      "evidenceStatus": "disclosed-named",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "honhai-to-nvda",
+      "from": "hon-hai",
+      "to": "nvda",
+      "type": "assembly-test-packaging",
+      "evidenceStatus": "disclosed-named",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "wistron-to-nvda",
+      "from": "wistron",
+      "to": "nvda",
+      "type": "assembly-test-packaging",
+      "evidenceStatus": "disclosed-named",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "fabrinet-to-nvda",
+      "from": "fabrinet",
+      "to": "nvda",
+      "type": "assembly-test-packaging",
+      "evidenceStatus": "disclosed-named",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "nvda-to-cloud-class",
+      "from": "nvda",
+      "to": "cloud-class",
+      "type": "customer-class",
+      "evidenceStatus": "disclosed-customer-class",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "nvda-to-enterprise-class",
+      "from": "nvda",
+      "to": "enterprise-ai-class",
+      "type": "customer-class",
+      "evidenceStatus": "disclosed-customer-class",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "nvda-to-consumer-class",
+      "from": "nvda",
+      "to": "consumer-internet-class",
+      "type": "end-market-exposure",
+      "evidenceStatus": "modelled-category-link",
+      "amountStatus": "relationship-only",
+      "confidence": 0.5,
+      "sourceId": "sec-nvda-fy2026",
+      "sourceIds": ["sec-nvda-fy2025", "sec-nvda-fy2026"],
+      "evidenceByCanonicalYear": {
+        "2024": "sec-nvda-fy2025",
+        "2025": "sec-nvda-fy2026"
+      },
+      "validCanonicalYears": [
+        2024,
+        2025
+      ]
+    },
+    {
+      "id": "cloud-membership-msft",
+      "from": "cloud-class",
+      "to": "microsoft",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "cloud-membership-amzn",
+      "from": "cloud-class",
+      "to": "amazon",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "cloud-membership-google",
+      "from": "cloud-class",
+      "to": "google-cloud",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "cloud-membership-orcl",
+      "from": "cloud-class",
+      "to": "oracle",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "cloud-membership-crwv",
+      "from": "cloud-class",
+      "to": "coreweave",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "ai-membership-openai",
+      "from": "enterprise-ai-class",
+      "to": "openai",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "ai-membership-anthropic",
+      "from": "enterprise-ai-class",
+      "to": "anthropic",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "ai-membership-xai",
+      "from": "enterprise-ai-class",
+      "to": "xai",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "ai-membership-meta",
+      "from": "consumer-internet-class",
+      "to": "meta-ai",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    },
+    {
+      "id": "ai-membership-deepmind",
+      "from": "consumer-internet-class",
+      "to": "deepmind",
+      "type": "taxonomy-membership",
+      "evidenceStatus": "taxonomy-only",
+      "amountStatus": "relationship-only",
+      "confidence": 1,
+      "validCanonicalYears": [2024, 2025]
+    }
+  ],
+  "financials": {
+    "nvda": {
+      "2025": {
+        "canonicalYear": 2025,
+        "reportedFiscalYear": "FY2026",
+        "periodStart": "2025-01-27",
+        "periodEnd": "2026-01-25",
+        "currency": "USD",
+        "scale": "millions",
+        "sourceId": "sec-nvda-fy2026",
+        "coverage": "partial-selected-gaap-facts",
+        "income": [
+          {
+            "metric": "revenue",
+            "value": 215938,
+            "method": "disclosed"
+          },
+          {
+            "metric": "costOfRevenue",
+            "value": 62475,
+            "method": "disclosed"
+          },
+          {
+            "metric": "grossProfit",
+            "value": 153463,
+            "method": "disclosed"
+          },
+          {
+            "metric": "operatingExpenses",
+            "value": 23076,
+            "method": "disclosed"
+          },
+          {
+            "metric": "operatingIncome",
+            "value": 130387,
+            "method": "disclosed"
+          },
+          {
+            "metric": "netIncome",
+            "value": 120067,
+            "method": "disclosed"
+          }
+        ],
+        "balance": [
+          {
+            "metric": "assets",
+            "value": 206803,
+            "method": "disclosed"
+          },
+          {
+            "metric": "liabilities",
+            "value": 49510,
+            "method": "disclosed"
+          },
+          {
+            "metric": "stockholdersEquity",
+            "value": 157293,
+            "method": "disclosed"
+          },
+          {
+            "metric": "retainedEarnings",
+            "value": 146973,
+            "method": "disclosed"
+          }
+        ],
+        "cashflow": [
+          {
+            "metric": "operatingCashFlow",
+            "value": 102718,
+            "method": "disclosed"
+          },
+          {
+            "metric": "shareRepurchases",
+            "value": -40086,
+            "method": "disclosed-cash-outflow"
+          },
+          {
+            "metric": "dividendsPaid",
+            "value": -974,
+            "method": "disclosed-cash-outflow"
+          }
+        ],
+        "equity": [
+          {
+            "metric": "openingEquity",
+            "value": 79327,
+            "method": "disclosed-prior-period"
+          },
+          {
+            "metric": "netIncome",
+            "value": 120067,
+            "method": "disclosed"
+          },
+          {
+            "metric": "shareRepurchases",
+            "value": -40086,
+            "method": "disclosed"
+          },
+          {
+            "metric": "dividendsPaid",
+            "value": -974,
+            "method": "disclosed"
+          },
+          {
+            "metric": "otherEquityMovements",
+            "value": -1041,
+            "method": "derived-reconciliation-residual"
+          },
+          {
+            "metric": "closingEquity",
+            "value": 157293,
+            "method": "disclosed"
+          }
+        ],
+        "flow": {
+          "revenue": 215938,
+          "costOfRevenue": 62475,
+          "operatingExpenses": 23076,
+          "operatingIncome": 130387
+        }
+      },
+      "2024": {
+        "canonicalYear": 2024,
+        "reportedFiscalYear": "FY2025",
+        "periodStart": "2024-01-29",
+        "periodEnd": "2025-01-26",
+        "currency": "USD",
+        "scale": "millions",
+        "sourceId": "sec-nvda-fy2025",
+        "coverage": "partial-selected-gaap-facts",
+        "income": [
+          {
+            "metric": "revenue",
+            "value": 130497,
+            "method": "disclosed"
+          },
+          {
+            "metric": "costOfRevenue",
+            "value": 32639,
+            "method": "disclosed"
+          },
+          {
+            "metric": "grossProfit",
+            "value": 97858,
+            "method": "disclosed"
+          },
+          {
+            "metric": "operatingExpenses",
+            "value": 16405,
+            "method": "disclosed"
+          },
+          {
+            "metric": "operatingIncome",
+            "value": 81453,
+            "method": "disclosed"
+          },
+          {
+            "metric": "netIncome",
+            "value": 72880,
+            "method": "disclosed"
+          }
+        ],
+        "balance": [
+          {
+            "metric": "assets",
+            "value": 111601,
+            "method": "disclosed"
+          },
+          {
+            "metric": "liabilities",
+            "value": 32274,
+            "method": "disclosed"
+          },
+          {
+            "metric": "stockholdersEquity",
+            "value": 79327,
+            "method": "disclosed"
+          },
+          {
+            "metric": "retainedEarnings",
+            "value": 68038,
+            "method": "disclosed"
+          }
+        ],
+        "cashflow": [
+          {
+            "metric": "operatingCashFlow",
+            "value": 64089,
+            "method": "disclosed"
+          },
+          {
+            "metric": "shareRepurchases",
+            "value": -33706,
+            "method": "disclosed-cash-outflow"
+          },
+          {
+            "metric": "dividendsPaid",
+            "value": -834,
+            "method": "disclosed-cash-outflow"
+          }
+        ],
+        "equity": [
+          {
+            "metric": "openingEquity",
+            "value": 42978,
+            "method": "disclosed-prior-period"
+          },
+          {
+            "metric": "netIncome",
+            "value": 72880,
+            "method": "disclosed"
+          },
+          {
+            "metric": "shareRepurchases",
+            "value": -33706,
+            "method": "disclosed"
+          },
+          {
+            "metric": "dividendsPaid",
+            "value": -834,
+            "method": "disclosed"
+          },
+          {
+            "metric": "otherEquityMovements",
+            "value": -1991,
+            "method": "derived-reconciliation-residual"
+          },
+          {
+            "metric": "closingEquity",
+            "value": 79327,
+            "method": "disclosed"
+          }
+        ],
+        "flow": {
+          "revenue": 130497,
+          "costOfRevenue": 32639,
+          "operatingExpenses": 16405,
+          "operatingIncome": 81453
+        }
+      }
+    }
+  },
+  "coverage": {
+    "publicationStatus": "prototype-read-model",
+    "financialActuals": {
+      "companyCount": 1,
+      "canonicalYearCount": 2,
+      "statementCoverage": "selected-facts-only"
+    },
+    "graph": {
+      "entityCount": 25,
+      "relationshipCount": 23,
+      "directDisclosedRelationshipCount": 9
+    },
+    "pipeline": {
+      "candidateEntities": 28,
+      "companyYearUnits": 112,
+      "queuedTasksAtInitialization": 560,
+      "publicationMode": "candidate-only"
+    }
+  }
+}
