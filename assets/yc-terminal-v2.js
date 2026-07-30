@@ -61,6 +61,11 @@
     endpoint: t3('端點', '端点', 'Endpoint'),
     asOf: t3('截至', '截至', 'As of'),
     noRows: t3('端點沒有返回可發布的記錄。', '端点没有返回可发布的记录。', 'The endpoint returned no publishable records.'),
+    notPublished: t3(
+      '功能入口已建立，但專用資料集或計算尚未通過發布門禁；不會以其他資料表代替。',
+      '功能入口已建立，但专用数据集或计算尚未通过发布门禁；不会以其他数据表代替。',
+      'The function is registered, but its dedicated dataset or calculation has not passed the publication gate. No unrelated dataset is substituted.'
+    ),
     partial: t3('WAREHOUSE PARTIAL', 'WAREHOUSE PARTIAL', 'WAREHOUSE PARTIAL'),
     partialBody: t3(
       'Warehouse Atlas 目前只發布已核驗的 Supply／FA 範圍，不代表全市場覆蓋；缺失資料不會以樣本或零補齊。',
@@ -115,11 +120,11 @@
     ), [
       fn('overview', 'NEWS', t3('市場新聞', '市场新闻', 'Market News'), t3('市場快照與最新新聞流', '市场快照与最新新闻流', 'Market tape and latest news flow'), 'market-news'),
       fn('indices', 'WEI', t3('全球指數', '全球指数', 'World Indices'), t3('主要股票與跨資產指數', '主要股票与跨资产指数', 'Major equity and cross-asset indices'), 'market'),
-      fn('movers', 'MOST', t3('市場異動', '市场异动', 'Market Movers'), t3('領漲、領跌與成交異動', '领涨、领跌与成交异动', 'Leaders, laggards and volume anomalies'), 'market'),
-      fn('sectors', 'SECF', t3('板塊表現', '板块表现', 'Sector Performance'), t3('產業輪動與相對強弱', '行业轮动与相对强弱', 'Industry rotation and relative strength'), 'market'),
-      fn('breadth', 'MBRD', t3('市場寬度', '市场宽度', 'Market Breadth'), t3('漲跌家數與市場內部結構', '涨跌家数与市场内部结构', 'Advancers, decliners and market internals'), 'market'),
-      fn('cross-asset', 'MA', t3('跨資產監察', '跨资产监测', 'Cross-Asset Monitor'), t3('股票、利率、外匯與商品', '股票、利率、外汇与商品', 'Equities, rates, currencies and commodities'), 'market'),
-      fn('calendar', 'ECO', t3('經濟日曆', '经济日历', 'Economic Calendar'), t3('宏觀發布與市場事件', '宏观发布与市场事件', 'Macro releases and market events'), 'market'),
+      fn('movers', 'MOST', t3('市場異動', '市场异动', 'Market Movers'), t3('領漲、領跌與成交異動', '领涨、领跌与成交异动', 'Leaders, laggards and volume anomalies'), 'unavailable'),
+      fn('sectors', 'SECF', t3('板塊表現', '板块表现', 'Sector Performance'), t3('產業輪動與相對強弱', '行业轮动与相对强弱', 'Industry rotation and relative strength'), 'unavailable'),
+      fn('breadth', 'MBRD', t3('市場寬度', '市场宽度', 'Market Breadth'), t3('漲跌家數與市場內部結構', '涨跌家数与市场内部结构', 'Advancers, decliners and market internals'), 'unavailable'),
+      fn('cross-asset', 'MA', t3('跨資產監察', '跨资产监测', 'Cross-Asset Monitor'), t3('股票、利率、外匯與商品', '股票、利率、外汇与商品', 'Equities, rates, currencies and commodities'), 'unavailable'),
+      fn('calendar', 'ECO', t3('經濟日曆', '经济日历', 'Economic Calendar'), t3('宏觀發布與市場事件', '宏观发布与市场事件', 'Macro releases and market events'), 'unavailable'),
       fn('status', 'DATA', COPY.status, t3('端點、權限與新鮮度', '端点、权限与新鲜度', 'Endpoints, entitlements and freshness'), 'status')
     ]),
     workspace('stocks', 'EQT', t3('股票', '股票', 'Stocks'), t3(
@@ -140,8 +145,8 @@
       fn('estimates', 'EE', t3('盈利預測', '盈利预测', 'Earnings Estimates'), t3('一致預期、修正與差異', '一致预期、修正与差异', 'Consensus, revisions and dispersion'), 'warehouse-module', { requiresSecurity: true, warehouseKey: 'estimates' }),
       fn('ownership', 'OWN', t3('持有人', '持有人', 'Ownership'), t3('股東、機構與內部人', '股东、机构与内部人', 'Shareholders, institutions and insiders'), 'warehouse-module', { requiresSecurity: true, warehouseKey: 'ownership' }),
       fn('events', 'EVT', t3('公司事件', '公司事件', 'Corporate Events'), t3('財報、股息與行動日曆', '财报、股息与行动日历', 'Earnings, dividends and action calendar'), 'warehouse-module', { requiresSecurity: true, warehouseKey: 'events' }),
-      fn('vwap', 'VWAP', t3('成交均價', '成交均价', 'VWAP'), t3('Tushare 已披露 VWAP 或價量歷史', 'Tushare 已披露 VWAP 或价量历史', 'Disclosed Tushare VWAP or price-volume history'), 'history', { requiresSecurity: true }),
-      fn('avat', 'AVAT', t3('成交量分析', '成交量分析', 'Average Volume at Time'), t3('按時間與歷史成交量檢視', '按时间与历史成交量查看', 'Time-of-day and historical volume analysis'), 'history', { requiresSecurity: true })
+      fn('vwap', 'VWAP', t3('成交均價', '成交均价', 'VWAP'), t3('分鐘價量與成交均價', '分钟价量与成交均价', 'Intraday price-volume and volume-weighted price'), 'unavailable', { requiresSecurity: true }),
+      fn('avat', 'AVAT', t3('成交量分析', '成交量分析', 'Average Volume at Time'), t3('按時間與歷史成交量檢視', '按时间与历史成交量查看', 'Time-of-day and historical volume analysis'), 'unavailable', { requiresSecurity: true })
     ]),
     workspace('debt', 'FI', t3('債券', '债券', 'Debt'), t3(
       '主權債、信用、曲線、利差與可轉債',
@@ -151,8 +156,8 @@
       fn('overview', 'FIW', t3('債券總覽', '债券总览', 'Debt Monitor'), t3('收益率、利差與發行概況', '收益率、利差与发行概况', 'Yields, spreads and issuance overview'), 'market'),
       fn('sovereign', 'WB', t3('主權債券', '主权债券', 'Government Bonds'), t3('主要國家利率與期限', '主要国家利率与期限', 'Major sovereign rates and maturities'), 'market'),
       fn('curves', 'YCRV', t3('收益率曲線', '收益率曲线', 'Yield Curves'), t3('即期、到期與曲線形態', '即期、到期与曲线形态', 'Spot, maturity and curve shape'), 'market'),
-      fn('credit', 'CRVF', t3('信用市場', '信用市场', 'Credit Monitor'), t3('評級、行業與信用利差', '评级、行业与信用利差', 'Ratings, sectors and credit spreads'), 'market'),
-      fn('spreads', 'SPRD', t3('利差矩陣', '利差矩阵', 'Spread Matrix'), t3('期限與信用風險溢價', '期限与信用风险溢价', 'Term and credit risk premia'), 'market'),
+      fn('credit', 'CRVF', t3('信用市場', '信用市场', 'Credit Monitor'), t3('評級、行業與信用利差', '评级、行业与信用利差', 'Ratings, sectors and credit spreads'), 'unavailable'),
+      fn('spreads', 'SPRD', t3('利差矩陣', '利差矩阵', 'Spread Matrix'), t3('期限與信用風險溢價', '期限与信用风险溢价', 'Term and credit risk premia'), 'unavailable'),
       fn('convertibles', 'CB', t3('可轉債', '可转债', 'Convertibles'), t3('價格、轉股價與溢價率', '价格、转股价与溢价率', 'Price, conversion terms and premium'), 'market'),
       fn('issuance', 'NIM', t3('新債發行', '新债发行', 'New Issues'), t3('發行、到期與贖回安排', '发行、到期与赎回安排', 'Issuance, maturities and redemptions'), 'market'),
       fn('calendar', 'DTC', t3('債券日曆', '债券日历', 'Debt Calendar'), t3('付息、到期與評級事件', '付息、到期与评级事件', 'Coupon, maturity and rating events'), 'market'),
@@ -181,10 +186,10 @@
       fn('screener', 'SRCH', t3('ETF 篩選器', 'ETF 筛选器', 'ETF Screener'), t3('按資產、費率與流動性篩選', '按资产、费率与流动性筛选', 'Screen by asset, fee and liquidity'), 'market'),
       fn('quote', 'Q', t3('ETF 報價', 'ETF 报价', 'ETF Quote'), t3('最新價、IOPV 與成交', '最新价、IOPV 与成交', 'Latest price, IOPV and trading'), 'quote', { requiresSecurity: true }),
       fn('chart', 'GP', t3('價格圖表', '价格图表', 'Price & Volume'), t3('歷史價格、成交與淨值', '历史价格、成交与净值', 'Historical price, volume and NAV'), 'history', { requiresSecurity: true }),
-      fn('holdings', 'HOLD', t3('持倉', '持仓', 'Holdings'), t3('成分、權重與集中度', '成分、权重与集中度', 'Constituents, weights and concentration'), 'detail', { requiresSecurity: true }),
+      fn('holdings', 'HOLD', t3('持倉', '持仓', 'Holdings'), t3('成分、權重與集中度', '成分、权重与集中度', 'Constituents, weights and concentration'), 'unavailable', { requiresSecurity: true }),
       fn('flows', 'FL', t3('份額與資金流', '份额与资金流', 'Shares & Flows'), t3('份額、規模與估算流量', '份额、规模与估算流量', 'Shares, assets and estimated flows'), 'market'),
-      fn('premium', 'PREM', t3('折溢價', '折溢价', 'Premium / Discount'), t3('價格相對 IOPV／NAV', '价格相对 IOPV／NAV', 'Price versus IOPV / NAV'), 'market'),
-      fn('composition', 'COMP', t3('籃子組合', '篮子组合', 'Creation Basket'), t3('申贖籃子與現金替代', '申赎篮子与现金替代', 'Creation basket and cash substitution'), 'detail', { requiresSecurity: true }),
+      fn('premium', 'PREM', t3('折溢價', '折溢价', 'Premium / Discount'), t3('價格相對 IOPV／NAV', '价格相对 IOPV／NAV', 'Price versus IOPV / NAV'), 'unavailable'),
+      fn('composition', 'COMP', t3('籃子組合', '篮子组合', 'Creation Basket'), t3('申贖籃子與現金替代', '申赎篮子与现金替代', 'Creation basket and cash substitution'), 'unavailable', { requiresSecurity: true }),
       fn('status', 'DATA', COPY.status, t3('實時與日頻權限', '实时与日频权限', 'Real-time and EOD entitlements'), 'status')
     ]),
     workspace('derivatives', 'DERI', t3('衍生品', '衍生品', 'Derivatives'), t3(
@@ -194,9 +199,9 @@
     ), [
       fn('overview', 'DERI', t3('衍生品總覽', '衍生品总览', 'Derivatives Monitor'), t3('主要合約、波動率與風險', '主要合约、波动率与风险', 'Key contracts, volatility and risk'), 'market'),
       fn('futures', 'CT', t3('期貨合約', '期货合约', 'Futures Contracts'), t3('主力、連續與到期合約', '主力、连续与到期合约', 'Active, continuous and expiring contracts'), 'market'),
-      fn('options', 'OMON', t3('期權監察', '期权监测', 'Option Monitor'), t3('履約價、期限與 Greeks', '行权价、期限与 Greeks', 'Strikes, maturities and Greeks'), 'market'),
-      fn('volatility', 'OV', t3('波動率', '波动率', 'Volatility'), t3('歷史與隱含波動率', '历史与隐含波动率', 'Historical and implied volatility'), 'market'),
-      fn('term-structure', 'TS', t3('期限結構', '期限结构', 'Term Structure'), t3('升水、貼水與期限價差', '升水、贴水与期限价差', 'Contango, backwardation and calendar spreads'), 'market'),
+      fn('options', 'OMON', t3('期權監察', '期权监测', 'Option Monitor'), t3('履約價、期限、價格與成交', '行权价、期限、价格与成交', 'Strikes, maturities, prices and volume'), 'market'),
+      fn('volatility', 'OV', t3('波動率', '波动率', 'Volatility'), t3('歷史與隱含波動率', '历史与隐含波动率', 'Historical and implied volatility'), 'unavailable'),
+      fn('term-structure', 'TS', t3('期限結構', '期限结构', 'Term Structure'), t3('升水、貼水與期限價差', '升水、贴水与期限价差', 'Contango, backwardation and calendar spreads'), 'unavailable'),
       fn('open-interest', 'OI', t3('未平倉量', '未平仓量', 'Open Interest'), t3('持倉變化與集中度', '持仓变化与集中度', 'Position changes and concentration'), 'market'),
       fn('positioning', 'COT', t3('市場持倉', '市场持仓', 'Positioning'), t3('會員排名與多空結構', '会员排名与多空结构', 'Member rankings and long/short structure'), 'market'),
       fn('quote', 'Q', t3('合約報價', '合约报价', 'Contract Quote'), t3('指定合約最新報價', '指定合约最新报价', 'Latest quote for a selected contract'), 'quote', { requiresSecurity: true }),
@@ -208,13 +213,13 @@
       '外汇、利率、央行、流动性与货币供应',
       'FX, rates, central banks, liquidity and money supply'
     ), [
-      fn('overview', 'FXC', t3('貨幣總覽', '货币总览', 'Money & Currency'), t3('主要匯率、利率與流動性', '主要汇率、利率与流动性', 'Key currencies, rates and liquidity'), 'market'),
+      fn('overview', 'FXC', t3('貨幣總覽', '货币总览', 'Money & Currency'), t3('主要匯率、利率與流動性', '主要汇率、利率与流动性', 'Key currencies, rates and liquidity'), 'unavailable'),
       fn('fx', 'WCRS', t3('全球匯率', '全球汇率', 'World Currencies'), t3('即期、變動與交叉匯率', '即期、变动与交叉汇率', 'Spot, change and cross rates'), 'market'),
       fn('rates', 'IRSM', t3('貨幣市場利率', '货币市场利率', 'Money-Market Rates'), t3('Shibor、LPR、Libor 與 Hibor', 'Shibor、LPR、Libor 与 Hibor', 'Shibor, LPR, Libor and Hibor'), 'market'),
       fn('curves', 'FWCV', t3('利率曲線', '利率曲线', 'Forward Curves'), t3('期限利率與遠期結構', '期限利率与远期结构', 'Term rates and forward structure'), 'market'),
-      fn('central-banks', 'CBQ', t3('央行政策', '央行政策', 'Central Banks'), t3('政策利率、會議與聲明', '政策利率、会议与声明', 'Policy rates, meetings and statements'), 'news'),
-      fn('liquidity', 'LIQ', t3('流動性', '流动性', 'Liquidity'), t3('公開市場操作與資金面', '公开市场操作与资金面', 'Open-market operations and funding conditions'), 'market'),
-      fn('macro', 'ECO', t3('宏觀發布', '宏观发布', 'Macro Releases'), t3('通脹、增長與社融日曆', '通胀、增长与社融日历', 'Inflation, growth and financing calendar'), 'market'),
+      fn('central-banks', 'CBQ', t3('央行政策', '央行政策', 'Central Banks'), t3('政策利率、會議與聲明', '政策利率、会议与声明', 'Policy rates, meetings and statements'), 'unavailable'),
+      fn('liquidity', 'LIQ', t3('流動性', '流动性', 'Liquidity'), t3('公開市場操作與資金面', '公开市场操作与资金面', 'Open-market operations and funding conditions'), 'unavailable'),
+      fn('macro', 'ECO', t3('宏觀發布', '宏观发布', 'Macro Releases'), t3('通脹、增長與社融日曆', '通胀、增长与社融日历', 'Inflation, growth and financing calendar'), 'unavailable'),
       fn('money-supply', 'M2', t3('貨幣供應', '货币供应', 'Money Supply'), t3('M0、M1、M2 與社會融資', 'M0、M1、M2 与社会融资', 'M0, M1, M2 and social financing'), 'market'),
       fn('status', 'DATA', COPY.status, t3('發布頻率與權限', '发布频率与权限', 'Release frequency and entitlements'), 'status')
     ])
@@ -241,7 +246,7 @@
     symbol: '',
     asset: '',
     securityName: '',
-    entityId: 'nvda',
+    entityId: '',
     atlas: null,
     atlasPromise: null,
     atlasMeta: null,
@@ -564,7 +569,9 @@
     if (requestedYear && /^(201\d|202[0-6])$/.test(requestedYear)) state.year = requestedYear;
     state.symbol = String(params.get('symbol') || '').trim().slice(0, 40);
     state.asset = String(params.get('asset') || '').trim().slice(0, 24);
-    state.entityId = String(params.get('entity') || state.entityId || 'nvda').trim().slice(0, 80);
+    state.entityId = String(
+      params.get('entity') || (state.workspace === 'supply' && !state.symbol ? 'nvda' : '')
+    ).trim().slice(0, 80);
   }
 
   function compactDate(date) {
@@ -769,6 +776,7 @@
       state.symbol = '';
       state.asset = '';
       state.securityName = '';
+      state.entityId = id === 'supply' ? 'nvda' : '';
     }
     state.workspace = id;
     state.functionId = workspaceMap.get(id).functions[0].id;
@@ -1203,12 +1211,24 @@
   }
 
   function atlasEntityForSelection() {
+    const needle = state.symbol.trim().toLowerCase();
+    if (needle) {
+      const match = state.atlas.entities.find((entity) => {
+        if (entity.kind !== 'company') return false;
+        const tickers = String(entity.ticker || '')
+          .toLowerCase()
+          .split(/[\s/|,]+/)
+          .filter(Boolean);
+        return entity.id.toLowerCase() === needle ||
+          entity.name.toLowerCase() === needle ||
+          tickers.includes(needle);
+      });
+      return match || null;
+    }
     if (state.entityMap.has(state.entityId)) return state.entityMap.get(state.entityId);
-    const needle = state.symbol.toLowerCase();
-    const match = state.atlas.entities.find((entity) =>
-      entity.kind === 'company' && `${entity.name} ${entity.ticker || ''}`.toLowerCase().includes(needle)
-    );
-    return match || state.entityMap.get('nvda') || state.atlas.entities.find((entity) => entity.kind === 'company');
+    return state.workspace === 'supply'
+      ? state.entityMap.get('nvda') || state.atlas.entities.find((entity) => entity.kind === 'company')
+      : null;
   }
 
   function relationshipApplies(relation) {
@@ -1360,10 +1380,7 @@
   function financialRecord(entityId) {
     const records = state.atlas.financials?.[entityId];
     if (!records) return null;
-    if (records[state.year]) return records[state.year];
-    const available = Object.keys(records).sort((a, b) => Number(b) - Number(a));
-    const nearest = available.find((year) => Number(year) <= Number(state.year)) || available[0];
-    return nearest ? records[nearest] : null;
+    return records[state.year] || null;
   }
 
   function accountingFlow() {
@@ -1423,11 +1440,12 @@
     ]);
   }
 
-  async function renderAtlas() {
+  async function renderAtlas(sequence = state.loadSequence, signal = state.loadController?.signal) {
     const activeFunction = currentFunction();
     try {
       await getAtlas();
     } catch (_) {
+      if (signal?.aborted || sequence !== state.loadSequence) return;
       canvas.replaceChildren(unavailableNode(ENDPOINTS.market, {
         freshness: 'DISCLOSURE',
         permission: 'UNVERIFIED'
@@ -1435,6 +1453,7 @@
       setBusy(false);
       return;
     }
+    if (signal?.aborted || sequence !== state.loadSequence) return;
     const screen = create('div', 'terminal-screen');
     screen.append(screenHeader(localize(activeFunction.name), localize(activeFunction.description), atlasMeta()), partialNotice());
     const grid = create('div', 'terminal-grid');
@@ -1653,7 +1672,7 @@
     setBusy(false);
   }
 
-  async function loadMarketNews(signal) {
+  async function loadMarketNews(signal, sequence) {
     const [marketResponse, newsResponse] = await Promise.allSettled([
       apiRequest(ENDPOINTS.market, {
         domain: 'Market',
@@ -1663,6 +1682,7 @@
       }, signal),
       apiRequest(ENDPOINTS.news, { dataset: 'news', src: 'sina', limit: 100 }, signal)
     ]);
+    if (signal.aborted || sequence !== state.loadSequence) return;
     const marketResult = marketResponse.status === 'fulfilled' ? marketResponse.value : null;
     const newsResult = newsResponse.status === 'fulfilled' ? newsResponse.value : null;
     const failures = [marketResponse, newsResponse].filter((item) => item.status === 'rejected');
@@ -1688,8 +1708,28 @@
       renderRequiredSecurity();
       return;
     }
+    if (activeFunction.loader === 'unavailable') {
+      const screen = create('div', 'terminal-screen');
+      const meta = {
+        endpoint: `MODULE:${currentWorkspace().code}:${activeFunction.code}`,
+        source: 'FUNCTION CONTRACT',
+        freshness: 'NOT PUBLISHED',
+        permission: 'NOT REQUESTED'
+      };
+      screen.append(
+        screenHeader(localize(activeFunction.name), localize(activeFunction.description), meta),
+        unavailableNode(meta.endpoint, meta, localize(COPY.notPublished)),
+        functionDirectory(currentWorkspace())
+      );
+      canvas.replaceChildren(screen);
+      state.lastMeta = meta;
+      showAlert('');
+      updateStatusbar();
+      setBusy(false);
+      return;
+    }
     if (activeFunction.loader === 'atlas') {
-      await renderAtlas();
+      await renderAtlas(sequence, signal);
       return;
     }
     if (activeFunction.loader === 'fa') {
@@ -1726,7 +1766,7 @@
 
     try {
       if (activeFunction.loader === 'market-news') {
-        await loadMarketNews(signal);
+        await loadMarketNews(signal, sequence);
         updateStatusbar();
         return;
       }
@@ -1931,10 +1971,10 @@
     state.functionId = area.functions.some((candidate) => candidate.id === item.functionId)
       ? item.functionId
       : area.functions[0].id;
-    if (item.symbol) state.symbol = item.symbol;
+    state.symbol = item.symbol || '';
     state.asset = item.asset || '';
     state.securityName = item.name || item.symbol || '';
-    if (item.entityId) state.entityId = item.entityId;
+    state.entityId = item.entityId || '';
     searchInput.value = item.symbol ? `${item.name} · ${item.symbol}` : item.name;
     closeSearch();
     syncShell();
@@ -2123,8 +2163,12 @@
       statusPart('TUSHARE', serviceText, serviceClass),
       statusPart(
         'WAREHOUSE 2010–2026',
-        service.warehouse_ready === true ? 'CONNECTED · PARTIAL' : 'UNAVAILABLE',
-        service.warehouse_ready === true ? 'is-pending' : 'is-error'
+        service.warehouse_ready === true
+          ? service.warehouse_complete === true ? 'CONNECTED · COMPLETE' : 'CONNECTED · PARTIAL'
+          : 'UNAVAILABLE',
+        service.warehouse_ready === true
+          ? service.warehouse_complete === true ? 'is-live' : 'is-pending'
+          : 'is-error'
       ),
       statusPart('FRESHNESS', meta.freshness || 'UNKNOWN', freshnessClass(meta.freshness) === 'is-live' ? 'is-live' : 'is-pending'),
       statusPart('PERMISSION', meta.permission || 'UNVERIFIED', /denied|missing|unavailable/i.test(meta.permission || '') ? 'is-error' : 'is-pending'),

@@ -269,6 +269,10 @@ flowchart LR
 - cache：`env.TUSHARE_CACHE || env.YC_KV`
 - 默认 timeout：8 秒，可配置范围 10 ms–30 s
 - 浏览器不能提交 `token` 或任意 `api_name`
+- 浏览器也不能自定义 `fields`；公开 route 使用固定字段策略，避免 cache-key
+  爆炸和任意上游投影
+- Worker 以 `CF-Connecting-IP` 的分钟级短期哈希做基础限流，默认每分钟 120 次，
+  可由 `TERMINAL_RATE_LIMIT_PER_MINUTE` 收紧
 
 Tushare 官方 HTTP 文档定义了上述 POST contract，并明确返回码 `2002` 表示权限
 问题：
@@ -355,6 +359,9 @@ filing warehouse 发布层，不能直接混入 Tushare 财务历史。
 | endpoint 不在 allowlist | `ENDPOINT_NOT_ALLOWED` | 400 | fetch 前拒绝 |
 | 参数不在 allowlist | `PARAM_NOT_ALLOWED` / `QUERY_PARAMETER_NOT_ALLOWED` | 400 | fetch 前拒绝 |
 | query 携带 token/api_name | `SENSITIVE_QUERY_REJECTED` | 400 | fetch 前拒绝 |
+| 公开 query 携带 fields | `QUERY_PARAMETER_NOT_ALLOWED` | 400 | 防止任意投影与 cache 绕过 |
+| 同一客户端超过分钟配额 | `TERMINAL_RATE_LIMITED` | 429 | 下一分钟再试 |
+| 限流存储不可用 | `RATE_LIMIT_UNAVAILABLE` | 503 | 保护上游，fail closed |
 | Tushare code `2002` 或权限语义 | `TUSHARE_PERMISSION_DENIED` | 403 | 不降级、不伪造 |
 | token 缺失 | `TUSHARE_NOT_CONFIGURED` | 503 | fail closed |
 | token/auth 失败 | `TUSHARE_AUTH_FAILED` | 503 | 不返回上游正文 |
@@ -1264,13 +1271,13 @@ Cutover：
 
 | Workspace | 当前注册功能 | 当前数据状态 | 目标生产来源 |
 |---|---|---|---|
-| Market | `NEWS`, `WEI`, `MOST`, `SECF`, `MBRD`, `MA`, `ECO`, `DATA` | REST route/allowlist 和 generic UI 已有；live contract 需 E2E QA | Tushare real-time + historical Market views |
-| Stocks | `DES`, `CN`, `RES`, `FA`, `MODL`, `SPLC`, `Q`, `GP`, `HP`, `VAL`, `EE`, `OWN`, `EVT`, `VWAP`, `AVAT` | quote/history/detail route 已有；FA 只读 KV warehouse，当前 coverage partial | Tushare market + filing/Core/published read models |
-| Debt | `FIW`, `WB`, `YCRV`, `CRVF`, `SPRD`, `CB`, `NIM`, `DTC`, `DATA` | Tushare debt allowlist + generic UI；历史 contract 未接线 | instrument terms + historical facts |
+| Market | `NEWS`, `WEI`, `MOST`, `SECF`, `MBRD`, `MA`, `ECO`, `DATA` | `NEWS`、`WEI`、`DATA` 已接线；其余入口显式 `NOT PUBLISHED`，不会复用指数表冒充 | Tushare real-time + historical Market views |
+| Stocks | `DES`, `CN`, `RES`, `FA`, `MODL`, `SPLC`, `Q`, `GP`, `HP`, `VAL`, `EE`, `OWN`, `EVT`, `VWAP`, `AVAT` | quote/history/detail route 已有；FA 只读 KV warehouse且缺年/缺公司 fail closed；VWAP/AVAT 暂不发布 | Tushare market + filing/Core/published read models |
+| Debt | `FIW`, `WB`, `YCRV`, `CRVF`, `SPRD`, `CB`, `NIM`, `DTC`, `DATA` | Tushare debt allowlist 已接；`CRVF`、`SPRD` 显式未发布 | instrument terms + historical facts |
 | Supply | `MAP`, `CHAIN`, `NET`, `XRAY`, `FLOW`, `EVD`, `COV`, `DATA` | 浏览器通过 Worker 只读 KV partial snapshot；seed 仅是发布源/审计工件 | published Graph/warehouse snapshot |
-| ETF | `ETF`, `SRCH`, `Q`, `GP`, `HOLD`, `FL`, `PREM`, `COMP`, `DATA` | Tushare ETF allowlist + generic UI；holding history 未接线 | realtime + historical ETF relations |
-| Derivatives | `DERI`, `CT`, `OMON`, `OV`, `TS`, `OI`, `COT`, `Q`, `GP`, `DATA` | futures/options allowlist + generic UI；完整曲面/历史未接线 | realtime + contract/fact warehouse |
-| Money & Currency | `FXC`, `WCRS`, `IRSM`, `FWCV`, `CBQ`, `LIQ`, `ECO`, `M2`, `DATA` | FX/rate/macro allowlist + generic UI | Tushare release data + official history |
+| ETF | `ETF`, `SRCH`, `Q`, `GP`, `HOLD`, `FL`, `PREM`, `COMP`, `DATA` | 行情、筛选、份额已接；`HOLD`、`PREM`、`COMP` 显式未发布 | realtime + historical ETF relations |
+| Derivatives | `DERI`, `CT`, `OMON`, `OV`, `TS`, `OI`, `COT`, `Q`, `GP`, `DATA` | 期货/期权行情、持仓已接；`OV`、`TS` 显式未发布 | realtime + contract/fact warehouse |
+| Money & Currency | `FXC`, `WCRS`, `IRSM`, `FWCV`, `CBQ`, `LIQ`, `ECO`, `M2`, `DATA` | FX、利率和 M2 已接；综合总览、央行、流动性、宏观日历显式未发布 | Tushare release data + official history |
 
 ### 14.1 Atlas semantic zoom
 

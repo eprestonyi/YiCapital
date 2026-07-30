@@ -388,6 +388,41 @@ test('missing env secret fails closed and request query parameters cannot provid
   assert.equal(fetchImpl.calls.length, 0);
 });
 
+test('public Terminal routes apply an expiring per-client request limit', async () => {
+  const kv = new MockKV();
+  const env = {
+    TUSHARE_TOKEN: TOKEN,
+    YC_KV: kv,
+    TERMINAL_RATE_LIMIT_PER_MINUTE: '20',
+  };
+  const options = {
+    fetchImpl: createFetchMock(),
+    cache: kv,
+    warehouse: createWarehouse(),
+    now: fixedNow,
+  };
+  for (let index = 0; index < 20; index += 1) {
+    const response = await handleTushareTerminalRequest(
+      new Request('https://terminal.test/api/terminal/status', {
+        headers: { 'CF-Connecting-IP': '203.0.113.8' },
+      }),
+      env,
+      options,
+    );
+    assert.equal(response.status, 200);
+  }
+  const limited = await handleTushareTerminalRequest(
+    new Request('https://terminal.test/api/terminal/status', {
+      headers: { 'CF-Connecting-IP': '203.0.113.8' },
+    }),
+    env,
+    options,
+  );
+  const body = await json(limited);
+  assert.equal(limited.status, 429);
+  assert.equal(body.error.code, 'TERMINAL_RATE_LIMITED');
+});
+
 test('Supply routes exclusively through the warehouse and fail closed without it', async () => {
   const fetchImpl = createFetchMock();
   const warehouse = createWarehouse();
@@ -469,6 +504,19 @@ test('market route enforces the dataset whitelist across all six Tushare domains
   assert.equal(filing.status, 400);
   assert.equal(filingBody.error.code, 'ENDPOINT_NOT_ALLOWED');
   assert.equal(filingFetch.calls.length, 0);
+
+  const fieldsFetch = createFetchMock();
+  const fields = await handleTushareTerminalRequest(
+    new Request(
+      'https://terminal.test/api/terminal/market?domain=Stocks&dataset=daily&fields=ts_code,close',
+    ),
+    { TUSHARE_TOKEN: TOKEN },
+    { fetchImpl: fieldsFetch, cache: new MockKV(), now: fixedNow },
+  );
+  const fieldsBody = await json(fields);
+  assert.equal(fields.status, 400);
+  assert.equal(fieldsBody.error.code, 'QUERY_PARAMETER_NOT_ALLOWED');
+  assert.equal(fieldsFetch.calls.length, 0);
 });
 
 test('all eight Terminal route handlers return source-backed envelopes', async (t) => {

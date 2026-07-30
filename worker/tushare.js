@@ -939,8 +939,8 @@ async function routeBootstrap(adapter, request, now) {
     fetched_at: supply.fetched_at || supply.as_of || null,
     retrieved_at: nowIso(now),
     as_of: supply.as_of || null,
-    is_complete: true,
-    warnings: [],
+    is_complete: supply.is_complete === true,
+    warnings: supply.warnings || [],
     cache_status: 'metadata',
   };
 }
@@ -1100,7 +1100,7 @@ async function routeMarket(adapter, request, url, now) {
     throw adapterError('ENDPOINT_NOT_ALLOWED', 'Dataset is not allowed for this domain', 400);
   }
   assertAllowedQueryKeys(url, [
-    'domain', 'dataset', 'fields', 'limit', 'start', 'end',
+    'domain', 'dataset', 'limit', 'start', 'end',
     ...config.params,
   ], config.freshness_class);
   const params = routeParams(url, apiName, { start: 'start_date', end: 'end_date' });
@@ -1117,7 +1117,7 @@ async function routeMarket(adapter, request, url, now) {
   }
   const result = ensureRows(await adapter.query(apiName, {
     params,
-    fields: url.searchParams.get('fields') || '',
+    fields: '',
   }), config.freshness_class);
   const limit = cleanLimit(url.searchParams.get('limit'), 200, 1000);
   return limitedEnvelope({ ...result, route: 'market' }, limit);
@@ -1136,7 +1136,7 @@ async function routeNews(adapter, url, now) {
   }
   assertAllowedQueryKeys(url, [
     'dataset', 'src', 'start', 'end', 'start_date', 'end_date',
-    'ts_code', 'ann_date', 'fields', 'limit',
+    'ts_code', 'ann_date', 'limit',
   ], config.freshness_class);
   const params = {};
   if (apiName === 'news' || apiName === 'major_news') {
@@ -1164,15 +1164,14 @@ async function routeNews(adapter, url, now) {
       if (value) params[key] = key.includes('date') ? cleanDate(value, key) : value;
     });
   }
-  const fields = url.searchParams.get('fields') ||
-    (apiName === 'major_news' ? 'title,pub_time,src' : '');
+  const fields = apiName === 'major_news' ? 'title,pub_time,src' : '';
   const result = await adapter.query(apiName, { params, fields });
   const limit = cleanLimit(url.searchParams.get('limit'), 100, 500);
   return limitedEnvelope({ ...result, route: 'news' }, limit);
 }
 
 async function routeQuote(adapter, url, now) {
-  assertAllowedQueryKeys(url, ['symbol', 'asset', 'dataset', 'fields']);
+  assertAllowedQueryKeys(url, ['symbol', 'asset', 'dataset']);
   const symbol = cleanSymbol(url.searchParams.get('symbol'));
   const mapped = normalizeAsset(url.searchParams.get('asset') || 'stock');
   const apiName = String(url.searchParams.get('dataset') || mapped.apiName).trim();
@@ -1183,7 +1182,7 @@ async function routeQuote(adapter, url, now) {
   const range = recentDateRange(now, 14);
   const result = ensureRows(await adapter.query(apiName, {
     params: { ts_code: symbol, ...range },
-    fields: url.searchParams.get('fields') || '',
+    fields: '',
   }), config.freshness_class);
   const latest = [...result.data].sort((left, right) =>
     rowDateValue(right).localeCompare(rowDateValue(left)))[0];
@@ -1198,7 +1197,7 @@ async function routeQuote(adapter, url, now) {
 async function routeHistory(adapter, url, now) {
   assertAllowedQueryKeys(url, [
     'symbol', 'asset', 'dataset', 'start', 'end', 'start_date', 'end_date',
-    'fields', 'limit',
+    'limit',
   ]);
   const symbol = cleanSymbol(url.searchParams.get('symbol'));
   const mapped = normalizeAsset(url.searchParams.get('asset') || 'stock');
@@ -1210,7 +1209,7 @@ async function routeHistory(adapter, url, now) {
   const range = dateRangeFromUrl(url, now, true);
   const result = ensureRows(await adapter.query(apiName, {
     params: { ts_code: symbol, ...range },
-    fields: url.searchParams.get('fields') || '',
+    fields: '',
   }), config.freshness_class);
   const limit = cleanLimit(url.searchParams.get('limit'), 1000, 6000);
   const rows = [...result.data]
@@ -1337,6 +1336,7 @@ async function routeStatus(adapter, request, now) {
     }
   }
   const ready = adapter.tokenConfigured && Boolean(warehouseStatus);
+  const complete = ready && warehouseStatus?.is_complete === true;
   return {
     ok: ready,
     route: 'status',
@@ -1348,6 +1348,7 @@ async function routeStatus(adapter, request, now) {
       cache_configured: adapter.cacheConfigured,
       warehouse_configured: adapter.warehouseConfigured,
       warehouse_ready: Boolean(warehouseStatus),
+      warehouse_complete: warehouseStatus?.is_complete === true,
       endpoint_count: Object.keys(TUSHARE_ENDPOINTS).length,
       domains: TERMINAL_DOMAINS,
     },
@@ -1355,8 +1356,10 @@ async function routeStatus(adapter, request, now) {
     fetched_at: null,
     retrieved_at: nowIso(now),
     as_of: warehouseStatus?.as_of || null,
-    is_complete: ready,
-    warnings: ready ? [] : ['adapter_not_ready'],
+    is_complete: complete,
+    warnings: ready
+      ? (warehouseStatus?.warnings || [])
+      : ['adapter_not_ready'],
     cache_status: 'metadata',
     http_status: ready ? 200 : 503,
   };
@@ -1379,6 +1382,54 @@ function jsonResponse(env, body, status = 200, cacheControl = 'no-store') {
     status,
     headers: responseHeaders(env, cacheControl),
   });
+}
+
+async function enforceTerminalRateLimit(request, env, now) {
+  const kv = env?.YC_KV;
+  const clientIp = request.headers.get('CF-Connecting-IP');
+  if (!clientIp || !kv || typeof kv.get !== 'function' || typeof kv.put !== 'function') {
+    return;
+  }
+  const configured = Number(env?.TERMINAL_RATE_LIMIT_PER_MINUTE || 120);
+  const maximum = Number.isFinite(configured)
+    ? Math.min(1000, Math.max(20, Math.floor(configured)))
+    : 120;
+  const bucket = Math.floor(now() / 60000);
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${bucket}:${clientIp}`),
+  );
+  const identity = [...new Uint8Array(digest)]
+    .slice(0, 12)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+  const key = `terminal:rate:${bucket}:${identity}`;
+  let count;
+  try {
+    count = Number(await kv.get(key)) || 0;
+  } catch (_) {
+    throw adapterError(
+      'RATE_LIMIT_UNAVAILABLE',
+      'Terminal request control is temporarily unavailable',
+      503,
+    );
+  }
+  if (count >= maximum) {
+    throw adapterError(
+      'TERMINAL_RATE_LIMITED',
+      'Terminal request limit reached; retry after the next minute',
+      429,
+    );
+  }
+  try {
+    await kv.put(key, String(count + 1), { expirationTtl: 120 });
+  } catch (_) {
+    throw adapterError(
+      'RATE_LIMIT_UNAVAILABLE',
+      'Terminal request control is temporarily unavailable',
+      503,
+    );
+  }
 }
 
 /**
@@ -1406,6 +1457,7 @@ export async function handleTushareTerminalRequest(request, env, options = {}) {
   let freshnessClass = 'static';
   try {
     assertNoSensitiveQuery(url);
+    await enforceTerminalRateLimit(request, env, now);
     const adapter = createTushareAdapter(env, { ...options, now });
     let result;
     if (path === '/api/terminal/bootstrap') {

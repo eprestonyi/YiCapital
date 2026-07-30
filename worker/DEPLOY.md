@@ -39,6 +39,7 @@ Cloudflare Worker v8.4 部署步驟（動態入口 + Google 一鍵註冊 + 用�
      GH_PATH_HK       assets/data/Yi_Capital_HK.xlsx（可省略，這是默認值）
      GH_PATH_A        assets/data/Yi_Capital_A.xlsx（可省略，這是默認值）
      ALLOWED_ORIGIN   https://你的網站域名（如 https://yicapital.com，不帶末尾斜杠）
+     TERMINAL_RATE_LIMIT_PER_MINUTE  可選；每 IP 每分鐘上限，預設 120
    → Save and deploy
 
 ④-B 發布 Terminal Atlas 只讀快照

@@ -19,10 +19,12 @@ const seed = {
   },
   coverage: { status: 'partial' },
   layers: [{ id: 'physical' }, { id: 'models' }],
+  sources: [],
   entities: [
     {
       id: 'tsmc',
       name: 'TSMC',
+      ticker: '2330.TW / TSM',
       kind: 'company',
       layer: 'manufacturing',
       cluster: 'foundry',
@@ -96,6 +98,18 @@ test('missing or invalid warehouse snapshots fail closed', async () => {
     createTerminalWarehouseAdapter({}).status(),
     /storage is unavailable/,
   );
+  await assert.rejects(
+    createTerminalWarehouseAdapter({
+      YC_KV: new MockKV({
+        ...seed,
+        relationships: [{
+          ...seed.relationships[0],
+          from: 'orphan-company',
+        }],
+      }),
+    }).status(),
+    /relationship schema is invalid/,
+  );
 });
 
 test('search covers ids, names, layers, clusters and localized roles', async () => {
@@ -133,6 +147,7 @@ test('stock detail separates upstream/downstream and preserves missing data', as
     end_date: '20251231',
   });
   const missing = await adapter.stockDetail({ symbol: 'not-covered' });
+  const byTickerAlias = await adapter.stockDetail({ symbol: 'TSM' });
 
   assert.equal(result.data.entity.id, 'nvda');
   assert.equal(result.data.upstream[0].entity.id, 'tsmc');
@@ -141,6 +156,24 @@ test('stock detail separates upstream/downstream and preserves missing data', as
   assert.equal(missing.data.entity, null);
   assert.equal(missing.data.financials, null);
   assert.ok(missing.warnings.includes('warehouse_entity_not_covered'));
+  assert.equal(byTickerAlias.data.entity.id, 'tsmc');
+});
+
+test('market truncation preserves graph closure and is never reported complete', async () => {
+  const completeSeed = {
+    ...seed,
+    status: 'complete',
+    scope: { ...seed.scope, universeStatus: 'complete' },
+  };
+  const adapter = createTerminalWarehouseAdapter({
+    YC_KV: new MockKV(completeSeed),
+  });
+  const result = await adapter.market({ limit: 1 });
+
+  assert.equal(result.data.entities.length, 1);
+  assert.equal(result.data.relationships.length, 0);
+  assert.equal(result.is_complete, false);
+  assert.ok(result.warnings.includes('route_limit_applied'));
 });
 
 test('warehouse public results never serialize unrelated environment secrets', async () => {

@@ -358,6 +358,8 @@ test('Terminal v2 uses the production API contract and fails closed without synt
   assert.match(source, /selectedYearRange\(\)/);
   assert.match(source, /validateAtlas\(seed\)/);
   assert.match(source, /is_complete\s*===\s*false/);
+  assert.match(source, /activeFunction\.loader\s*===\s*['"]unavailable['"]/);
+  assert.match(source, /return records\[state\.year\]\s*\|\|\s*null/);
   assert.match(source, /replaceChildren\(/);
   assert.match(source, /setAttribute\('role',\s*'tab'\)/);
   for (const code of ['DES', 'RES', 'FA', 'MODL', 'SPLC', 'GP', 'HP', 'VAL', 'VWAP', 'AVAT']) {
@@ -365,6 +367,7 @@ test('Terminal v2 uses the production API contract and fails closed without synt
   }
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
   assert.doesNotMatch(source, /synthetic|sampleQuote|fallbackPrice/i);
+  assert.doesNotMatch(source, /return match \|\| state\.entityMap\.get\(['"]nvda['"]\)/);
   assert.doesNotMatch(source, /28 家候選|28 家候选|processing 28 candidate/);
 });
 

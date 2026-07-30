@@ -346,8 +346,10 @@
   .terminal-site-tools{justify-self:end}
   .terminal-site-tools>a:first-child{display:none}
   .terminal-app{min-height:calc(100vh - 50px)}
-  .terminal-command{grid-template-columns:1fr;padding:7px 8px}
-  .terminal-command-meta{display:none}
+  .terminal-command{grid-template-columns:minmax(0,1fr) auto;padding:7px 8px}
+  .terminal-command-meta{display:flex}
+  .terminal-command-meta label>span,.terminal-clock{display:none}
+  .terminal-command-meta select{height:42px;min-width:70px}
   .terminal-query input{height:42px}
   .terminal-workspace-tabs{padding:0;min-height:45px}
   .terminal-workspace-tabs button{min-height:44px;padding:0 13px}
