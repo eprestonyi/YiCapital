@@ -33,10 +33,13 @@ async function checkPortal() {
   try {
     const response = await fetchChecked(url);
     const health = await response.json();
-    if (health.version !== 'v8.3') throw new Error(`unexpected version ${health.version}`);
+    if (health.version !== 'v8.4-entry') throw new Error(`unexpected version ${health.version}`);
     if (health.feedback !== true) throw new Error('feedback D1 binding is unavailable');
     if (health.feedback_rate_limit !== true) throw new Error('feedback rate-limit secret is unavailable');
     if (health.kv !== true) throw new Error('KV binding is unavailable');
+    if (health.google !== true) throw new Error('Google OAuth is unavailable');
+    if (health.admin_google !== true) throw new Error('Google admin allowlist is unavailable');
+    if (health.tushare !== true) throw new Error('Tushare market source is unavailable');
     console.log(`PASS portal ${health.version}`);
   } catch (error) {
     failures.push(`${url}: ${error.message}`);

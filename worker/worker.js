@@ -1,21 +1,23 @@
 /* ═══════════════════════════════════════════════════════════════
-   Yi Capital Portal Backend v8.3 — Cloudflare Worker（單文件，粘貼即部署）
+   Yi Capital Portal Backend v8.4 — Cloudflare Worker（單文件，粘貼即部署）
    ─────────────────────────────────────────────────────────────
    帳號模型：
      · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則發 6 位驗證碼）
-     · Google 註冊 = Google 驗證身份 → 自己設置用戶名+密碼 → 建號
+     · Google 註冊 = Google 驗證身份 → 一鍵建立無密碼帳號
      · 登入 = 用戶名或郵箱 + 密碼；Google 用戶也可直接點 Google 登入
+     · Guest = 不建立帳號、不發 session；沿用現有匿名訪客限制
    接口：
      POST /api/signup           {username,password,email}
      POST /api/verify           {email,code}
      POST /api/login            {username(或郵箱),password}
-     POST /api/google           {credential} → 老用戶直接登入 / 新用戶返回 needSetup
+     POST /api/google           {credential,autoCreate,terms} → 登入或一鍵建號
      POST /api/google/complete  {setupToken,username,password}
      GET  /api/me   POST /api/logout
      POST /api/feedback         公開：提交三語用戶意見（登入可選）
      GET  /api/feedback         [admin] 查詢、篩選及匯出 user log
      POST /api/feedback/update  [admin] 分流、排期、處理及關聯 Issue / PR
      GET  /api/benchmark?set=us|hk|a               三市場基準行情（只讀 KV 快照）
+     GET  /api/entry-market                          登入入口六個月精簡快照
      POST /api/refresh          [admin] 手動重算 NAV / 統計 / 基準並覆蓋 KV
      GET  /api/users            [admin]
      POST /api/users/update     [admin] disable/enable/delete/resetpw
@@ -36,7 +38,8 @@
      navstatus:{us|hk|a} / bmset:{us|hk|a} / bmstatus:{us|hk|a}
    綁定與密鑰：KV=YC_KV；D1=FEEDBACK_DB；Secrets: ADMIN_USERNAME, ADMIN_PASSWORD, GH_TOKEN,
      （可選）RESEND_API_KEY；Text: GH_OWNER, GH_REPO, GH_BRANCH, GH_PATH,
-     ALLOWED_ORIGIN,（可選）GOOGLE_CLIENT_ID, MAIL_FROM；Secret: FEEDBACK_RATE_SALT
+     ALLOWED_ORIGIN,（可選）MAIL_FROM；Secrets: FEEDBACK_RATE_SALT,
+     GOOGLE_CLIENT_ID, ADMIN_GOOGLE_EMAILS, TUSHARE_TOKEN
    ═══════════════════════════════════════════════════════════════ */
 
 const SESSION_TTL = 7 * 24 * 3600;
@@ -44,6 +47,7 @@ const enc = new TextEncoder();
 
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 const randomHex = n => hex(crypto.getRandomValues(new Uint8Array(n)));
+const verificationCode = () => String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
 
 async function pbkdf2(password, saltHex) {
   const salt = new Uint8Array(saltHex.match(/../g).map(h => parseInt(h, 16)));
@@ -74,10 +78,20 @@ async function getSession(request, env) {
   const raw = await env.YC_KV.get('sess:' + m[1]);
   return raw ? { token: m[1], ...JSON.parse(raw) } : null;
 }
-async function newSession(env, username, role) {
+async function newSession(env, username, role, details = {}) {
   const token = randomHex(32);
-  await env.YC_KV.put('sess:' + token, JSON.stringify({ u: username, role }), { expirationTtl: SESSION_TTL });
+  await env.YC_KV.put('sess:' + token, JSON.stringify({ u: username, role, ...details }), { expirationTtl: SESSION_TTL });
   return token;
+}
+
+async function authRateAllowed(request, env, action, limit, windowSeconds) {
+  const address = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+  const window = Math.floor(Date.now() / (windowSeconds * 1000));
+  const identity = await sha256Hex(address.split(',')[0].trim());
+  const key = ['authrate', action, identity, window].join(':');
+  const count = Number(await env.YC_KV.get(key) || 0) + 1;
+  await env.YC_KV.put(key, String(count), { expirationTtl: windowSeconds + 60 });
+  return count <= limit;
 }
 
 const FEEDBACK_CATEGORIES = new Set([
@@ -214,7 +228,25 @@ function feedbackItem(row) {
 }
 
 const isUsername = u => /^[a-zA-Z0-9_\-\u4e00-\u9fff]{2,24}$/.test(u || '');
-const isEmail = e => /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(e || '');
+const isEmail = e => /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(e || '');
+const adminGoogleAllowed = (env, email) => String(env.ADMIN_GOOGLE_EMAILS || env.ADMIN_GOOGLE_EMAIL || '')
+  .split(',').map(value => value.trim().toLowerCase()).filter(Boolean).includes(String(email || '').toLowerCase());
+
+async function nextGoogleUsername(env, profile) {
+  const localPart = String(profile.email || '').split('@')[0];
+  let base = String(profile.name || localPart || 'YiMember')
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '')
+    .slice(0, 20);
+  if (base.length < 2) base = ('Yi_' + localPart).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 20);
+  if (base.length < 2) base = 'YiMember';
+  let candidate = base;
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    if (candidate !== env.ADMIN_USERNAME && !await env.YC_KV.get('user:' + candidate)) return candidate;
+    candidate = (base.slice(0, Math.max(2, 24 - String(suffix).length)) + suffix).slice(0, 24);
+  }
+  return 'Yi_' + randomHex(6);
+}
 const brandWordmark = (size = '20px') =>
   '<span style="display:inline-block;background:#0B1E3F;padding:3px 8px;font-family:Arial,sans-serif;font-weight:800;font-size:' + size + ';letter-spacing:0;white-space:nowrap">'
   + '<span style="color:#FFFFFF">Yi</span>'
@@ -366,6 +398,37 @@ async function hangSengSeries(code) {
   const out = levels.map(p => ({ date: new Date(Number(p[0])).toISOString().slice(0, 10), close: Number(p[1]) })).filter(p => isFinite(p.close) && p.close > 0);
   return out.length > 20 ? out : null;
 }
+async function tushareIndexSeries(token, tsCode) {
+  if (!token || !tsCode) return null;
+  const end = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const start = String(Number(end.slice(0, 4)) - 5) + end.slice(4);
+  const response = await fetch('https://api.tushare.pro', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': 'yicapital-portal' },
+    body: JSON.stringify({
+      api_name: 'index_daily',
+      token,
+      params: { ts_code: tsCode, start_date: start, end_date: end },
+      fields: 'trade_date,close',
+    }),
+  });
+  if (!response.ok) return null;
+  const payload = await response.json().catch(() => null);
+  if (!payload || payload.code !== 0 || !payload.data || !Array.isArray(payload.data.items)) return null;
+  const fields = Array.isArray(payload.data.fields) ? payload.data.fields : [];
+  const dateIndex = fields.indexOf('trade_date');
+  const closeIndex = fields.indexOf('close');
+  if (dateIndex < 0 || closeIndex < 0) return null;
+  const out = payload.data.items.map(item => {
+    const rawDate = String(item[dateIndex] || '');
+    return {
+      date: rawDate.length === 8 ? rawDate.slice(0, 4) + '-' + rawDate.slice(4, 6) + '-' + rawDate.slice(6, 8) : '',
+      close: Number(item[closeIndex]),
+    };
+  }).filter(point => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && Number.isFinite(point.close) && point.close > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return out.length > 20 ? out : null;
+}
 const BM_SETS = {
   us: [{ label: 'S&P 500', stooq: '^spx', yahoo: '^GSPC' }, { label: 'NASDAQ', stooq: '^ndq', yahoo: '^IXIC' }, { label: 'DOW', stooq: '^dji', yahoo: '^DJI' }],
   hk: [
@@ -373,49 +436,82 @@ const BM_SETS = {
     { label: 'HSI ETF', stooq: '2800.hk', yahoo: '2800.HK' },
     { label: 'HSTECH ETF', stooq: '3032.hk', yahoo: '3032.HK' },
   ],
-  a: [{ label: 'HS300', stooq: '000300.cn', yahoo: '000300.SS' }],
+  a: [{ label: 'HS300', stooq: '000300.cn', yahoo: '000300.SS', tushare: '000300.SH' }],
 };
-async function fetchBenchmarkSet(set) {
+async function fetchBenchmarkSet(set, env) {
   const cfg = BM_SETS[set]; if (!cfg) return null;
-  const data = {};
+  const data = {}, sources = {};
   await Promise.all(cfg.map(async b => {
-    let series = null;
-    if (b.official) { try { series = await hangSengSeries(b.official); } catch (e) {} }
+    let series = null, source = null;
+    if (b.tushare && env && env.TUSHARE_TOKEN) {
+      try {
+        series = await tushareIndexSeries(env.TUSHARE_TOKEN, b.tushare);
+        if (series) source = 'tushare';
+      } catch (e) {}
+    }
+    if (!series && b.official) {
+      try {
+        series = await hangSengSeries(b.official);
+        if (series) source = 'official';
+      } catch (e) {}
+    }
     if (series && b.yahoo) {
       try {
         const latest = await yahooQuote(b.yahoo);
-        if (latest && (!series.length || latest.date > series[series.length - 1].date)) series.push(latest);
+        if (latest && (!series.length || latest.date > series[series.length - 1].date)) {
+          series.push(latest);
+          source = source ? source + '+yahoo-latest' : 'yahoo';
+        }
       } catch (e) {}
     }
-    if (!series) { try { series = await yahooSeries(b.yahoo); } catch (e) {} }
-    if (!series && b.stooq) { try { series = await stooqSeries(b.stooq); } catch (e) {} }
-    if (series) data[b.label] = series;
+    if (!series) {
+      try {
+        series = await yahooSeries(b.yahoo);
+        if (series) source = 'yahoo';
+      } catch (e) {}
+    }
+    if (!series && b.stooq) {
+      try {
+        series = await stooqSeries(b.stooq);
+        if (series) source = 'stooq';
+      } catch (e) {}
+    }
+    if (series) {
+      data[b.label] = series;
+      sources[b.label] = source || 'unknown';
+    }
   }));
-  return Object.keys(data).length ? data : null;
+  return Object.keys(data).length ? { data, sources } : null;
 }
 async function prewarmBenchmark(env, sets) {
   return Promise.all((sets || ['us', 'hk', 'a']).map(async set => {
     const ranAt = new Date().toISOString(), cacheKey = 'bmset:' + set, statusKey = 'bmstatus:' + set;
     let fresh = null, error = null;
-    try { fresh = await fetchBenchmarkSet(set); } catch (e) { error = e.message || String(e); }
+    try { fresh = await fetchBenchmarkSet(set, env); } catch (e) { error = e.message || String(e); }
     const oldRaw = await env.YC_KV.get(cacheKey);
     const old = oldRaw ? JSON.parse(oldRaw) : null;
     const expected = BM_SETS[set].map(x => x.label);
-    const data = {};
+    const data = {}, sources = {};
     expected.forEach(label => {
-      if (fresh && fresh[label]) data[label] = fresh[label];
-      else if (old && old.data && old.data[label]) data[label] = old.data[label];
+      if (fresh && fresh.data[label]) {
+        data[label] = fresh.data[label];
+        sources[label] = fresh.sources[label];
+      }
+      else if (old && old.data && old.data[label]) {
+        data[label] = old.data[label];
+        if (old.sources && old.sources[label]) sources[label] = old.sources[label];
+      }
     });
-    const refreshed = expected.filter(label => fresh && fresh[label]);
-    const missing = expected.filter(label => !(fresh && fresh[label]));
+    const refreshed = expected.filter(label => fresh && fresh.data[label]);
+    const missing = expected.filter(label => !(fresh && fresh.data[label]));
     const unavailable = expected.filter(label => !data[label]);
     const status = {
       ok: unavailable.length === 0, set, ranAt, refreshed, missing, unavailable,
-      stale: missing.length > 0, error,
+      stale: missing.length > 0, error, sources,
     };
     if (Object.keys(data).length) {
       const payload = {
-        ok: true, set, data,
+        ok: true, set, data, sources,
         fetched: missing.length ? (old && old.fetched) || ranAt : ranAt,
         partialFetched: refreshed.length ? ranAt : null,
         lastAttempt: ranAt, missing, unavailable, stale: missing.length > 0,
@@ -1095,21 +1191,24 @@ export default {
           }
         } catch (e) {}
         return J(env, {
-          ok: true, version: 'v8.3',
+          ok: true, version: 'v8.4-entry',
           kv: kvOk,
           feedback: feedbackOk,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
           admin: !!(env.ADMIN_USERNAME && env.ADMIN_PASSWORD),
+          admin_google: !!(env.ADMIN_GOOGLE_EMAILS || env.ADMIN_GOOGLE_EMAIL),
           github: !!(env.GH_TOKEN && env.GH_OWNER && env.GH_REPO),
           resend: !!env.RESEND_API_KEY,
-          mail_from: env.MAIL_FROM || '(未設置)',
+          mail_from: !!env.MAIL_FROM,
           google: !!env.GOOGLE_CLIENT_ID,
-          origin: env.ALLOWED_ORIGIN || '(未設置)',
-        });
+          tushare: !!env.TUSHARE_TOKEN,
+          origin: !!env.ALLOWED_ORIGIN,
+        }, 200, { 'Cache-Control': 'no-store' });
       }
 
       /* ════ 註冊：用戶名 + 密碼 + 郵箱 ════ */
       if (path === '/api/signup' && request.method === 'POST') {
+        if (!await authRateAllowed(request, env, 'signup', 8, 3600)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
         const b = await request.json();
         const username = String(b.username || '').trim();
         const email = String(b.email || '').trim().toLowerCase();
@@ -1125,7 +1224,7 @@ export default {
         const salt = randomHex(16);
         const hash = await pbkdf2(password, salt);
         if (env.RESEND_API_KEY) {
-          const code = String(Math.floor(100000 + Math.random() * 900000));
+          const code = verificationCode();
           await env.YC_KV.put('pending:' + email, JSON.stringify({ u: username, email, salt, hash, code, tries: 0, newsletter }), { expirationTtl: 900 });
           if (!await sendCode(env, email, code)) { await env.YC_KV.delete('pending:' + email); return J(env, { error: '驗證郵件發送失敗，請稍後再試' }, 502); }
           return J(env, { ok: true, needCode: true, message: '驗證碼已發送至 ' + email });
@@ -1137,6 +1236,7 @@ export default {
 
       /* ════ 郵箱驗證碼確認 ════ */
       if (path === '/api/verify' && request.method === 'POST') {
+        if (!await authRateAllowed(request, env, 'verify', 12, 900)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
         const b = await request.json();
         const email = String(b.email || '').trim().toLowerCase();
         const pkey = 'pending:' + email;
@@ -1155,6 +1255,7 @@ export default {
 
       /* ════ 登入：用戶名或郵箱 + 密碼 ════ */
       if (path === '/api/login' && request.method === 'POST') {
+        if (!await authRateAllowed(request, env, 'login', 30, 900)) return J(env, { error: '登入嘗試過多，請稍後再試' }, 429);
         const b = await request.json();
         let username = String(b.username || '').trim();
         const password = b.password || '';
@@ -1181,34 +1282,63 @@ export default {
         return J(env, { ok: true, token, role: 'guest', username });
       }
 
-      /* ════ Google：老用戶直接登入；新用戶引導設置用戶名密碼 ════ */
+      /* ════ Google：老用戶直接登入；新用戶可一鍵建號 ════ */
       if (path === '/api/google' && request.method === 'POST') {
+        if (!await authRateAllowed(request, env, 'google', 30, 900)) return J(env, { error: '登入嘗試過多，請稍後再試' }, 429);
         if (!env.GOOGLE_CLIENT_ID) return J(env, { error: '未配置 Google 登入' }, 501);
-        const { credential } = await request.json();
+        const b = await request.json();
+        const credential = b.credential;
         if (!credential) return J(env, { error: '缺少憑證' }, 400);
         const gr = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(credential));
         if (!gr.ok) return J(env, { error: 'Google 憑證無效' }, 401);
         const t = await gr.json();
         if (t.aud !== env.GOOGLE_CLIENT_ID) return J(env, { error: '憑證受眾不匹配' }, 401);
+        if (!['accounts.google.com', 'https://accounts.google.com'].includes(String(t.iss || ''))) return J(env, { error: 'Google 憑證簽發者無效' }, 401);
+        if (!t.sub || !Number.isFinite(Number(t.exp)) || Number(t.exp) * 1000 <= Date.now()) return J(env, { error: 'Google 憑證已過期' }, 401);
         if (String(t.email_verified) !== 'true' || !t.email) return J(env, { error: 'Google 郵箱未驗證' }, 401);
         const email = t.email.toLowerCase();
+        if (adminGoogleAllowed(env, email)) {
+          const username = env.ADMIN_USERNAME || email;
+          const token = await newSession(env, username, 'admin', {
+            provider: 'google-admin',
+            googleEmail: email,
+            googleSub: String(t.sub),
+          });
+          return J(env, { ok: true, token, role: 'admin', username });
+        }
         const mapped = await env.YC_KV.get('email:' + email);
         if (mapped) {
           const u = JSON.parse(await env.YC_KV.get('user:' + mapped) || 'null');
           if (!u) return J(env, { error: '帳號數據異常' }, 500);
           if (u.disabled) return J(env, { error: '此帳號已被停用' }, 403);
+          if (u.googleSub && !safeEqual(String(u.googleSub), String(t.sub))) return J(env, { error: 'Google 身份與既有帳號不匹配' }, 409);
+          u.googleSub = String(t.sub);
           u.lastLogin = new Date().toISOString();
           await env.YC_KV.put('user:' + mapped, JSON.stringify(u));
           const token = await newSession(env, mapped, 'guest');
           return J(env, { ok: true, token, role: 'guest', username: mapped });
         }
+        if (b.autoCreate === true) {
+          if (b.terms !== true) return J(env, { error: '必須同意服務條款才能註冊' }, 400);
+          const username = await nextGoogleUsername(env, t);
+          await createUser(env, {
+            u: username, email, name: t.name || '', googleSub: String(t.sub),
+            salt: null, hash: null, provider: 'google', role: 'guest', disabled: false,
+            newsletter: b.newsletter === true, terms: true, termsAt: new Date().toISOString(),
+            created: new Date().toISOString(), lastLogin: new Date().toISOString(),
+          });
+          await sendWelcome(env, email, username);
+          const token = await newSession(env, username, 'guest');
+          return J(env, { ok: true, token, role: 'guest', username });
+        }
         // 新用戶 → 發放 15 分鐘設置票據，前端引導其設置用戶名+密碼
         const setupToken = randomHex(24);
-        await env.YC_KV.put('gsetup:' + setupToken, JSON.stringify({ email, name: t.name || '' }), { expirationTtl: 900 });
+        await env.YC_KV.put('gsetup:' + setupToken, JSON.stringify({ email, name: t.name || '', googleSub: String(t.sub) }), { expirationTtl: 900 });
         return J(env, { ok: true, needSetup: true, setupToken, email });
       }
 
       if (path === '/api/google/complete' && request.method === 'POST') {
+        if (!await authRateAllowed(request, env, 'google-complete', 12, 900)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
         const b = await request.json();
         const skey = 'gsetup:' + String(b.setupToken || '');
         const raw = await env.YC_KV.get(skey);
@@ -1223,7 +1353,7 @@ export default {
         if (await env.YC_KV.get('email:' + g.email)) return J(env, { error: '該郵箱已被註冊' }, 409);
         const salt = randomHex(16);
         const hash = await pbkdf2(password, salt);
-        await createUser(env, { u: username, email: g.email, name: g.name, salt, hash, provider: 'google', role: 'guest', disabled: false, newsletter: b.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: new Date().toISOString() });
+        await createUser(env, { u: username, email: g.email, name: g.name, googleSub: g.googleSub || null, salt, hash, provider: 'google', role: 'guest', disabled: false, newsletter: b.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: new Date().toISOString() });
         await env.YC_KV.delete(skey);
         await sendWelcome(env, g.email, username);
         const token = await newSession(env, username, 'guest');
@@ -1242,6 +1372,54 @@ export default {
           status: status ? JSON.parse(status) : null,
           error: '基準快照尚未建立，請等待每日任務或由管理員手動刷新',
         }, 503);
+      }
+
+      /* ════ 登入首屏：僅返回三市場六個月繪圖所需資料，不暴露持倉 ════ */
+      if (path === '/api/entry-market' && request.method === 'GET') {
+        const specs = {
+          hk: { benchmark: 'HSI ETF' },
+          us: { benchmark: 'S&P 500' },
+          a: { benchmark: 'HS300' },
+        };
+        const markets = {};
+        await Promise.all(Object.entries(specs).map(async ([market, spec]) => {
+          const [navRaw, benchmarkRaw] = await Promise.all([
+            env.YC_KV.get('navcache:' + market),
+            env.YC_KV.get('bmset:' + market),
+          ]);
+          if (!navRaw || !benchmarkRaw) {
+            markets[market] = null;
+            return;
+          }
+          const nav = JSON.parse(navRaw);
+          const benchmark = JSON.parse(benchmarkRaw);
+          const benchmarkRows = benchmark.data && benchmark.data[spec.benchmark];
+          if (!nav.ok || !nav.enabled || !Array.isArray(nav.navRows) || !Array.isArray(benchmarkRows)) {
+            markets[market] = null;
+            return;
+          }
+          markets[market] = {
+            navRows: nav.navRows.slice(-190),
+            historyComplete: nav.historyComplete === true,
+            cacheVersion: Number(nav.cacheVersion || 0),
+            navStatus: nav.status || null,
+            navAsOf: nav.asOf || nav.marketDate || null,
+            benchmarkLabel: spec.benchmark,
+            benchmarkSource: benchmark.sources && benchmark.sources[spec.benchmark] || null,
+            benchmarkRows: benchmarkRows.slice(-190),
+            benchmarkStatus: {
+              stale: benchmark.stale === true,
+              missing: Array.isArray(benchmark.missing) ? benchmark.missing : [],
+              unavailable: Array.isArray(benchmark.unavailable) ? benchmark.unavailable : [],
+              fetched: benchmark.fetched || null,
+            },
+          };
+        }));
+        return J(env, {
+          ok: Object.values(markets).some(Boolean),
+          fetchedAt: new Date().toISOString(),
+          markets,
+        }, 200, { 'Cache-Control': 'public, max-age=120, stale-while-revalidate=300' });
       }
 
       /* ════ 會話 ════ */
@@ -1366,7 +1544,14 @@ export default {
       }
 
       /* ════ 管理員 ════ */
-      const needAdmin = () => (!sess ? J(env, { error: '未登入' }, 401) : sess.role !== 'admin' ? J(env, { error: '需要管理員權限' }, 403) : null);
+      const needAdmin = () => {
+        if (!sess) return J(env, { error: '未登入' }, 401);
+        if (sess.role !== 'admin') return J(env, { error: '需要管理員權限' }, 403);
+        if (sess.provider === 'google-admin' && !adminGoogleAllowed(env, sess.googleEmail)) {
+          return J(env, { error: 'Google 管理員授權已撤銷，請重新登入' }, 403);
+        }
+        return null;
+      };
 
       /* User log：D1 結構化查詢，供人工分流及後續優化 Agent 只讀消費。 */
       if (path === '/api/feedback' && request.method === 'GET') {
@@ -1705,19 +1890,21 @@ export default {
 
       /* ════ 找回密碼：郵箱驗證碼 → 重設 ════ */
       if (path === '/api/forgot' && request.method === 'POST') {
+        if (!await authRateAllowed(request, env, 'forgot', 6, 3600)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
         const b = await request.json();
         const email = String(b.email || '').trim().toLowerCase();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return J(env, { error: '郵箱格式不正確' }, 400);
         // 用 email 索引直查（避免枚舉：無論是否存在都返回成功文案）
         const uname = await env.YC_KV.get('email:' + email);
         if (uname && await env.YC_KV.get('user:' + uname)) {
-          const code = String(Math.floor(100000 + Math.random() * 900000));
+          const code = verificationCode();
           await env.YC_KV.put('reset:' + email, JSON.stringify({ code, u: uname, tries: 0, ts: Date.now() }), { expirationTtl: 900 });
           await sendResetCode(env, email, code);
         }
         return J(env, { ok: true, message: '若該郵箱已註冊，重設驗證碼已發送（15 分鐘內有效，請查收郵件含垃圾箱）。' });
       }
       if (path === '/api/reset' && request.method === 'POST') {
+        if (!await authRateAllowed(request, env, 'reset', 12, 900)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
         const b = await request.json();
         const email = String(b.email || '').trim().toLowerCase();
         const code = String(b.code || '').trim();

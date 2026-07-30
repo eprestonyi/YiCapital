@@ -55,6 +55,9 @@
 (function(){
   const {api, $}=YCAdmin;
   let USERS=[], ADMIN='';
+  const esc=value=>String(value==null?'':value).replace(/[&<>"']/g,ch=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[ch]));
   YCAdmin.gate(loadUsers);
   $('usr-refresh').onclick=loadUsers;
   $('usr-q').addEventListener('input',draw);
@@ -72,16 +75,16 @@
     const list=USERS.filter(u=>!q || (u.username||'').toLowerCase().includes(q) || (u.email||'').toLowerCase().includes(q));
     $('usr-count').textContent=q?('匹配 '+list.length+' / '+USERS.length):('共 '+USERS.length+' 個訪客帳號');
     let h='<table class="m"><thead><tr><th>用戶名</th><th>郵箱</th><th>方式</th><th>訂閱 Insights</th><th>狀態</th><th>註冊時間</th><th>最近登入</th><th>操作</th></tr></thead><tbody>';
-    if(!q) h+=`<tr><td>${ADMIN}</td><td>—</td><td>admin</td><td>—</td><td><span class="badge on">啟用</span></td><td>—</td><td>—</td><td class="dim">（管理員憑證在 Worker Secrets 中修改）</td></tr>`;
+    if(!q) h+=`<tr><td>${esc(ADMIN)}</td><td>—</td><td>admin</td><td>—</td><td><span class="badge on">啟用</span></td><td>—</td><td>—</td><td class="dim">（管理員憑證在 Worker Secrets 中修改）</td></tr>`;
     list.forEach(u=>{
       const t=s=>s?s.replace('T',' ').slice(0,16):'—';
-      h+=`<tr><td>${u.username}</td><td>${u.email||'—'}</td><td>${u.provider==='google'?'Google':'密碼'}</td><td>${u.newsletter?'<span class="badge on">已訂閱</span>':'<span class="badge off">未訂閱</span>'}</td>
+      h+=`<tr><td>${esc(u.username)}</td><td>${esc(u.email||'—')}</td><td>${u.provider==='google'?'Google':'密碼'}</td><td>${u.newsletter?'<span class="badge on">已訂閱</span>':'<span class="badge off">未訂閱</span>'}</td>
         <td><span class="badge ${u.disabled?'off':'on'}">${u.disabled?'停用':'啟用'}</span></td>
-        <td>${t(u.created)}</td><td>${t(u.lastLogin)}</td>
+        <td>${esc(t(u.created))}</td><td>${esc(t(u.lastLogin))}</td>
         <td>
-          <button class="btn2" data-a="${u.disabled?'enable':'disable'}" data-u="${u.username}">${u.disabled?'啟用':'停用'}</button>
-          <button class="btn2" data-a="resetpw" data-u="${u.username}">重置密碼</button>
-          <button class="btn2 danger" data-a="delete" data-u="${u.username}">刪除</button>
+          <button class="btn2" data-a="${u.disabled?'enable':'disable'}" data-u="${esc(u.username)}">${u.disabled?'啟用':'停用'}</button>
+          <button class="btn2" data-a="resetpw" data-u="${esc(u.username)}">重置密碼</button>
+          <button class="btn2 danger" data-a="delete" data-u="${esc(u.username)}">刪除</button>
         </td></tr>`;
     });
     h+='</tbody></table>';

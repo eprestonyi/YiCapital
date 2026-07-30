@@ -33,7 +33,7 @@ test('health exposes the feedback store without leaking configuration', async ()
   );
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.version, 'v8.3');
+  assert.equal(body.version, 'v8.4-entry');
   assert.equal(body.feedback, true);
   assert.equal(body.feedback_rate_limit, true);
   assert.equal('database_id' in body, false);
@@ -153,11 +153,21 @@ test('feedback UI is trilingual and sends only minimized diagnostics', async () 
 });
 
 test('admin renders user text as text, never as HTML', async () => {
-  const admin = await read('admin-feedback.html');
+  const [admin, users, mail] = await Promise.all([
+    read('admin-feedback.html'),
+    read('admin-users.html'),
+    read('admin-mail.html'),
+  ]);
   assert.match(admin, /const message=node\('div','fb-message',item\.message\)/);
   assert.doesNotMatch(admin, /item\.message[^;\n]*innerHTML|innerHTML[^;\n]*item\.message/);
-  for (const match of admin.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
-    assert.doesNotThrow(() => new Function(match[1]));
+  assert.match(users, /const esc=/);
+  assert.match(users, /\$\{esc\(u\.email\|\|'—'\)\}/);
+  assert.match(mail, /const esc=/);
+  assert.match(mail, /\$\{esc\(u\.email\|\|''\)\}/);
+  for (const page of [admin, users, mail]) {
+    for (const match of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+      assert.doesNotThrow(() => new Function(match[1]));
+    }
   }
 });
 

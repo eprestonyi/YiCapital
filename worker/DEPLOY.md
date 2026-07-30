@@ -1,4 +1,4 @@
-Cloudflare Worker v8.3 部署步驟（用戶意見 D1 + v8.2 全部功能）
+Cloudflare Worker v8.4 部署步驟（動態入口 + Google 一鍵註冊 + 用戶意見 D1）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
@@ -30,6 +30,7 @@ Cloudflare Worker v8.3 部署步驟（用戶意見 D1 + v8.2 全部功能）
      ADMIN_PASSWORD   你的管理員密碼（設強一點）
      GH_TOKEN         GitHub Fine-grained token（僅 YiCapital 倉庫、僅 Contents 讀寫）
      FEEDBACK_RATE_SALT  隨機 32-byte 字串，只用於匿名防濫用摘要
+     TUSHARE_TOKEN     Tushare Pro token（可選；只供 Worker 抓取滬深 300，切勿放前端）
    【Text 類型（明文變量）】
      GH_OWNER         eprestonyi
      GH_REPO          YiCapital
@@ -55,7 +56,7 @@ Cloudflare Worker v8.3 部署步驟（用戶意見 D1 + v8.2 全部功能）
 
 修改管理員密碼：回到 ④ 改 ADMIN_PASSWORD 這個 Secret 即可，即刻生效。
 
-附：v8.2 自動淨值與基準行情（v8.3 完整保留，無需額外 API Key）
+附：v8.2 自動淨值與基準行情（v8.4 完整保留）
   · POST /api/ledger 保存三個組合的持倉、現金、負債與總份額。
   · 首次發布亦把 NAV 歷史寫入 KV，後台生成完整分析快照；公開 GET 只讀 KV，
     不在訪客請求時抓行情、讀 Excel 或即時計算。
@@ -63,7 +64,10 @@ Cloudflare Worker v8.3 部署步驟（用戶意見 D1 + v8.2 全部功能）
     Excel 的 NAV Statement 只保留歷史曲線，不再要求每日手工上傳。
   · GET /api/benchmark?set=us：S&P 500 / NASDAQ / DOW
   · GET /api/benchmark?set=hk：國企 ETF 2828 / 恒生 ETF 2800 / 恒科 ETF 3032
-  · GET /api/benchmark?set=a：滬深 300
+  · GET /api/benchmark?set=a：滬深 300（有 TUSHARE_TOKEN 時優先 Tushare，
+    失敗時自動退回原行情源；token 永不下發瀏覽器）
+  · GET /api/entry-market：登入入口專用的三市場精簡快照，只含最近半年淨值、
+    基準與資料質量狀態，不包含持倉
   · 行情、基準、Sharpe、回撤、VaR、壓測及持倉資料全部寫入 KV；
     首頁、portfolios 與 fund-us 直接展示同一份快照。
 
@@ -72,7 +76,7 @@ Cloudflare Worker v8.3 部署步驟（用戶意見 D1 + v8.2 全部功能）
      0 9 * * *     北京 17:00 更新 HK/A + 三隻港股 ETF/滬深300
 
 ⑧ 首次啟用
-   部署 v8.3 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
+   部署 v8.4 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
    再點「立即刷新後台緩存」預熱三市場行情與基準。
    以後只有交易、出入金、股息、公司行動或負債改變時才需重新發布。
 
@@ -85,20 +89,26 @@ Cloudflare Worker v8.3 部署步驟（用戶意見 D1 + v8.2 全部功能）
   3. APIs & Services → Credentials → Create Credentials → OAuth client ID：
      Application type 選 Web application
      Authorized JavaScript origins 加兩條：
-       http://www.yicapital.co
-       http://yicapital.co
+       https://www.yicapital.co
+       https://yicapital.co
      → Create → 複製那串 xxxx.apps.googleusercontent.com
   4. 填兩處：
-     a. Cloudflare Worker → Settings → Variables 加一條 Text：
+     a. Cloudflare Worker → Settings → Variables 加一條 Secret：
         GOOGLE_CLIENT_ID = 那串 client id
      b. GitHub 上編輯 assets/portal-config.js：
         window.YC_GOOGLE_CLIENT_ID = '那串 client id';
-  5. 完成。login.html 會自動出現「使用 Google 繼續」按鈕。
+  5. 如需管理員也可使用 Google，另加 Secret：
+       ADMIN_GOOGLE_EMAILS = 允許的管理員 Google 郵箱
+     多個郵箱用逗號分隔。只有白名單郵箱會取得 admin；其餘 Google 帳號一律是 member。
+  6. 完成。入口會出現 Google 官方按鈕；首次授權會直接建號並寄歡迎信，
+     後續點擊直接登入，不需要再設用戶名或密碼。
 
-■ 帳號模型（v3）
+■ 帳號模型（v8.4）
   · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則需輸入 6 位驗證碼）
-  · Google 註冊 = Google 驗證身份 → 自己設置用戶名+密碼 → 建號
+  · Google 註冊 = Google 驗證身份 → 一鍵建立無密碼帳號
   · 登入 = 用戶名或郵箱 + 密碼；Google 用戶也可直接點 Google 按鈕
+  · Guest = 不建立帳號、不發 session token；只在本機記錄入口選擇，進站後沿用
+    現有匿名訪客限制
 
 ■ 郵箱驗證碼註冊（免費，約 10 分鐘，用 Resend）
   1. resend.com 註冊（免費 100 封/天）→ API Keys → Create → 複製 re_ 開頭的 Key

@@ -17,9 +17,14 @@
   const user = localStorage.getItem('yc-user');
   const role = localStorage.getItem('yc-role');
   if (!tok || !user) return;
+  const locale = window.YC_LANG === 'cn' ? 'cn' : window.YC_LANG === 'en' ? 'en' : 'tw';
+  const roleLabel = role === 'admin'
+    ? (locale === 'en' ? 'Administrator' : locale === 'cn' ? '管理员' : '管理員')
+    : (locale === 'en' ? 'Member' : locale === 'cn' ? '注册用户' : '註冊用戶');
+  const safeUser = user.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   function clearSession() {
-    ['yc-token', 'yc-role', 'yc-user'].forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k); });
+    ['yc-token', 'yc-role', 'yc-user', 'yc-guest'].forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k); });
   }
 
   // 樣式
@@ -61,7 +66,7 @@
     wrap.innerHTML = `
       <div class="yc-ava" id="ycAva" title="${user}">${initial}</div>
       <div class="yc-menu" id="ycMenu">
-        <div class="yc-id"><b>${user}</b><span>${role === 'admin' ? 'Administrator' : 'Guest'}</span></div>
+        <div class="yc-id"><b>${safeUser}</b><span>${roleLabel}</span></div>
         ${role === 'admin' ? `<a href="${ROOT}admin">管理後台</a>` : ''}
         <a href="${ROOT}portfolios">組合實錄</a>
         <button class="yc-out" id="ycLogout">登出 Logout</button>

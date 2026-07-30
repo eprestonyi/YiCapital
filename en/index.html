@@ -7,12 +7,24 @@
 <meta name="description" content="Key to Extraordinary Research and Opensource Portfolio">
 <meta property="og:type" content="website"><meta property="og:site_name" content="YiCapital">
 <meta property="og:title" content="YiCapital"><meta property="og:description" content="Key to Extraordinary Research and Opensource Portfolio">
-<meta property="og:image" content="/og.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="/og.png">
+<meta property="og:image" content="/og-entry.png"><meta property="og:image:alt" content="YiCapital — Be Like Us, Not Them"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="/og-entry.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/style.css">
+<link rel="stylesheet" href="../assets/yc-entry.css">
+<script>
+window.YC_ENTRY_MODE='gate';
+(()=>{try{if(new URLSearchParams(location.search).get('guest')==='1')localStorage.setItem('yc-guest','1');if(!localStorage.getItem('yc-token')&&localStorage.getItem('yc-guest')!=='1')document.documentElement.classList.add('yc-entry-pending');}catch(e){}})();
+</script>
+<script src="../assets/portal-config.js"></script>
+<script src="../assets/yc-entry.js" defer></script>
 </head>
 <body>
+<div class="yc-entry-fallback" role="status"><div class="yc-entry-fallback-card">
+  <a class="yc-entry-fallback-logo" href="/en/">Yi<b>Capital</b></a>
+  <p>The sign-in experience could not load. You can still enter the current Dashboard with Guest access.</p>
+  <a class="yc-entry-fallback-action" href="?guest=1">Continue as Guest</a>
+</div></div>
 
 
 <div class="utility"><div class="wrap">
@@ -155,7 +167,6 @@
 renderPosts("home-posts",{limit:3});document.addEventListener("yc-content-posts",()=>renderPosts("home-posts",{limit:3}));
 renderReports("home-reports","","");document.addEventListener("yc-content-reports",()=>{renderReports("home-reports","","");});
 </script>
-<script src="../assets/portal-config.js"></script>
 <script src="../assets/yc-home-live.js"></script>
 <script src="../assets/yc-i18n.js"></script>
 <script src="../assets/yc-session.js"></script>
