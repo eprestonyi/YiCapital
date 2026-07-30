@@ -635,7 +635,13 @@
   ];
   const marketData = new Map();
   const canvas = $('yc-entry-canvas');
+  canvas.classList.add('yc-entry-canvas-live');
   const context = canvas.getContext('2d');
+  const outgoingCanvas = document.createElement('canvas');
+  outgoingCanvas.className = 'yc-entry-canvas yc-entry-canvas-outgoing';
+  outgoingCanvas.setAttribute('aria-hidden', 'true');
+  canvas.before(outgoingCanvas);
+  const outgoingContext = outgoingCanvas.getContext('2d');
   let sceneIndex = 0;
   let sceneStarted = null;
   let sceneVisibleAt = performance.now();
@@ -645,11 +651,14 @@
   let scenePalette = null;
   let lastMetricsAt = 0;
   const sceneDuration = 32000;
-  const drawDuration = 28500;
-  const fadeDuration = 1500;
-  const contentFadeDuration = 950;
+  const drawDuration = 32000;
+  const crossfadeDuration = 1250;
   let sceneTransitioning = false;
+  let sceneTransitionToken = 0;
+  let sceneTransitionTimer = 0;
+  let pendingSceneAnnouncement = false;
   root.style.setProperty('--yc-entry-scene-duration', sceneDuration + 'ms');
+  root.style.setProperty('--yc-entry-crossfade-duration', crossfadeDuration + 'ms');
 
   function parseDate(value) {
     const time = Date.parse(String(value || '') + 'T00:00:00Z');
@@ -685,7 +694,7 @@
     const values = pf.concat(bm).map(point => point.value);
     const rawMin = Math.min(...values);
     const rawMax = Math.max(...values);
-    const chartPadding = Math.max(2, (rawMax - rawMin) * 0.16);
+    const chartPadding = Math.max(0.75, (rawMax - rawMin) * 0.06);
     const gaps = commonDates.reduce((count, date, index) => {
       if (!index) return count;
       return count + (parseDate(date) - parseDate(commonDates[index - 1]) > 12 * 86400000 ? 1 : 0);
@@ -786,8 +795,8 @@
       return { cursor: data.end, viewStart: data.start, viewEnd: data.end };
     }
     const span = Math.max(1, data.end - data.start);
-    const viewportSpan = span * 0.44;
-    const initialProgress = 0.18;
+    const viewportSpan = span * 0.56;
+    const initialProgress = 0.50;
     const travel = Math.max(0, Math.min(1, progress));
     const cursor = data.start + span * (initialProgress + (1 - initialProgress) * travel);
     const viewEnd = Math.min(data.end, Math.max(data.start + viewportSpan, cursor));
@@ -885,10 +894,10 @@
 
   function readScenePalette() {
     return {
-      line: cssVar('--scene-line', '#55d6ff'),
-      benchmark: cssVar('--scene-benchmark', '#8b9aae'),
-      grid: cssVar('--scene-grid', 'rgba(255,255,255,.1)'),
-      muted: cssVar('--scene-muted', '#8291a7'),
+      line: cssVar('--canvas-line-target', '#55d6ff'),
+      benchmark: cssVar('--canvas-benchmark-target', '#8b9aae'),
+      grid: cssVar('--canvas-grid-target', 'rgba(255,255,255,.1)'),
+      muted: cssVar('--canvas-muted-target', '#8291a7'),
     };
   }
 
@@ -936,9 +945,9 @@
     const data = marketData.get(scene.id);
     const left = 30;
     const right = chartWidth - 24;
-    const top = 78;
-    const bottom = chartHeight - 30;
-    if (!scenePalette || sceneTransitioning) scenePalette = readScenePalette();
+    const top = 58;
+    const bottom = chartHeight - 22;
+    if (!scenePalette) scenePalette = readScenePalette();
     const lineColor = scenePalette.line;
     const benchmarkColor = scenePalette.benchmark;
     const gridColor = scenePalette.grid;
@@ -1000,17 +1009,46 @@
     }
   }
 
-  function activateScene(next, manual) {
+  function activateScene(next, manual, announce) {
     sceneIndex = (next + scenes.length) % scenes.length;
     manualScene = !!manual;
-    sceneVisibleAt = performance.now() + (sceneTransitioning && !reduceMotion ? contentFadeDuration : 0);
+    sceneVisibleAt = performance.now() + (sceneTransitioning && !reduceMotion ? crossfadeDuration : 0);
     sceneStarted = marketData.has(scenes[sceneIndex].id) ? sceneVisibleAt : null;
     scenePalette = null;
     root.classList.toggle('is-manual', manualScene || reduceMotion);
     root.dataset.scene = scenes[sceneIndex].id;
     updateSceneText(reduceMotion || manualScene ? 1 : 0, true);
     drawChart(reduceMotion || manualScene ? 1 : 0);
-    announceScene();
+    if (announce !== false) announceScene();
+    else pendingSceneAnnouncement = true;
+  }
+
+  function captureOutgoingCanvas() {
+    outgoingCanvas.width = canvas.width;
+    outgoingCanvas.height = canvas.height;
+    outgoingContext.setTransform(1, 0, 0, 1, 0, 0);
+    outgoingContext.clearRect(0, 0, outgoingCanvas.width, outgoingCanvas.height);
+    outgoingContext.drawImage(canvas, 0, 0);
+  }
+
+  function finishSceneTransition(token, immediate) {
+    if (token !== sceneTransitionToken) return;
+    sceneTransitionToken += 1;
+    if (sceneTransitionTimer) window.clearTimeout(sceneTransitionTimer);
+    sceneTransitionTimer = 0;
+    root.classList.remove('is-chart-crossfade-armed', 'is-chart-crossfading', 'is-scene-copy-armed');
+    outgoingContext.setTransform(1, 0, 0, 1, 0, 0);
+    outgoingContext.clearRect(0, 0, outgoingCanvas.width, outgoingCanvas.height);
+    sceneTransitioning = false;
+    scenePalette = readScenePalette();
+    if (immediate && Number.isFinite(sceneStarted) && sceneStarted > performance.now()) {
+      sceneVisibleAt = performance.now();
+      sceneStarted = sceneVisibleAt;
+    }
+    if (pendingSceneAnnouncement) {
+      pendingSceneAnnouncement = false;
+      announceScene();
+    }
   }
 
   function transitionScene(next, manual) {
@@ -1019,15 +1057,25 @@
       return;
     }
     if (sceneTransitioning) return;
+    const target = (next + scenes.length) % scenes.length;
+    if (!marketData.has(scenes[target].id)) return;
     sceneTransitioning = true;
-    root.classList.add('is-scene-fading');
-    window.setTimeout(() => {
-      activateScene(next, manual);
+    const token = ++sceneTransitionToken;
+    captureOutgoingCanvas();
+    root.classList.add('is-chart-crossfade-armed', 'is-scene-copy-armed');
+    void outgoingCanvas.offsetWidth;
+    activateScene(target, manual, false);
+    requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        root.classList.remove('is-scene-fading');
-        window.setTimeout(() => { sceneTransitioning = false; }, fadeDuration);
+        if (token !== sceneTransitionToken || !root.isConnected) return;
+        root.classList.remove('is-chart-crossfade-armed', 'is-scene-copy-armed');
+        root.classList.add('is-chart-crossfading');
       });
-    }, Math.round(fadeDuration * 0.62));
+    });
+    sceneTransitionTimer = window.setTimeout(
+      () => finishSceneTransition(token, false),
+      crossfadeDuration + 80,
+    );
   }
 
   root.querySelectorAll('.yc-entry-scene-btn').forEach(button => {
@@ -1042,6 +1090,10 @@
       return;
     }
     const elapsed = now - sceneStarted;
+    if (elapsed < 0) {
+      requestAnimationFrame(animationFrame);
+      return;
+    }
     if (elapsed >= sceneDuration) {
       transitionScene(sceneIndex + 1, false);
       requestAnimationFrame(animationFrame);
@@ -1054,6 +1106,7 @@
   }
 
   function handleResize() {
+    if (sceneTransitioning) finishSceneTransition(sceneTransitionToken, true);
     resizeCanvas();
     drawChart(currentProgress());
   }

@@ -84,28 +84,40 @@ test('static motion modes stop the loop and explicit Dashboard navigation preser
   const sceneDuration = Number(entry.match(/const sceneDuration = (\d+);/)[1]);
   const drawDuration = Number(entry.match(/const drawDuration = (\d+);/)[1]);
   assert.ok(sceneDuration >= 30000);
-  assert.ok(drawDuration >= 27000);
+  assert.equal(drawDuration, sceneDuration);
   assert.match(entry, /chartTimeline/);
   assert.match(entry, /pointAtTime/);
-  assert.match(entry, /is-scene-fading/);
   assert.match(entry, /lastMetricsAt < 90/);
   assert.match(entry, /transitionScene\(Number\(button\.dataset\.sceneIndex\), false\)/);
   assert.match(entry, /transitionScene\(sceneIndex \+ 1, false\)/);
-  assert.match(entry, /const contentFadeDuration = 950/);
+  assert.match(entry, /const crossfadeDuration = 1250/);
+  assert.match(entry, /outgoingContext\.drawImage\(canvas, 0, 0\)/);
+  assert.match(entry, /is-chart-crossfade-armed/);
+  assert.match(entry, /is-chart-crossfading/);
+  assert.doesNotMatch(entry, /is-scene-fading|contentFadeDuration/);
   assert.match(entry, /sceneStarted = null/);
   assert.match(entry, /sceneVisibleAt = performance\.now\(\) \+ \(sceneTransitioning/);
   const timelineBody = entry.slice(entry.indexOf('function chartTimeline'), entry.indexOf('function updateSceneText'));
-  assert.match(timelineBody, /initialProgress = 0\.18/);
+  assert.match(timelineBody, /viewportSpan = span \* 0\.56/);
+  assert.match(timelineBody, /initialProgress = 0\.50/);
   assert.doesNotMatch(timelineBody, /travelEnd|zoom|easedZoom/);
+  const historyBody = entry.slice(entry.indexOf('function normalizeHistory'), entry.indexOf('const entrySnapshotPromise'));
+  assert.match(historyBody, /Math\.max\(0\.75, \(rawMax - rawMin\) \* 0\.06\)/);
   const pathBody = entry.slice(entry.indexOf('function pathSeries'), entry.indexOf('function drawChart'));
   assert.doesNotMatch(pathBody, /\.filter\(/);
+  const drawBody = entry.slice(entry.indexOf('function drawChart'), entry.indexOf('function activateScene'));
+  assert.match(drawBody, /const top = 58/);
+  assert.match(drawBody, /const bottom = chartHeight - 22/);
   const frameBody = entry.slice(entry.indexOf('function animationFrame'), entry.indexOf('function handleResize'));
   assert.doesNotMatch(frameBody, /yc-entry-chart-summary/);
 });
 
-test('minimal entry styling removes card chrome and uses a slow fade transition', async () => {
+test('minimal entry styling removes card chrome and crossfades overlapping canvases', async () => {
   const css = await read('assets/yc-entry.css');
-  assert.match(css, /\.yc-entry-root\.is-scene-fading[\s\S]*?opacity:\s*0;/);
+  assert.match(css, /\.yc-entry-canvas-outgoing[\s\S]*?position:\s*absolute;/);
+  assert.match(css, /\.yc-entry-root\.is-chart-crossfade-armed \.yc-entry-canvas-outgoing[\s\S]*?opacity:\s*1;/);
+  assert.match(css, /\.yc-entry-root\.is-chart-crossfading \.yc-entry-canvas-outgoing[\s\S]*?opacity:\s*0;/);
+  assert.match(css, /--yc-entry-crossfade-duration,\s*1250ms/);
   assert.match(css, /opacity 950ms cubic-bezier/);
   assert.match(css, /--yc-entry-scene-duration,\s*32000ms/);
   assert.doesNotMatch(css, /scale\(\.995\)|scale\(1\.012\)/);

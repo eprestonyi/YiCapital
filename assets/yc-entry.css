@@ -106,6 +106,10 @@ body.yc-entry-open {
   --scene-muted: #8291a7;
   --scene-grid: rgba(116, 170, 221, 0.12);
   --scene-border: rgba(152, 191, 231, 0.18);
+  --canvas-line-target: #4bc5ff;
+  --canvas-benchmark-target: #8b9aae;
+  --canvas-muted-target: #8291a7;
+  --canvas-grid-target: rgba(116, 170, 221, 0.12);
   --scene-radius: 18px;
   position: fixed;
   inset: 0;
@@ -133,6 +137,10 @@ body.yc-entry-open {
   --scene-muted: #b5a294;
   --scene-grid: rgba(238, 178, 122, 0.12);
   --scene-border: rgba(250, 194, 134, 0.2);
+  --canvas-line-target: #ffb35b;
+  --canvas-benchmark-target: #c2aa98;
+  --canvas-muted-target: #b5a294;
+  --canvas-grid-target: rgba(238, 178, 122, 0.12);
   --scene-radius: 22px;
 }
 
@@ -147,6 +155,10 @@ body.yc-entry-open {
   --scene-muted: #8d8d8d;
   --scene-grid: rgba(255, 255, 255, 0.1);
   --scene-border: rgba(255, 255, 255, 0.22);
+  --canvas-line-target: #f24545;
+  --canvas-benchmark-target: #9b9b9b;
+  --canvas-muted-target: #8d8d8d;
+  --canvas-grid-target: rgba(255, 255, 255, 0.1);
   --scene-radius: 2px;
 }
 
@@ -343,6 +355,44 @@ body.yc-entry-open {
   width: 100%;
   height: 100%;
   min-height: 320px;
+}
+
+.yc-entry-canvas-live {
+  position: relative;
+  z-index: 1;
+  opacity: 1;
+  transition: opacity var(--yc-entry-crossfade-duration, 1250ms) cubic-bezier(.22, 1, .36, 1);
+}
+
+.yc-entry-canvas-outgoing {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--yc-entry-crossfade-duration, 1250ms) cubic-bezier(.22, 1, .36, 1);
+}
+
+.yc-entry-root.is-chart-crossfade-armed .yc-entry-canvas-live,
+.yc-entry-root.is-chart-crossfade-armed .yc-entry-canvas-outgoing {
+  transition: none;
+}
+
+.yc-entry-root.is-chart-crossfade-armed .yc-entry-canvas-live {
+  opacity: 0;
+}
+
+.yc-entry-root.is-chart-crossfade-armed .yc-entry-canvas-outgoing {
+  opacity: 1;
+}
+
+.yc-entry-root.is-chart-crossfading .yc-entry-canvas-live {
+  opacity: 1;
+}
+
+.yc-entry-root.is-chart-crossfading .yc-entry-canvas-outgoing {
+  opacity: 0;
 }
 
 .yc-entry-chart-meta {
@@ -994,7 +1044,7 @@ body.yc-entry-open {
 }
 
 .yc-entry-intro,
-.yc-entry-chart,
+.yc-entry-chart-meta,
 .yc-entry-story-footer {
   transition:
     opacity 950ms cubic-bezier(.22, 1, .36, 1),
@@ -1003,12 +1053,18 @@ body.yc-entry-open {
   will-change: opacity, transform, filter;
 }
 
-.yc-entry-root.is-scene-fading .yc-entry-intro,
-.yc-entry-root.is-scene-fading .yc-entry-chart,
-.yc-entry-root.is-scene-fading .yc-entry-story-footer {
+.yc-entry-root.is-scene-copy-armed .yc-entry-intro,
+.yc-entry-root.is-scene-copy-armed .yc-entry-chart-meta,
+.yc-entry-root.is-scene-copy-armed .yc-entry-story-footer {
   opacity: 0;
-  transform: translate3d(0, 10px, 0);
-  filter: blur(5px);
+  transform: translate3d(0, 7px, 0);
+  filter: blur(4px);
+  transition: none;
+}
+
+.yc-entry-root.is-chart-crossfade-armed .yc-entry-scene-btn[aria-pressed="true"]::after,
+.yc-entry-root.is-chart-crossfading .yc-entry-scene-btn[aria-pressed="true"]::after {
+  animation-play-state: paused;
 }
 
 .yc-entry-eyebrow {
