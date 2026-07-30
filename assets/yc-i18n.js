@@ -8,6 +8,7 @@
    ═══════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
+  const scriptSrc = document.currentScript && document.currentScript.src;
   const D = {
 
     /* ── 頂欄 / 導航 / 頁腳 ── */
@@ -21,6 +22,29 @@
     'nav.portfolios':['組合實錄','组合实录','Our Portfolios'],
     'nav.about':['關於我們','关于我们','About Us'],
     'footer.disc':['免責聲明：本網站所載之研究報告、組合數據與論壇內容，均基於公開資料與個人判斷撰寫，僅供研究與學習參考，不構成任何證券之買賣要約、招攬或投資建議。','免责声明：本网站所载之研究报告、组合数据与论坛内容，均基于公开资料与个人判断撰写，仅供研究与学习参考，不构成任何证券之买卖要约、招揽或投资建议。','Disclaimer: All research, portfolio data and forum content on this site are prepared from public information and personal judgment, for research and educational reference only, and do not constitute an offer, solicitation or investment advice with respect to any security.'],
+    /* ── 用戶意見 / User feedback ── */
+    'fb.button':['意見回饋','意见反馈','Feedback'],
+    'fb.title':['幫我們把網站做得更好','帮我们把网站做得更好','Help us improve this site'],
+    'fb.subtitle':['發現錯誤、資料問題或不順手的地方？告訴我們。','发现错误、数据问题或不好用的地方？请告诉我们。','Found an error, data issue, or rough edge? Tell us.'],
+    'fb.category':['意見類型','意见类型','Feedback type'],
+    'fb.cat.bug':['功能／顯示問題','功能／显示问题','Feature / display issue'],
+    'fb.cat.content':['內容錯誤','内容错误','Content error'],
+    'fb.cat.data':['資料錯誤','数据错误','Data error'],
+    'fb.cat.ux':['使用體驗建議','使用体验建议','UX suggestion'],
+    'fb.cat.accessibility':['無障礙問題','无障碍问题','Accessibility issue'],
+    'fb.cat.performance':['速度／效能問題','速度／性能问题','Performance issue'],
+    'fb.cat.feature':['功能建議','功能建议','Feature request'],
+    'fb.cat.other':['其他','其他','Other'],
+    'fb.rating':['這一頁對你有幫助嗎？（選填）','这一页对你有帮助吗？（选填）','Was this page helpful? (optional)'],
+    'fb.message':['你的意見','你的意见','Your feedback'],
+    'fb.placeholder':['請描述發生了甚麼、你原本想完成甚麼。','请描述发生了什么、你原本想完成什么。','Describe what happened and what you were trying to do.'],
+    'fb.account':['將此意見與我的登入帳號關聯，方便跟進','将此意见与我的登录账号关联，方便跟进','Associate this feedback with my signed-in account for follow-up'],
+    'fb.privacy':['將附上目前頁面、網站版本及基本裝置類別，方便定位問題；不會收集密碼、查詢字串或完整瀏覽器資料。請勿提交帳戶或其他敏感資料。','将附上当前页面、网站版本及基本设备类别，方便定位问题；不会收集密码、查询参数或完整浏览器信息。请勿提交账户或其他敏感数据。','We attach the current page, site release, and basic device class to diagnose the issue. We do not collect passwords, URL queries, or the full browser string. Do not submit account details or other sensitive data.'],
+    'fb.submit':['送出意見','提交意见','Send feedback'],
+    'fb.submitting':['正在送出…','正在提交…','Sending…'],
+    'fb.success':['謝謝！已收到你的意見。','谢谢！已收到你的意见。','Thanks — your feedback has been received.'],
+    'fb.error':['暫時無法送出，請稍後再試。','暂时无法提交，请稍后再试。','Unable to send right now. Please try again shortly.'],
+    'fb.close':['關閉','关闭','Close'],
     /* ── 頁籤 ── */
     'tab.perf':['業績表現','业绩表现','Performance'],
     'tab.hold':['持倉','持仓','Holdings'],
@@ -235,6 +259,14 @@
     }
     // 文本已按語言烘焙進各目錄頁面，運行時不再改寫 DOM
     document.dispatchEvent(new CustomEvent('yci-ready'));
+    if ((!window.YC_FEATURES || window.YC_FEATURES.feedback !== false)
+        && scriptSrc && !document.querySelector('script[data-yc-feedback]')) {
+      const feedbackScript = document.createElement('script');
+      feedbackScript.src = new URL('yc-feedback.js', scriptSrc).href;
+      feedbackScript.defer = true;
+      feedbackScript.dataset.ycFeedback = 'true';
+      document.head.appendChild(feedbackScript);
+    }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
   else mount();

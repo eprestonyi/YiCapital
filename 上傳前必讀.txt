@@ -24,10 +24,13 @@ Yi Capital 網站 · 平行三語版 上傳說明
      www.yicapital.co/en/         （English）
      三版首頁右上角互切、研報庫類型篩選、US 板塊實時圖表
 
-■ 後端已到 v8.2（三市場自動淨值＋七個基準＋完整內容管理＋PDF 拖放更換）：
-  ⚠ 必須先部署 worker/worker.js v8.2，再上傳網站文件；舊 v6 不認得 HK/A
+■ 後端已到 v8.3（用戶意見 D1＋v8.2 全部數據與內容管理功能）：
+  ⚠ 必須先套用 migrations/0001_user_feedback.sql 並部署 worker/worker.js v8.3，
+     再上傳網站文件；否則前台意見入口無法寫入。
+  ⚠ 舊 v6 不認得 HK/A
      發布路徑，若順序倒轉，後台選 HK/A 仍可能覆蓋 US 工作簿。
-  1. Cloudflare → Workers → yicapital-portal → 用 worker/worker.js 全量替換舊代碼 → Deploy（/api/health 應顯示 v8.2）
+  1. 先按 worker/DEPLOY.md 建立並綁定 FEEDBACK_DB，套用 D1 migration，
+     再部署 worker/worker.js（/api/health 應顯示 v8.3 且 feedback=true）。
   2. Worker → Settings → Triggers → Cron Triggers → 添加兩條：
        30 21 * * *   （美股收盤後，更新 US 淨值＋S&P 500/NASDAQ/DOW）
        0 9 * * *     （北京時間 17:00，更新 HK/A＋2828/2800/3032/滬深300）
@@ -47,6 +50,7 @@ Yi Capital 網站 · 平行三語版 上傳說明
   admin-users     帳號管理（搜索用戶名/郵箱、停用、重置密碼、刪除）
   admin-mail      郵件中心（群發或指定用戶，帶搜索）
   admin-inbox     收件箱
+  admin-feedback  用戶意見 user log（分流、備註、Issue / PR / 修復版本）
   首次使用內容管理：進 admin-reports / admin-insights 後，系統會自動選入站內全部條目，
   再合併後端已有修改。若顯示「補回 N 條」，點一次「發布全部變更」即可保存完整合集。
 
@@ -59,6 +63,9 @@ Yi Capital 網站 · 平行三語版 上傳說明
   5. 繁／簡／EN 三個報告頁會讀取同一個後台 PDF 路徑，自動顯示下載及預覽。
 
 ■ 本輪新增：
+  · 三語用戶意見入口：匿名可用，登入後可選擇關聯帳號
+  · Cloudflare D1 user log：冪等提交、限流、狀態流轉與追加式審計
+  · Admin 意見工作台：搜索、篩選、JSON 匯出、Issue / PR / release 關聯
   · 三市場後台賬本：US / HK / A 均按實際行情日期每日續算
   · 七個基準自動行情：美股三大、國企ETF、恒生ETF、恒科ETF、滬深300
   · 三組合首頁摘要、組合頁完整績效/持倉/回撤/風險面板全部聯動

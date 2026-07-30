@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   Yi Capital Portal Backend v8.2 — Cloudflare Worker（單文件，粘貼即部署）
+   Yi Capital Portal Backend v8.3 — Cloudflare Worker（單文件，粘貼即部署）
    ─────────────────────────────────────────────────────────────
    帳號模型：
      · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則發 6 位驗證碼）
@@ -12,6 +12,9 @@
      POST /api/google           {credential} → 老用戶直接登入 / 新用戶返回 needSetup
      POST /api/google/complete  {setupToken,username,password}
      GET  /api/me   POST /api/logout
+     POST /api/feedback         公開：提交三語用戶意見（登入可選）
+     GET  /api/feedback         [admin] 查詢、篩選及匯出 user log
+     POST /api/feedback/update  [admin] 分流、排期、處理及關聯 Issue / PR
      GET  /api/benchmark?set=us|hk|a               三市場基準行情（只讀 KV 快照）
      POST /api/refresh          [admin] 手動重算 NAV / 統計 / 基準並覆蓋 KV
      GET  /api/users            [admin]
@@ -31,9 +34,9 @@
      pending:{郵箱}(驗證碼,15分鐘) / gsetup:{token}(Google待設置,15分鐘) /
      ledger:{us|hk|a} / live:{us|hk|a} / navcache:{us|hk|a} /
      navstatus:{us|hk|a} / bmset:{us|hk|a} / bmstatus:{us|hk|a}
-   綁定與密鑰：KV=YC_KV；Secrets: ADMIN_USERNAME, ADMIN_PASSWORD, GH_TOKEN,
+   綁定與密鑰：KV=YC_KV；D1=FEEDBACK_DB；Secrets: ADMIN_USERNAME, ADMIN_PASSWORD, GH_TOKEN,
      （可選）RESEND_API_KEY；Text: GH_OWNER, GH_REPO, GH_BRANCH, GH_PATH,
-     ALLOWED_ORIGIN,（可選）GOOGLE_CLIENT_ID, MAIL_FROM
+     ALLOWED_ORIGIN,（可選）GOOGLE_CLIENT_ID, MAIL_FROM；Secret: FEEDBACK_RATE_SALT
    ═══════════════════════════════════════════════════════════════ */
 
 const SESSION_TTL = 7 * 24 * 3600;
@@ -59,8 +62,11 @@ const corsHeaders = env => ({
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
   'Access-Control-Max-Age': '86400',
 });
-const J = (env, data, status = 200) =>
-  new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(env) } });
+const J = (env, data, status = 200, extraHeaders = {}) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(env), ...extraHeaders },
+  });
 
 async function getSession(request, env) {
   const m = (request.headers.get('Authorization') || '').match(/^Bearer\s+([a-f0-9]{64})$/i);
@@ -72,6 +78,128 @@ async function newSession(env, username, role) {
   const token = randomHex(32);
   await env.YC_KV.put('sess:' + token, JSON.stringify({ u: username, role }), { expirationTtl: SESSION_TTL });
   return token;
+}
+
+const FEEDBACK_CATEGORIES = new Set([
+  'bug', 'content', 'data', 'ux',
+  'accessibility', 'performance', 'feature', 'other',
+]);
+const FEEDBACK_LOCALES = new Set(['zh-Hant', 'zh-Hans', 'en']);
+const FEEDBACK_STATUSES = new Set([
+  'new', 'triaged', 'planned', 'in_progress',
+  'resolved', 'dismissed', 'duplicate',
+]);
+const FEEDBACK_PRIORITIES = new Set(['p0', 'p1', 'p2', 'p3']);
+
+async function sha256Hex(value) {
+  return hex(await crypto.subtle.digest('SHA-256', enc.encode(String(value || ''))));
+}
+function cleanPlain(value, max) {
+  return String(value == null ? '' : value)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .trim()
+    .slice(0, max);
+}
+function cleanPagePath(value) {
+  const path = cleanPlain(value, 300).split(/[?#]/)[0];
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) return null;
+  return path || '/';
+}
+function feedbackOriginAllowed(request, env) {
+  const origin = request.headers.get('Origin');
+  // Same-origin Sites proxy requests do not forward Origin to the portal Worker.
+  if (!origin) return true;
+  const allowed = new Set([
+    env.ALLOWED_ORIGIN,
+    'https://www.yicapital.co',
+    'https://yicapital.co',
+  ].filter(Boolean).map(x => String(x).replace(/\/+$/, '')));
+  if (allowed.has(origin.replace(/\/+$/, ''))) return true;
+  try {
+    const u = new URL(origin);
+    if (u.protocol === 'https:' && u.hostname.endsWith('.chatgpt.site')) return true;
+    if (u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1')) return true;
+  } catch (e) {}
+  return false;
+}
+async function feedbackActor(sess, env, associateAccount) {
+  if (!associateAccount || !sess) return { actorType: 'anonymous', username: null };
+  if (sess.role === 'admin') return { actorType: 'user', username: sess.u };
+  const raw = await env.YC_KV.get('user:' + sess.u);
+  if (!raw) return { actorType: 'anonymous', username: null };
+  const user = JSON.parse(raw);
+  if (user.disabled) return { actorType: 'anonymous', username: null };
+  return { actorType: 'user', username: sess.u };
+}
+async function consumeFeedbackRateLimit(request, env, sess) {
+  const now = Date.now();
+  const windowMs = 60 * 1000;
+  const windowId = Math.floor(now / windowMs);
+  const ip = String(request.headers.get('CF-Connecting-IP')
+    || request.headers.get('X-Forwarded-For')
+    || 'unknown').split(',')[0].trim();
+  const identity = sess
+    ? 'user:' + sess.u
+    : 'anon:' + (await sha256Hex(env.FEEDBACK_RATE_SALT + ':' + ip)).slice(0, 24);
+  const bucket = windowId + ':' + identity;
+  await env.FEEDBACK_DB.prepare(`
+    INSERT INTO feedback_rate_limits (bucket, count, reset_at)
+    VALUES (?, 1, ?)
+    ON CONFLICT(bucket) DO UPDATE SET
+      count = feedback_rate_limits.count + 1,
+      reset_at = excluded.reset_at
+  `).bind(bucket, (windowId + 1) * windowMs).run();
+  const row = await env.FEEDBACK_DB.prepare(
+    'SELECT count, reset_at FROM feedback_rate_limits WHERE bucket = ?'
+  ).bind(bucket).first();
+  const limit = sess ? 8 : 5;
+  if (row && row.count === 1 && parseInt(randomHex(1), 16) < 8) {
+    await env.FEEDBACK_DB.prepare(
+      'DELETE FROM feedback_rate_limits WHERE reset_at < ?'
+    ).bind(now - 24 * 60 * 60 * 1000).run();
+  }
+  return {
+    allowed: !row || Number(row.count) <= limit,
+    retryAfter: Math.max(1, Math.ceil((Number(row && row.reset_at || now + windowMs) - now) / 1000)),
+  };
+}
+async function cleanupFeedbackRateLimits(env) {
+  if (!env.FEEDBACK_DB) return;
+  await env.FEEDBACK_DB.prepare(
+    'DELETE FROM feedback_rate_limits WHERE reset_at < ?'
+  ).bind(Date.now()).run();
+}
+function feedbackItem(row) {
+  return {
+    id: row.id,
+    source: row.source,
+    actorType: row.actor_type,
+    username: row.username || null,
+    category: row.category,
+    rating: row.rating == null ? null : Number(row.rating),
+    message: row.message,
+    pagePath: row.page_path,
+    pageTitle: row.page_title || '',
+    locale: row.locale,
+    release: row.release_id || '',
+    diagnostics: {
+      device: row.device_class || null,
+      browser: row.browser_family || null,
+      viewportWidth: row.viewport_width == null ? null : Number(row.viewport_width),
+      viewportHeight: row.viewport_height == null ? null : Number(row.viewport_height),
+    },
+    fingerprint: row.fingerprint,
+    status: row.status,
+    priority: row.priority || null,
+    adminNote: row.admin_note || '',
+    linkedIssue: row.linked_issue || '',
+    linkedPr: row.linked_pr || '',
+    resolvedRelease: row.resolved_release || '',
+    createdAt: new Date(Number(row.created_at)).toISOString(),
+    updatedAt: new Date(Number(row.updated_at)).toISOString(),
+    resolvedAt: row.resolved_at == null ? null : new Date(Number(row.resolved_at)).toISOString(),
+  };
 }
 
 const isUsername = u => /^[a-zA-Z0-9_\-\u4e00-\u9fff]{2,24}$/.test(u || '');
@@ -945,8 +1073,10 @@ export default {
         let kvOk = false;
         try { await env.YC_KV.get('__ping__'); kvOk = true; } catch (e) {}
         return J(env, {
-          ok: true, version: 'v8.2',
+          ok: true, version: 'v8.3',
           kv: kvOk,
+          feedback: !!env.FEEDBACK_DB,
+          feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
           admin: !!(env.ADMIN_USERNAME && env.ADMIN_PASSWORD),
           github: !!(env.GH_TOKEN && env.GH_OWNER && env.GH_REPO),
           resend: !!env.RESEND_API_KEY,
@@ -1095,6 +1225,115 @@ export default {
       /* ════ 會話 ════ */
       const sess = await getSession(request, env);
 
+      /* ════ 用戶意見：公開提交，登入可選；所有文字均視為不可信輸入 ════ */
+      if (path === '/api/feedback' && request.method === 'POST') {
+        if (!env.FEEDBACK_DB) return J(env, { error: '意見服務暫時不可用' }, 503);
+        if (!env.FEEDBACK_RATE_SALT) return J(env, { error: '意見服務配置尚未完成' }, 503);
+        if (!feedbackOriginAllowed(request, env)) return J(env, { error: '不允許的來源' }, 403);
+        const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
+        if (!contentType.startsWith('application/json')) {
+          return J(env, { error: 'Content-Type 必須是 application/json' }, 415);
+        }
+        const declaredLength = Number(request.headers.get('Content-Length') || 0);
+        if (declaredLength > 16 * 1024) return J(env, { error: '提交內容過大' }, 413);
+        const rawBody = await request.text();
+        if (enc.encode(rawBody).byteLength > 16 * 1024) return J(env, { error: '提交內容過大' }, 413);
+        let b;
+        try { b = JSON.parse(rawBody); } catch (e) { return J(env, { error: 'JSON 格式無效' }, 400); }
+        if (!b || typeof b !== 'object' || Array.isArray(b)) return J(env, { error: '提交格式無效' }, 400);
+        // Honeypot: bots receive a generic success without creating a record.
+        if (cleanPlain(b.website, 200)) return J(env, { ok: true, id: null }, 200, { 'Cache-Control': 'no-store' });
+
+        const submissionId = cleanPlain(b.submissionId, 80);
+        if (!/^[a-z0-9][a-z0-9_-]{15,79}$/i.test(submissionId)) {
+          return J(env, { error: 'submissionId 無效' }, 400);
+        }
+        const category = cleanPlain(b.category, 32);
+        if (!FEEDBACK_CATEGORIES.has(category)) return J(env, { error: '意見類型無效' }, 400);
+        const locale = cleanPlain(b.locale, 16);
+        if (!FEEDBACK_LOCALES.has(locale)) return J(env, { error: '語言無效' }, 400);
+        const message = cleanPlain(b.message, 2001);
+        if (message.length < 5 || message.length > 2000) {
+          return J(env, { error: '意見內容需要 5–2000 個字元' }, 400);
+        }
+        const pagePath = cleanPagePath(b.pagePath);
+        if (!pagePath) return J(env, { error: '頁面路徑無效' }, 400);
+        const ratingValue = b.rating == null || b.rating === '' ? null : Number(b.rating);
+        if (ratingValue != null && (!Number.isInteger(ratingValue) || ratingValue < 1 || ratingValue > 5)) {
+          return J(env, { error: '評分必須是 1–5' }, 400);
+        }
+        const releaseCandidate = cleanPlain(b.release, 64);
+        const release = /^[a-zA-Z0-9._:-]{1,64}$/.test(releaseCandidate) ? releaseCandidate : '';
+        const pageTitle = cleanPlain(b.pageTitle, 160);
+        const diagnostics = b.diagnostics && typeof b.diagnostics === 'object' && !Array.isArray(b.diagnostics)
+          ? b.diagnostics : {};
+        const device = ['mobile', 'tablet', 'desktop'].includes(diagnostics.device)
+          ? diagnostics.device : null;
+        const browser = cleanPlain(diagnostics.browser, 40) || null;
+        const viewportWidth = Number.isFinite(Number(diagnostics.viewportWidth))
+          ? Math.max(0, Math.min(10000, Math.round(Number(diagnostics.viewportWidth)))) : null;
+        const viewportHeight = Number.isFinite(Number(diagnostics.viewportHeight))
+          ? Math.max(0, Math.min(10000, Math.round(Number(diagnostics.viewportHeight)))) : null;
+        const actor = await feedbackActor(sess, env, b.associateAccount === true);
+        const rate = await consumeFeedbackRateLimit(request, env, sess);
+        if (!rate.allowed) {
+          return J(env, { error: '提交太頻繁，請稍後再試' }, 429, {
+            'Cache-Control': 'no-store',
+            'Retry-After': String(rate.retryAfter),
+          });
+        }
+
+        const now = Date.now();
+        const id = 'fb_' + now.toString(36) + '_' + randomHex(4);
+        const fingerprint = (await sha256Hex([
+          pagePath,
+          category,
+          message.toLowerCase().replace(/\s+/g, ' '),
+        ].join('|'))).slice(0, 24);
+        const insert = await env.FEEDBACK_DB.prepare(`
+          INSERT OR IGNORE INTO feedback_entries (
+            id, submission_id, source, actor_type, username,
+            category, rating, message, page_path, page_title, locale,
+            release_id, device_class, browser_family,
+            viewport_width, viewport_height, fingerprint,
+            status, created_at, updated_at
+          ) VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+        `).bind(
+          id, submissionId, actor.actorType, actor.username,
+          category, ratingValue, message, pagePath, pageTitle, locale,
+          release, device, browser, viewportWidth, viewportHeight,
+          fingerprint, now, now
+        ).run();
+        if (!insert.meta || Number(insert.meta.changes || 0) === 0) {
+          const existing = await env.FEEDBACK_DB.prepare(
+            'SELECT id, created_at FROM feedback_entries WHERE submission_id = ?'
+          ).bind(submissionId).first();
+          return J(env, {
+            ok: true,
+            id: existing && existing.id || null,
+            duplicate: true,
+            createdAt: existing ? new Date(Number(existing.created_at)).toISOString() : null,
+          }, 200, { 'Cache-Control': 'no-store' });
+        }
+        await env.FEEDBACK_DB.prepare(`
+          INSERT INTO feedback_changes (
+            id, feedback_id, changed_at, changed_by_type, changed_by_ref,
+            action, from_status, to_status, changes_json, note
+          ) VALUES (?, ?, ?, 'system', NULL, 'created', NULL, 'new', ?, NULL)
+        `).bind(
+          'fbc_' + now.toString(36) + '_' + randomHex(4),
+          id,
+          now,
+          JSON.stringify({ source: 'user', category, pagePath, locale, release })
+        ).run();
+        return J(env, {
+          ok: true,
+          id,
+          duplicate: false,
+          createdAt: new Date(now).toISOString(),
+        }, 201, { 'Cache-Control': 'no-store' });
+      }
+
       if (path === '/api/me' && request.method === 'GET') {
         if (!sess) return J(env, { error: '未登入' }, 401);
         return J(env, { ok: true, username: sess.u, role: sess.role });
@@ -1106,6 +1345,143 @@ export default {
 
       /* ════ 管理員 ════ */
       const needAdmin = () => (!sess ? J(env, { error: '未登入' }, 401) : sess.role !== 'admin' ? J(env, { error: '需要管理員權限' }, 403) : null);
+
+      /* User log：D1 結構化查詢，供人工分流及後續優化 Agent 只讀消費。 */
+      if (path === '/api/feedback' && request.method === 'GET') {
+        const deny = needAdmin(); if (deny) return deny;
+        if (!env.FEEDBACK_DB) return J(env, { error: 'FEEDBACK_DB 未配置' }, 503);
+        const status = cleanPlain(url.searchParams.get('status'), 32);
+        const category = cleanPlain(url.searchParams.get('category'), 32);
+        const locale = cleanPlain(url.searchParams.get('locale'), 16);
+        const source = cleanPlain(url.searchParams.get('source'), 16);
+        const search = cleanPlain(url.searchParams.get('search'), 100);
+        const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit') || 100) || 100));
+        const offset = Math.max(0, Math.min(10000, Number(url.searchParams.get('offset') || 0) || 0));
+        const where = ['1 = 1'];
+        const values = [];
+        if (status) {
+          if (!FEEDBACK_STATUSES.has(status)) return J(env, { error: 'status 無效' }, 400);
+          where.push('status = ?'); values.push(status);
+        }
+        if (category) {
+          if (!FEEDBACK_CATEGORIES.has(category)) return J(env, { error: 'category 無效' }, 400);
+          where.push('category = ?'); values.push(category);
+        }
+        if (locale) {
+          if (!FEEDBACK_LOCALES.has(locale)) return J(env, { error: 'locale 無效' }, 400);
+          where.push('locale = ?'); values.push(locale);
+        }
+        if (source) {
+          if (!['user', 'monitor', 'agent'].includes(source)) return J(env, { error: 'source 無效' }, 400);
+          where.push('source = ?'); values.push(source);
+        }
+        if (search) {
+          const like = '%' + search + '%';
+          where.push('(message LIKE ? OR page_path LIKE ? OR page_title LIKE ? OR username LIKE ?)');
+          values.push(like, like, like, like);
+        }
+        const clause = where.join(' AND ');
+        const listStmt = env.FEEDBACK_DB.prepare(`
+          SELECT * FROM feedback_entries
+          WHERE ${clause}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ? OFFSET ?
+        `).bind(...values, limit, offset);
+        const countStmt = env.FEEDBACK_DB.prepare(`
+          SELECT COUNT(*) AS total FROM feedback_entries WHERE ${clause}
+        `).bind(...values);
+        const statusStmt = env.FEEDBACK_DB.prepare(
+          `SELECT status, COUNT(*) AS count FROM feedback_entries
+           WHERE ${clause} GROUP BY status`
+        ).bind(...values);
+        const categoryStmt = env.FEEDBACK_DB.prepare(
+          `SELECT category, COUNT(*) AS count FROM feedback_entries
+           WHERE ${clause} GROUP BY category`
+        ).bind(...values);
+        const [listResult, countResult, statusResult, categoryResult] = await env.FEEDBACK_DB.batch([
+          listStmt, countStmt, statusStmt, categoryStmt,
+        ]);
+        const totalRow = countResult.results && countResult.results[0] || { total: 0 };
+        const summary = {
+          total: Number(totalRow.total || 0),
+          byStatus: Object.fromEntries((statusResult.results || []).map(x => [x.status, Number(x.count || 0)])),
+          byCategory: Object.fromEntries((categoryResult.results || []).map(x => [x.category, Number(x.count || 0)])),
+        };
+        return J(env, {
+          ok: true,
+          items: (listResult.results || []).map(feedbackItem),
+          summary,
+          pagination: { limit, offset, hasMore: offset + (listResult.results || []).length < summary.total },
+        }, 200, { 'Cache-Control': 'no-store' });
+      }
+
+      if (path === '/api/feedback/update' && request.method === 'POST') {
+        const deny = needAdmin(); if (deny) return deny;
+        if (!env.FEEDBACK_DB) return J(env, { error: 'FEEDBACK_DB 未配置' }, 503);
+        const b = await request.json().catch(() => null);
+        if (!b || typeof b !== 'object' || Array.isArray(b)) return J(env, { error: '提交格式無效' }, 400);
+        const id = cleanPlain(b.id, 80);
+        if (!/^fb_[a-z0-9_]+$/i.test(id)) return J(env, { error: 'id 無效' }, 400);
+        const current = await env.FEEDBACK_DB.prepare(
+          'SELECT * FROM feedback_entries WHERE id = ?'
+        ).bind(id).first();
+        if (!current) return J(env, { error: '意見不存在' }, 404);
+        const status = cleanPlain(b.status == null ? current.status : b.status, 32);
+        if (!FEEDBACK_STATUSES.has(status)) return J(env, { error: 'status 無效' }, 400);
+        const priorityRaw = b.priority == null || b.priority === '' ? null : cleanPlain(b.priority, 8);
+        if (priorityRaw != null && !FEEDBACK_PRIORITIES.has(priorityRaw)) {
+          return J(env, { error: 'priority 無效' }, 400);
+        }
+        const adminNote = cleanPlain(b.adminNote == null ? current.admin_note : b.adminNote, 2000);
+        const linkedIssue = cleanPlain(b.linkedIssue == null ? current.linked_issue : b.linkedIssue, 500);
+        const linkedPr = cleanPlain(b.linkedPr == null ? current.linked_pr : b.linkedPr, 500);
+        const resolvedRelease = cleanPlain(
+          b.resolvedRelease == null ? current.resolved_release : b.resolvedRelease,
+          100
+        );
+        const now = Date.now();
+        const resolvedAt = status === 'resolved' ? Number(current.resolved_at || now) : null;
+        const changes = {
+          status,
+          priority: priorityRaw,
+          adminNote,
+          linkedIssue,
+          linkedPr,
+          resolvedRelease,
+        };
+        await env.FEEDBACK_DB.batch([
+          env.FEEDBACK_DB.prepare(`
+            UPDATE feedback_entries SET
+              status = ?, priority = ?, admin_note = ?,
+              linked_issue = ?, linked_pr = ?, resolved_release = ?,
+              updated_at = ?, resolved_at = ?
+            WHERE id = ?
+          `).bind(
+            status, priorityRaw, adminNote,
+            linkedIssue, linkedPr, resolvedRelease,
+            now, resolvedAt, id
+          ),
+          env.FEEDBACK_DB.prepare(`
+            INSERT INTO feedback_changes (
+              id, feedback_id, changed_at, changed_by_type, changed_by_ref,
+              action, from_status, to_status, changes_json, note
+            ) VALUES (?, ?, ?, 'admin', ?, 'updated', ?, ?, ?, ?)
+          `).bind(
+            'fbc_' + now.toString(36) + '_' + randomHex(4),
+            id,
+            now,
+            sess.u,
+            current.status,
+            status,
+            JSON.stringify(changes),
+            adminNote || null
+          ),
+        ]);
+        const updated = await env.FEEDBACK_DB.prepare(
+          'SELECT * FROM feedback_entries WHERE id = ?'
+        ).bind(id).first();
+        return J(env, { ok: true, item: feedbackItem(updated) }, 200, { 'Cache-Control': 'no-store' });
+      }
 
       /* 手動刷新與 Cron 使用同一條寫入鏈；只有 POST 會抓行情和重算快照。 */
       if (path === '/api/refresh' && request.method === 'POST') {
@@ -1146,6 +1522,33 @@ export default {
         if (!raw) return J(env, { error: '用戶不存在' }, 404);
         const u = JSON.parse(raw);
         if (action === 'delete') {
+          if (env.FEEDBACK_DB) {
+            const now = Date.now();
+            await env.FEEDBACK_DB.batch([
+              env.FEEDBACK_DB.prepare(`
+                INSERT INTO feedback_changes (
+                  id, feedback_id, changed_at, changed_by_type, changed_by_ref,
+                  action, from_status, to_status, changes_json, note
+                )
+                SELECT
+                  'fbc_' || lower(hex(randomblob(12))),
+                  id, ?, 'system', NULL,
+                  'account_anonymized', status, status,
+                  '{"usernameAnonymized":true}', NULL
+                FROM feedback_entries
+                WHERE username = ?
+              `).bind(now, username),
+              env.FEEDBACK_DB.prepare(`
+                UPDATE feedback_entries
+                SET actor_type = 'deleted_user', username = NULL, updated_at = ?
+                WHERE username = ?
+              `).bind(now, username),
+              env.FEEDBACK_DB.prepare(`
+                DELETE FROM feedback_rate_limits
+                WHERE substr(bucket, -length(?)) = ?
+              `).bind('user:' + username, 'user:' + username),
+            ]);
+          }
           await env.YC_KV.delete(key);
           if (u.email) await env.YC_KV.delete('email:' + u.email);
           return J(env, { ok: true, message: '已刪除 ' + username });
@@ -1482,7 +1885,9 @@ export default {
 
       return J(env, { error: 'Not found' }, 404);
     } catch (e) {
-      return J(env, { error: '服務器錯誤: ' + e.message }, 500);
+      const requestId = 'req_' + Date.now().toString(36) + '_' + randomHex(3);
+      console.error('request_failed', requestId, e);
+      return J(env, { error: '服務器暫時發生錯誤', requestId }, 500);
     }
   },
 
@@ -1492,11 +1897,15 @@ export default {
   async scheduled(event, env, ctx) {
     const cron = event.cron || '';
     if (cron === '30 21 * * *') {
-      ctx.waitUntil(refreshMarketCaches(env, ['us'], ['us'], 'cron:us'));
+      ctx.waitUntil(Promise.all([
+        refreshMarketCaches(env, ['us'], ['us'], 'cron:us'),
+        cleanupFeedbackRateLimits(env).catch(e => console.error('feedback_rate_cleanup_failed', e)),
+      ]));
     } else if (cron === '0 9 * * *') {
-      ctx.waitUntil(refreshMarketCaches(env, ['hk', 'a'], ['hk', 'a'], 'cron:asia'));
-    } else {
-      ctx.waitUntil(refreshMarketCaches(env, ['us', 'hk', 'a'], ['us', 'hk', 'a'], 'cron:all'));
+      ctx.waitUntil(Promise.all([
+        refreshMarketCaches(env, ['hk', 'a'], ['hk', 'a'], 'cron:asia'),
+        cleanupFeedbackRateLimits(env).catch(e => console.error('feedback_rate_cleanup_failed', e)),
+      ]));
     }
   },
 

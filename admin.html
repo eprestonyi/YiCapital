@@ -40,6 +40,7 @@
       <a href="admin-users" class="card" style="text-decoration:none;margin:0"><h3>👥 帳號管理</h3><p class="dim" style="font-size:13px;line-height:1.8">用戶名/郵箱搜索、停用、重置密碼、刪除。</p></a>
       <a href="admin-mail" class="card" style="text-decoration:none;margin:0"><h3>✉️ 郵件中心</h3><p class="dim" style="font-size:13px;line-height:1.8">insight@ / information@ 群發或指定用戶發送（帶搜索）。</p></a>
       <a href="admin-inbox" class="card" style="text-decoration:none;margin:0"><h3>📥 收件箱</h3><p class="dim" style="font-size:13px;line-height:1.8">insight@ / information@ 的來信查看與刪除。</p></a>
+      <a href="admin-feedback" class="card" style="text-decoration:none;margin:0"><h3>◎ 用戶意見</h3><p class="dim" style="font-size:13px;line-height:1.8">查看全站三語回饋，按頁面、類型和狀態分流，關聯 Issue、PR 與修復版本。</p></a>
     </div>
     <div class="card"><h3>系統狀態</h3><div class="log dim" id="health">檢測中…</div></div>
 
@@ -60,6 +61,8 @@
         ['KV', h.kv?'✓':'✗'],
         ['Resend 郵件', h.resend?'✓':'✗'],
         ['GitHub 發布', h.github?'✓':'✗'],
+        ['用戶意見 D1', h.feedback?'✓':'✗'],
+        ['意見防濫用', h.feedback_rate_limit?'✓':'✗'],
         ['每日自動更新', nav&&nav.enabled?('✓ 已啟用（實時行 '+nav.rows.length+' 條'+(nav.updatedAt?('，最近 '+nav.updatedAt.slice(0,16).replace('T',' ')):'')+'）'):'—（發布一次淨值表即自動開啟）'],
       ];
       $('health').className='log';

@@ -71,6 +71,7 @@
     ['admin-users', '帳號管理'],
     ['admin-mail', '郵件中心'],
     ['admin-inbox', '收件箱'],
+    ['admin-feedback', '用戶意見'],
   ];
   function mountNav() {
     const host = $('adminnav');

@@ -1,4 +1,4 @@
-Cloudflare Worker v8.2 部署步驟（約 10 分鐘，全程網頁操作，免費）
+Cloudflare Worker v8.3 部署步驟（用戶意見 D1 + v8.2 全部功能）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
@@ -15,11 +15,21 @@ Cloudflare Worker v8.2 部署步驟（約 10 分鐘，全程網頁操作，免�
    該 Worker → Settings → Bindings → Add → KV namespace
    Variable name 填 YC_KV，Namespace 選剛建的 → Save
 
+③-B 創建及初始化 D1（用戶意見 user log）
+   Cloudflare 儀表盤 → Storage & Databases → D1 → Create database
+   名稱填 yicapital-feedback。
+   Worker → Settings → Bindings → Add → D1 database
+   Variable name 填 FEEDBACK_DB，Database 選 yicapital-feedback。
+   使用倉庫的 wrangler.toml 部署時，執行：
+     npx wrangler d1 migrations apply FEEDBACK_DB --remote
+   這會套用 migrations/0001_user_feedback.sql；不要把用戶意見存入公開 GitHub 文件。
+
 ④ 配置密鑰與變量（Settings → Variables and Secrets）
    【Secret 類型（加密）】
      ADMIN_USERNAME   你的管理員用戶名
      ADMIN_PASSWORD   你的管理員密碼（設強一點）
      GH_TOKEN         GitHub Fine-grained token（僅 YiCapital 倉庫、僅 Contents 讀寫）
+     FEEDBACK_RATE_SALT  隨機 32-byte 字串，只用於匿名防濫用摘要
    【Text 類型（明文變量）】
      GH_OWNER         eprestonyi
      GH_REPO          YiCapital
@@ -40,10 +50,12 @@ Cloudflare Worker v8.2 部署步驟（約 10 分鐘，全程網頁操作，免�
    → 在「基金組合」選 US / HK / A → 拖入對應工作簿 → 發布
    → 約 1 分鐘後首頁、組合頁和完整 US 檔案頁更新
    → Guest Sign up 註冊一個測試號 → 後台「帳號管理」應能看到並可停用/重置/刪除
+   → 任一公開頁右下角提交一條測試意見 → admin-feedback 應顯示該條記錄，
+     可更新狀態、優先級、處理備註及關聯 Issue / PR / 修復版本
 
 修改管理員密碼：回到 ④ 改 ADMIN_PASSWORD 這個 Secret 即可，即刻生效。
 
-附：v8.2 自動淨值與基準行情（無需額外 API Key）
+附：v8.2 自動淨值與基準行情（v8.3 完整保留，無需額外 API Key）
   · POST /api/ledger 保存三個組合的持倉、現金、負債與總份額。
   · 首次發布亦把 NAV 歷史寫入 KV，後台生成完整分析快照；公開 GET 只讀 KV，
     不在訪客請求時抓行情、讀 Excel 或即時計算。
@@ -60,7 +72,7 @@ Cloudflare Worker v8.2 部署步驟（約 10 分鐘，全程網頁操作，免�
      0 9 * * *     北京 17:00 更新 HK/A + 三隻港股 ETF/滬深300
 
 ⑧ 首次啟用
-   部署 v8.2 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
+   部署 v8.3 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
    再點「立即刷新後台緩存」預熱三市場行情與基準。
    以後只有交易、出入金、股息、公司行動或負債改變時才需重新發布。
 
