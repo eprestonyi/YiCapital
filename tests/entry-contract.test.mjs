@@ -12,6 +12,8 @@ test('all three home routes mount the market entry before the existing dashboard
     assert.match(html, /yc-entry\.js/);
     assert.match(html, /yc-entry-pending/);
     assert.match(html, /yc-entry-fallback/);
+    assert.match(html, /q\.get\('dashboard'\)==='1'/);
+    assert.match(html, /yc-dashboard-requested/);
   }
 });
 
@@ -72,19 +74,29 @@ test('worker exposes a compact entry snapshot and keeps external data credential
   assert.match(config, /YC_GOOGLE_CLIENT_ID\s*=\s*'[^']+\.apps\.googleusercontent\.com'/);
 });
 
-test('static motion modes stop the animation loop and session login refreshes the dashboard shell', async () => {
+test('static motion modes stop the loop and explicit Dashboard navigation preserves the entry route', async () => {
   const entry = await read('assets/yc-entry.js');
   assert.match(entry, /if \(!reduceMotion\) requestAnimationFrame\(animationFrame\)/);
   assert.match(entry, /if \(reduceMotion \|\| manualScene\) return/);
-  assert.match(entry, /location\.reload\(\)/);
+  assert.match(entry, /location\.href = paths\.dashboard/);
+  assert.match(entry, /dashboardRequested/);
+  assert.doesNotMatch(entry, /hasSession|hasGuestPass|location\.reload\(\)/);
   const sceneDuration = Number(entry.match(/const sceneDuration = (\d+);/)[1]);
   const drawDuration = Number(entry.match(/const drawDuration = (\d+);/)[1]);
-  assert.ok(sceneDuration >= 18000);
-  assert.ok(drawDuration >= 15000);
+  assert.ok(sceneDuration >= 30000);
+  assert.ok(drawDuration >= 27000);
   assert.match(entry, /chartTimeline/);
   assert.match(entry, /pointAtTime/);
   assert.match(entry, /is-scene-fading/);
   assert.match(entry, /lastMetricsAt < 90/);
+  assert.match(entry, /transitionScene\(Number\(button\.dataset\.sceneIndex\), false\)/);
+  assert.match(entry, /transitionScene\(sceneIndex \+ 1, false\)/);
+  assert.match(entry, /const contentFadeDuration = 950/);
+  assert.match(entry, /sceneStarted = null/);
+  assert.match(entry, /sceneVisibleAt = performance\.now\(\) \+ \(sceneTransitioning/);
+  const timelineBody = entry.slice(entry.indexOf('function chartTimeline'), entry.indexOf('function updateSceneText'));
+  assert.match(timelineBody, /initialProgress = 0\.18/);
+  assert.doesNotMatch(timelineBody, /travelEnd|zoom|easedZoom/);
   const pathBody = entry.slice(entry.indexOf('function pathSeries'), entry.indexOf('function drawChart'));
   assert.doesNotMatch(pathBody, /\.filter\(/);
   const frameBody = entry.slice(entry.indexOf('function animationFrame'), entry.indexOf('function handleResize'));
@@ -94,8 +106,10 @@ test('static motion modes stop the animation loop and session login refreshes th
 test('minimal entry styling removes card chrome and uses a slow fade transition', async () => {
   const css = await read('assets/yc-entry.css');
   assert.match(css, /\.yc-entry-root\.is-scene-fading[\s\S]*?opacity:\s*0;/);
-  assert.match(css, /opacity 760ms cubic-bezier/);
-  assert.match(css, /--yc-entry-scene-duration,\s*22000ms/);
+  assert.match(css, /opacity 950ms cubic-bezier/);
+  assert.match(css, /--yc-entry-scene-duration,\s*32000ms/);
+  assert.doesNotMatch(css, /scale\(\.995\)|scale\(1\.012\)/);
+  assert.match(css, /html\.yc-dashboard-requested body > \.yc-entry-fallback\s*\{\s*display:\s*none;/);
   assert.match(css, /\.yc-entry-chart,[\s\S]*?border:\s*0;/);
   assert.match(css, /\.yc-entry-metrics[\s\S]*?border:\s*0;/);
   assert.match(css, /\.yc-entry-scene-btn[\s\S]*?border:\s*0;/);

@@ -4,10 +4,9 @@
   'use strict';
 
   const MODE = window.YC_ENTRY_MODE || 'gate';
-  const hasSession = !!localStorage.getItem('yc-token');
-  const hasGuestPass = localStorage.getItem('yc-guest') === '1';
+  const dashboardRequested = new URLSearchParams(window.location.search).get('dashboard') === '1';
   const fallbackShell = document.querySelector('.yc-entry-fallback');
-  if (MODE === 'gate' && (hasSession || hasGuestPass)) {
+  if (MODE === 'gate' && dashboardRequested) {
     if (fallbackShell) fallbackShell.remove();
     document.documentElement.classList.remove('yc-entry-pending');
     return;
@@ -209,8 +208,10 @@
     },
   }[locale];
 
+  const homePath = locale === 'tw' ? '/' : '/' + locale + '/';
   const paths = {
-    home: locale === 'tw' ? '/' : '/' + locale + '/',
+    home: homePath,
+    dashboard: homePath + '?dashboard=1',
     login: locale === 'tw' ? '/login' : '/' + locale + '/login',
     terms: locale === 'tw' ? '/terms' : '/' + locale + '/terms',
   };
@@ -444,25 +445,14 @@
       && typeof payload.username === 'string' && payload.username.length > 0;
   }
 
-  function enterDashboard(destination, refreshSession) {
+  function enterDashboard(destination) {
     document.documentElement.classList.remove('yc-entry-pending');
     root.classList.add('is-leaving');
     if (destination === 'admin') {
-      setTimeout(() => { location.href = '/admin'; }, reduceMotion ? 20 : 420);
+      setTimeout(() => { location.href = '/admin'; }, reduceMotion ? 20 : 820);
       return;
     }
-    if (MODE === 'gate') {
-      if (refreshSession) {
-        setTimeout(() => { location.reload(); }, reduceMotion ? 20 : 420);
-        return;
-      }
-      setTimeout(() => {
-        root.remove();
-        document.body.classList.remove('yc-entry-open');
-      }, reduceMotion ? 20 : 560);
-    } else {
-      setTimeout(() => { location.href = paths.home; }, reduceMotion ? 20 : 420);
-    }
+    setTimeout(() => { location.href = paths.dashboard; }, reduceMotion ? 20 : 820);
   }
 
   function sessionIn(payload) {
@@ -473,7 +463,7 @@
     localStorage.setItem('yc-role', payload.role || 'guest');
     localStorage.setItem('yc-user', payload.username);
     setMessage(copy.signedIn, 'success');
-    enterDashboard(payload.role === 'admin' ? 'admin' : 'dashboard', true);
+    enterDashboard(payload.role === 'admin' ? 'admin' : 'dashboard');
   }
 
   guestButton.addEventListener('click', () => {
@@ -647,15 +637,17 @@
   const canvas = $('yc-entry-canvas');
   const context = canvas.getContext('2d');
   let sceneIndex = 0;
-  let sceneStarted = performance.now();
+  let sceneStarted = null;
+  let sceneVisibleAt = performance.now();
   let manualScene = false;
   let chartWidth = 0;
   let chartHeight = 0;
   let scenePalette = null;
   let lastMetricsAt = 0;
-  const sceneDuration = 22000;
-  const drawDuration = 18500;
-  const fadeDuration = 1200;
+  const sceneDuration = 32000;
+  const drawDuration = 28500;
+  const fadeDuration = 1500;
+  const contentFadeDuration = 950;
   let sceneTransitioning = false;
   root.style.setProperty('--yc-entry-scene-duration', sceneDuration + 'ms');
 
@@ -794,24 +786,15 @@
       return { cursor: data.end, viewStart: data.start, viewEnd: data.end };
     }
     const span = Math.max(1, data.end - data.start);
-    const travelEnd = 0.84;
-    const viewportSpan = span * 0.38;
-    if (progress <= travelEnd) {
-      const travel = Math.max(0, Math.min(1, progress / travelEnd));
-      const cursor = data.start + span * travel;
-      const viewEnd = Math.min(data.end, Math.max(data.start + viewportSpan, cursor));
-      return {
-        cursor,
-        viewStart: Math.max(data.start, viewEnd - viewportSpan),
-        viewEnd,
-      };
-    }
-    const zoom = Math.max(0, Math.min(1, (progress - travelEnd) / (1 - travelEnd)));
-    const easedZoom = 1 - Math.pow(1 - zoom, 3);
+    const viewportSpan = span * 0.44;
+    const initialProgress = 0.18;
+    const travel = Math.max(0, Math.min(1, progress));
+    const cursor = data.start + span * (initialProgress + (1 - initialProgress) * travel);
+    const viewEnd = Math.min(data.end, Math.max(data.start + viewportSpan, cursor));
     return {
-      cursor: data.end,
-      viewStart: data.end - viewportSpan - (span - viewportSpan) * easedZoom,
-      viewEnd: data.end,
+      cursor,
+      viewStart: Math.max(data.start, viewEnd - viewportSpan),
+      viewEnd,
     };
   }
 
@@ -872,10 +855,14 @@
 
   function currentProgress() {
     if (reduceMotion || manualScene) return 1;
+    if (!Number.isFinite(sceneStarted)) return 0;
     return Math.min(1, Math.max(0, (performance.now() - sceneStarted) / drawDuration));
   }
 
   function refreshActiveScene() {
+    if (!Number.isFinite(sceneStarted) && marketData.has(scenes[sceneIndex].id)) {
+      sceneStarted = Math.max(performance.now(), sceneVisibleAt);
+    }
     const progress = currentProgress();
     updateSceneText(progress, true);
     drawChart(progress);
@@ -951,7 +938,7 @@
     const right = chartWidth - 24;
     const top = 78;
     const bottom = chartHeight - 30;
-    if (!scenePalette) scenePalette = readScenePalette();
+    if (!scenePalette || sceneTransitioning) scenePalette = readScenePalette();
     const lineColor = scenePalette.line;
     const benchmarkColor = scenePalette.benchmark;
     const gridColor = scenePalette.grid;
@@ -1015,8 +1002,9 @@
 
   function activateScene(next, manual) {
     sceneIndex = (next + scenes.length) % scenes.length;
-    sceneStarted = performance.now();
     manualScene = !!manual;
+    sceneVisibleAt = performance.now() + (sceneTransitioning && !reduceMotion ? contentFadeDuration : 0);
+    sceneStarted = marketData.has(scenes[sceneIndex].id) ? sceneVisibleAt : null;
     scenePalette = null;
     root.classList.toggle('is-manual', manualScene || reduceMotion);
     root.dataset.scene = scenes[sceneIndex].id;
@@ -1039,23 +1027,27 @@
         root.classList.remove('is-scene-fading');
         window.setTimeout(() => { sceneTransitioning = false; }, fadeDuration);
       });
-    }, Math.round(fadeDuration * 0.46));
+    }, Math.round(fadeDuration * 0.62));
   }
 
   root.querySelectorAll('.yc-entry-scene-btn').forEach(button => {
-    button.addEventListener('click', () => transitionScene(Number(button.dataset.sceneIndex), true));
+    button.addEventListener('click', () => transitionScene(Number(button.dataset.sceneIndex), false));
   });
 
   function animationFrame(now) {
     if (!root.isConnected) return;
     if (reduceMotion || manualScene) return;
+    if (!Number.isFinite(sceneStarted)) {
+      requestAnimationFrame(animationFrame);
+      return;
+    }
     const elapsed = now - sceneStarted;
     if (elapsed >= sceneDuration) {
       transitionScene(sceneIndex + 1, false);
       requestAnimationFrame(animationFrame);
       return;
     }
-    const progress = Math.min(1, elapsed / drawDuration);
+    const progress = Math.min(1, Math.max(0, elapsed / drawDuration));
     drawChart(progress);
     updateSceneText(progress, false);
     requestAnimationFrame(animationFrame);

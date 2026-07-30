@@ -10,19 +10,19 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="assets/style.css">
-<link rel="stylesheet" href="assets/yc-entry.css?v=8.5">
+<link rel="stylesheet" href="assets/yc-entry.css?v=8.6">
 <script>
 window.YC_ENTRY_MODE='gate';
-(()=>{try{if(new URLSearchParams(location.search).get('guest')==='1')localStorage.setItem('yc-guest','1');if(!localStorage.getItem('yc-token')&&localStorage.getItem('yc-guest')!=='1')document.documentElement.classList.add('yc-entry-pending');}catch(e){}})();
+(()=>{try{const q=new URLSearchParams(location.search);if(q.get('guest')==='1')localStorage.setItem('yc-guest','1');if(q.get('dashboard')==='1')document.documentElement.classList.add('yc-dashboard-requested');else document.documentElement.classList.add('yc-entry-pending');}catch(e){document.documentElement.classList.add('yc-entry-pending');}})();
 </script>
-<script src="assets/portal-config.js?v=8.5"></script>
-<script src="assets/yc-entry.js?v=8.5" defer></script>
+<script src="assets/portal-config.js?v=8.6"></script>
+<script src="assets/yc-entry.js?v=8.6" defer></script>
 </head>
 <body>
 <div class="yc-entry-fallback" role="status"><div class="yc-entry-fallback-card">
   <a class="yc-entry-fallback-logo" href="/">Yi<b>Capital</b></a>
   <p>登入介面暫時未能載入。你仍可按 Guest 權限進入目前的 Dashboard。</p>
-  <a class="yc-entry-fallback-action" href="?guest=1">以 Guest 繼續</a>
+  <a class="yc-entry-fallback-action" href="?dashboard=1&amp;guest=1">以 Guest 繼續</a>
 </div></div>
 
 <!-- 頂部工具列：滑到首頁對應位置 -->
