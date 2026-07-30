@@ -1,3 +1,9 @@
+import {
+  handleTushareTerminalRequest,
+  refreshTushareTerminalSnapshots,
+} from './tushare.js';
+import { createTerminalWarehouseAdapter } from './warehouse.js';
+
 /* ═══════════════════════════════════════════════════════════════
    Yi Capital Portal Backend v8.4 — Cloudflare Worker（單文件，粘貼即部署）
    ─────────────────────────────────────────────────────────────
@@ -36,10 +42,10 @@
      pending:{郵箱}(驗證碼,15分鐘) / gsetup:{token}(Google待設置,15分鐘) /
      ledger:{us|hk|a} / live:{us|hk|a} / navcache:{us|hk|a} /
      navstatus:{us|hk|a} / bmset:{us|hk|a} / bmstatus:{us|hk|a}
-   綁定與密鑰：KV=YC_KV；D1=FEEDBACK_DB；Secrets: ADMIN_USERNAME, ADMIN_PASSWORD, GH_TOKEN,
-     （可選）RESEND_API_KEY；Text: GH_OWNER, GH_REPO, GH_BRANCH, GH_PATH,
-     ALLOWED_ORIGIN,（可選）MAIL_FROM；Secrets: FEEDBACK_RATE_SALT,
-     GOOGLE_CLIENT_ID, ADMIN_GOOGLE_EMAILS, TUSHARE_TOKEN
+   綁定與密鑰：KV=YC_KV；D1=FEEDBACK_DB；Secrets: ADMIN_USERNAME, ADMIN_PASSWORD,
+     GH_TOKEN, TUSHARE_TOKEN, FEEDBACK_RATE_SALT, GOOGLE_CLIENT_ID,
+     ADMIN_GOOGLE_EMAILS,（可選）RESEND_API_KEY；Text: GH_OWNER, GH_REPO,
+     GH_BRANCH, GH_PATH, ALLOWED_ORIGIN,（可選）MAIL_FROM
    ═══════════════════════════════════════════════════════════════ */
 
 const SESSION_TTL = 7 * 24 * 3600;
@@ -1175,6 +1181,11 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(env) });
 
     try {
+      const terminalResponse = await handleTushareTerminalRequest(request, env, {
+        warehouse: createTerminalWarehouseAdapter(env),
+      });
+      if (terminalResponse) return terminalResponse;
+
       /* ════ 健康檢查：各配置是否被運行時讀到（只返回布爾）════ */
       if (path === '/api/health' && request.method === 'GET') {
         let kvOk = false, feedbackOk = false;
@@ -1195,13 +1206,14 @@ export default {
           kv: kvOk,
           feedback: feedbackOk,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
+          tushare: !!env.TUSHARE_TOKEN,
+          terminal_warehouse: !!env.YC_KV,
           admin: !!(env.ADMIN_USERNAME && env.ADMIN_PASSWORD),
           admin_google: !!(env.ADMIN_GOOGLE_EMAILS || env.ADMIN_GOOGLE_EMAIL),
           github: !!(env.GH_TOKEN && env.GH_OWNER && env.GH_REPO),
           resend: !!env.RESEND_API_KEY,
           mail_from: !!env.MAIL_FROM,
           google: !!env.GOOGLE_CLIENT_ID,
-          tushare: !!env.TUSHARE_TOKEN,
           origin: !!env.ALLOWED_ORIGIN,
         }, 200, { 'Cache-Control': 'no-store' });
       }
@@ -2114,11 +2126,15 @@ export default {
     if (cron === '30 21 * * *') {
       ctx.waitUntil(Promise.all([
         refreshMarketCaches(env, ['us'], ['us'], 'cron:us'),
+        refreshTushareTerminalSnapshots(env).catch(e =>
+          console.error('terminal_tushare_refresh_failed', e)),
         cleanupFeedbackRateLimits(env).catch(e => console.error('feedback_rate_cleanup_failed', e)),
       ]));
     } else if (cron === '0 9 * * *') {
       ctx.waitUntil(Promise.all([
         refreshMarketCaches(env, ['hk', 'a'], ['hk', 'a'], 'cron:asia'),
+        refreshTushareTerminalSnapshots(env).catch(e =>
+          console.error('terminal_tushare_refresh_failed', e)),
         cleanupFeedbackRateLimits(env).catch(e => console.error('feedback_rate_cleanup_failed', e)),
       ]));
     }

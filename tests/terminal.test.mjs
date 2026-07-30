@@ -30,8 +30,8 @@ const terminalPages = [
     file: 'en/terminal.html',
     htmlLang: 'en',
     terminalLang: 'en',
-    titleToken: 'Yi Terminal',
-    navLabel: 'Yi Terminal',
+    titleToken: 'Terminal',
+    navLabel: 'Terminal',
     assetPrefix: '../assets/',
   },
 ];
@@ -209,8 +209,8 @@ test('the three localized Terminal pages have the correct shell and asset paths'
         'nav.terminal',
         `${page.file} must only mark Terminal active`,
       );
-      const searchInput = html.match(/<input\b[^>]*id=["']terminal-company-search["'][^>]*>/i)?.[0];
-      assert.ok(searchInput, `${page.file} must contain the company search`);
+      const searchInput = html.match(/<input\b[^>]*id=["']terminal-search["'][^>]*>/i)?.[0];
+      assert.ok(searchInput, `${page.file} must contain the global Terminal search`);
       assert.equal(attribute(searchInput, 'role'), 'combobox');
       assert.equal(attribute(searchInput, 'aria-haspopup'), 'listbox');
 
@@ -222,20 +222,26 @@ test('the three localized Terminal pages have the correct shell and asset paths'
         .map((tag) => attribute(tag, 'src'))
         .filter(Boolean);
 
-      const expectedStyles = ['style.css', 'terminal.css'].map(
+      const expectedStyles = ['style.css', 'terminal-v2.css'].map(
         (file) => page.assetPrefix + file,
       );
       const expectedScripts = [
         'portal-config.js',
         'yc-i18n.js',
-        'yc-terminal.js',
+        'yc-terminal-v2.js',
       ].map((file) => page.assetPrefix + file);
 
       for (const expected of expectedStyles) {
-        assert.ok(styles.includes(expected), `${page.file} must load ${expected}`);
+        assert.ok(
+          styles.some((reference) => reference.split(/[?#]/, 1)[0] === expected),
+          `${page.file} must load ${expected}`,
+        );
       }
       for (const expected of expectedScripts) {
-        assert.ok(scripts.includes(expected), `${page.file} must load ${expected}`);
+        assert.ok(
+          scripts.some((reference) => reference.split(/[?#]/, 1)[0] === expected),
+          `${page.file} must load ${expected}`,
+        );
       }
 
       for (const reference of [...styles, ...scripts].filter(
@@ -341,21 +347,24 @@ test('i18n recognizes Terminal and preserves query parameters before the hash', 
   assert.deepEqual(storageWrites, [['yc-lang', 'en']]);
 });
 
-test('Terminal runtime fails closed for malformed market facts and opens the mobile navigation', async () => {
-  const source = await readText('assets/yc-terminal.js');
-  assert.match(source, /row\.close\s*!==\s*null/);
-  assert.match(source, /Number\.isFinite\(Number\(row\.close\)\)/);
-  assert.match(source, /if\s*\(!renderedSeries\)/);
-  assert.match(source, /startsWith\('disclosed'\)/);
-  assert.match(source, /className:\s*'is-missing'/);
-  assert.match(source, /nav\.classList\.toggle\('is-open'\)/);
-  assert.match(source, /record\?\.currency\s*\|\|\s*'USD'/);
-  assert.match(source, /relationship\.validCanonicalYears/);
-  assert.match(source, /firstLatestYearIndex\s*>\s*0/);
-  assert.match(source, /validateSeed\(seed\)/);
-  assert.match(source, /Number\.isFinite\(fact\.value\)/);
-  assert.match(source, /evidenceByCanonicalYear/);
-  assert.match(source, /setAttribute\('role',\s*'tablist'\)/);
+test('Terminal v2 uses the production API contract and fails closed without synthetic facts', async () => {
+  const source = await readText('assets/yc-terminal-v2.js');
+  assert.match(source, /window\.YC_API/);
+  assert.match(source, /\/api\/terminal\/bootstrap/);
+  assert.match(source, /\/api\/terminal\/stock-detail/);
+  assert.match(source, /domain:\s*'Stocks'/);
+  assert.match(source, /dataset:\s*'index_global'/);
+  assert.match(source, /assetForSelection\(\)/);
+  assert.match(source, /selectedYearRange\(\)/);
+  assert.match(source, /validateAtlas\(seed\)/);
+  assert.match(source, /is_complete\s*===\s*false/);
+  assert.match(source, /replaceChildren\(/);
+  assert.match(source, /setAttribute\('role',\s*'tab'\)/);
+  for (const code of ['DES', 'RES', 'FA', 'MODL', 'SPLC', 'GP', 'HP', 'VAL', 'VWAP', 'AVAT']) {
+    assert.match(source, new RegExp(`['\"]${code}['\"]`), `missing stock function ${code}`);
+  }
+  assert.doesNotMatch(source, /\.innerHTML\s*=/);
+  assert.doesNotMatch(source, /synthetic|sampleQuote|fallbackPrice/i);
   assert.doesNotMatch(source, /28 家候選|28 家候选|processing 28 candidate/);
 });
 

@@ -30,7 +30,7 @@ Cloudflare Worker v8.4 部署步驟（動態入口 + Google 一鍵註冊 + 用�
      ADMIN_PASSWORD   你的管理員密碼（設強一點）
      GH_TOKEN         GitHub Fine-grained token（僅 YiCapital 倉庫、僅 Contents 讀寫）
      FEEDBACK_RATE_SALT  隨機 32-byte 字串，只用於匿名防濫用摘要
-     TUSHARE_TOKEN     Tushare Pro token（可選；只供 Worker 抓取滬深 300，切勿放前端）
+     TUSHARE_TOKEN    Tushare Pro token；只存 Worker Secret，禁止寫入前端或 Git
    【Text 類型（明文變量）】
      GH_OWNER         eprestonyi
      GH_REPO          YiCapital
@@ -40,6 +40,25 @@ Cloudflare Worker v8.4 部署步驟（動態入口 + Google 一鍵註冊 + 用�
      GH_PATH_A        assets/data/Yi_Capital_A.xlsx（可省略，這是默認值）
      ALLOWED_ORIGIN   https://你的網站域名（如 https://yicapital.com，不帶末尾斜杠）
    → Save and deploy
+
+④-B 發布 Terminal Atlas 只讀快照
+   Terminal 的即時/發布驅動行情由 Tushare 提供；供應鏈與歷史證據快照走
+   YC_KV 的 terminal:warehouse:atlas-seed 鍵，兩者不混寫。部署前把
+   assets/data/atlas-seed.json 以 JSON 寫入該鍵。快照 status=partial 時，
+   API 與前端必須保留 partial / missing 標記，不得以 0 代替缺失值。
+
+   Terminal 公開路由：
+     GET /api/terminal/status
+     GET /api/terminal/bootstrap
+     GET /api/terminal/search
+     GET /api/terminal/market
+     GET /api/terminal/news
+     GET /api/terminal/quote
+     GET /api/terminal/history
+     GET /api/terminal/stock-detail
+
+   Tushare 只允許 worker/tushare.js 中的資料集與參數白名單。上游權限不足、
+   token 無效、超時、空資料或 schema 異常均 fail closed，前端不得生成替代數字。
 
 ⑤ 連接前端
    Worker 概覽頁複製地址（形如 https://yicapital-portal.xxx.workers.dev）

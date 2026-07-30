@@ -2,109 +2,80 @@
 <html lang="zh-Hans">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>YiCapital 易终端 ｜ 市场、供应链与财务数据</title>
-<meta name="description" content="YiCapital Terminal 原型：市场快照、AI 算力供应链、公司 X-ray、标准化财务与数据状态。">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>YiCapital 易终端｜跨资产市场与研究工作台</title>
+<meta name="description" content="YiCapital 易终端：Tushare 市场数据、公司研究、债券、ETF、衍生品、货币与全球供应链工作台。">
 <meta property="og:type" content="website"><meta property="og:site_name" content="YiCapital">
-<meta property="og:title" content="YiCapital 易终端 ｜ 市场、供应链与财务数据">
-<meta property="og:description" content="从三市场快照进入 AI 算力供应链，再缩放到公司 X-ray、标准化财务与数据状态。">
-<meta property="og:image" content="https://www.yicapital.co/terminal-og.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="https://www.yicapital.co/terminal-og.png">
+<meta property="og:title" content="YiCapital 易终端｜跨资产市场与研究工作台">
+<meta property="og:description" content="搜索市场或证券，进入七大资产工作区与 Bloomberg 式研究功能。">
+<meta property="og:image" content="https://www.yicapital.co/terminal-og.png">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="https://www.yicapital.co/terminal-og.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=Noto+Sans+TC:wght@400;500;700;900&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=Noto+Sans+SC:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/style.css">
-<link rel="stylesheet" href="../assets/terminal.css">
+<link rel="stylesheet" href="../assets/terminal-v2.css?v=20260730c">
 <script src="../assets/portal-config.js" defer></script>
 <script src="../assets/yc-i18n.js" defer></script>
-<script src="../assets/yc-terminal.js" defer></script>
+<script src="../assets/yc-terminal-v2.js?v=20260730c" defer></script>
 </head>
-<body class="terminal-page" data-terminal-lang="cn">
-<a class="terminal-skip" href="#terminal-main">跳到主要内容</a>
+<body class="terminal-v2-page" data-terminal-lang="cn">
+<a class="terminal-skip" href="#terminal-canvas">跳到工作区</a>
 
 <header class="terminal-site-header">
-  <div class="terminal-header-inner">
-    <a class="terminal-brand-link" href="./" aria-label="YiCapital 首页"><span class="logo">Yi<b>Capital</b></span></a>
-    <button class="menu-btn terminal-menu-button" type="button" aria-expanded="false" aria-controls="terminal-site-menu">菜单 ≡</button>
-    <nav class="terminal-site-nav" aria-label="主导航">
-      <ul id="terminal-site-menu">
-        <li><a class="link" href="insights" data-i18n="nav.insights">研究观点</a></li>
-        <li><a class="link" href="forum" data-i18n="nav.forum">研究论坛</a></li>
-        <li><a class="link" href="portfolios" data-i18n="nav.portfolios">组合实录</a></li>
-        <li><a class="link active" href="terminal" aria-current="page" data-i18n="nav.terminal">易终端</a></li>
-      </ul>
+  <div class="terminal-site-header-inner">
+    <a class="terminal-brand terminal-brand-link" href="./" aria-label="YiCapital 首页"><span class="logo">Yi<b>Capital</b></span></a>
+    <nav class="terminal-site-links" aria-label="网站导航">
+      <a href="insights" data-i18n="nav.insights">研究观点</a>
+      <a href="forum" data-i18n="nav.forum">研究论坛</a>
+      <a href="portfolios" data-i18n="nav.portfolios">组合实录</a>
+      <a class="link active" href="terminal" aria-current="page" data-i18n="nav.terminal">易终端</a>
     </nav>
-    <div class="terminal-header-tools">
+    <div class="terminal-site-tools">
       <a class="terminal-about" href="about" data-i18n="nav.about">关于我们</a>
       <div class="terminal-language" aria-label="语言">
         <a href="../terminal.html" lang="zh-Hant" data-language-link>繁</a>
         <a class="on" href="terminal.html" lang="zh-Hans" aria-current="page" data-language-link>简</a>
         <a href="../en/terminal.html" lang="en" data-language-link>EN</a>
       </div>
-      <a class="terminal-login" href="login">登录</a>
+      <a href="login">登录</a>
     </div>
   </div>
 </header>
 
-<main id="terminal-main">
-  <section class="terminal-hero" aria-labelledby="terminal-title">
-    <div class="terminal-hero-copy">
-      <p class="terminal-eyebrow">YICAPITAL TERMINAL · PROTOTYPE</p>
-      <h1 id="terminal-title">把市场、供应链与财务真相放在同一张图上。</h1>
-      <p>从三市场快照进入 AI 算力产业链，再缩放到单一公司的供应商、ToB／ToC 下游、会计 flow 与标准化年报。所有缺口、估算与候选数据都会明确标示。</p>
+<main class="terminal-app" aria-label="YiCapital 易终端">
+  <section class="terminal-command" aria-label="全局命令栏">
+    <div class="terminal-query">
+      <span class="terminal-query-mark" aria-hidden="true">⌕</span>
+      <label class="terminal-visually-hidden" for="terminal-search">搜索市场、股票、基金、债券或功能</label>
+      <input id="terminal-search" type="search" autocomplete="off" spellcheck="false"
+        placeholder="搜索市场、股票、代码或功能…  ⌘K"
+        role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+        aria-controls="terminal-search-results" aria-expanded="false">
+      <kbd>⌘K</kbd>
+      <div id="terminal-search-results" class="terminal-search-results" role="listbox" hidden></div>
     </div>
-    <div class="terminal-hero-status" aria-label="数据状态摘要">
-      <span class="terminal-status-chip is-neutral" id="terminal-publication-chip">正在读取快照</span>
-      <span class="terminal-status-chip is-neutral" id="terminal-coverage-chip">正在读取覆盖</span>
-      <span class="terminal-status-chip is-neutral" id="terminal-pipeline-chip">正在读取队列</span>
+    <div id="terminal-context" class="terminal-context" aria-live="polite">
+      <span class="terminal-context-code">MKT</span>
+      <strong>Market News</strong>
+    </div>
+    <div class="terminal-command-meta">
+      <label><span>YEAR</span><select id="terminal-year" aria-label="标准年度"></select></label>
+      <span id="terminal-clock" class="terminal-clock">HKT --:--:--</span>
     </div>
   </section>
 
-  <section class="terminal-workspace" aria-label="YiCapital Terminal 工作区">
-    <div class="terminal-command-bar">
-      <div class="terminal-module-tabs" role="tablist" aria-label="Terminal 模块">
-        <button type="button" role="tab" aria-selected="true" aria-controls="terminal-panel-markets" id="terminal-tab-markets" data-terminal-module="markets">市场</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-supply" id="terminal-tab-supply" data-terminal-module="supply" tabindex="-1">供应链</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-financials" id="terminal-tab-financials" data-terminal-module="financials" tabindex="-1">财务／FA</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="terminal-panel-status" id="terminal-tab-status" data-terminal-module="status" tabindex="-1">数据状态</button>
-      </div>
-      <div class="terminal-global-controls">
-        <label class="terminal-control terminal-year-control">
-          <span>标准年度</span>
-          <select id="terminal-year" aria-label="标准年度"></select>
-        </label>
-        <div class="terminal-search-wrap">
-          <label for="terminal-company-search">搜索公司或代码</label>
-          <input id="terminal-company-search" type="search" autocomplete="off" spellcheck="false" placeholder="例如 NVIDIA、NVDA、TSMC" role="combobox" aria-haspopup="listbox" aria-autocomplete="list" aria-controls="terminal-search-results" aria-expanded="false">
-          <div id="terminal-search-results" class="terminal-search-results" role="listbox" hidden></div>
-        </div>
-      </div>
-    </div>
-
-    <div id="terminal-live" class="terminal-sr-only" aria-live="polite"></div>
-    <div id="terminal-alert" class="terminal-alert" role="alert" hidden></div>
-
-    <section id="terminal-panel-markets" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-markets" data-terminal-panel="markets">
-      <p class="terminal-loading" role="status">正在读取已持久化的市场快照…</p>
-    </section>
-    <section id="terminal-panel-supply" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-supply" data-terminal-panel="supply" hidden>
-      <p class="terminal-loading" role="status">正在读取 AI 算力供应链原型数据…</p>
-    </section>
-    <section id="terminal-panel-financials" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-financials" data-terminal-panel="financials" hidden>
-      <p class="terminal-loading" role="status">正在读取标准化财务数据…</p>
-    </section>
-    <section id="terminal-panel-status" class="terminal-panel" role="tabpanel" aria-labelledby="terminal-tab-status" data-terminal-panel="status" hidden>
-      <p class="terminal-loading" role="status">正在检查数据覆盖与发布状态…</p>
-    </section>
+  <nav id="terminal-workspace-tabs" class="terminal-workspace-tabs" aria-label="七大资产工作区" role="tablist"></nav>
+  <nav id="terminal-function-tabs" class="terminal-function-tabs" aria-label="当前工作区功能" role="tablist"></nav>
+  <div id="terminal-alert" class="terminal-alert" role="alert" hidden></div>
+  <section id="terminal-canvas" class="terminal-canvas" aria-live="polite" aria-busy="true">
+    <div class="terminal-loading">正在建立 Terminal 工作区…</div>
   </section>
-
-  <noscript>
-    <div class="terminal-noscript">YiCapital Terminal 需要 JavaScript 才能加载只读快照。未启用时不会显示任何替代或推测数字。</div>
-  </noscript>
+  <footer id="terminal-statusbar" class="terminal-statusbar" aria-label="数据与系统状态">
+    <span><i class="is-pending"></i>TUSHARE CHECK</span>
+    <span>WAREHOUSE 2010–2026 · BUILDING</span>
+    <span>NO MISSING-AS-ZERO</span>
+  </footer>
+  <noscript><div class="terminal-noscript">YiCapital 易终端需要 JavaScript；停用时不会显示替代或推测数字。</div></noscript>
 </main>
-
-<footer class="terminal-footer">
-  <div><span class="logo">Yi<b>Capital</b></span></div>
-  <p>本页为研究原型，仅展示已标记来源、期间与状态的数据，不构成投资建议。缺失值不等于零，关系存在不等于已知金额。</p>
-  <p>© 2026 YiCapital.</p>
-</footer>
 </body>
 </html>
