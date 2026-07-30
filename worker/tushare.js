@@ -1000,6 +1000,26 @@ async function routeSearch(adapter, request, url, now) {
       assetClass: 'us-stock',
     }],
   ];
+  const exactSymbol = queryText.toUpperCase();
+  if (/^\d{6}\.(SH|SZ|BJ)$/.test(exactSymbol)) {
+    searchJobs.push(['stock_basic', {
+      params: { ts_code: exactSymbol },
+      fields: 'ts_code,symbol,name,area,industry,market,exchange,list_date,cnspell',
+      assetClass: 'a-stock',
+    }]);
+  } else if (/^\d{5}\.HK$/.test(exactSymbol)) {
+    searchJobs.push(['hk_basic', {
+      params: { ts_code: exactSymbol },
+      fields: 'ts_code,name,fullname,enname,cn_spell,market,list_status,list_date,curr_type',
+      assetClass: 'hk-stock',
+    }]);
+  } else if (/^[A-Z][A-Z0-9.-]{0,11}$/.test(exactSymbol)) {
+    searchJobs.push(['us_basic', {
+      params: { ts_code: exactSymbol },
+      fields: 'ts_code,name,enname,classify,list_date,delist_date',
+      assetClass: 'us-stock',
+    }]);
+  }
   const settled = await Promise.allSettled(searchJobs.map(([apiName, job]) =>
     adapter.query(apiName, { params: job.params, fields: job.fields })));
   const successful = settled
@@ -1034,8 +1054,8 @@ async function routeSearch(adapter, request, url, now) {
     domain: 'Stocks',
     data: matches,
     row_count: matches.length,
-    source_endpoint: successful.map((item) => item.apiName),
-    source_doc_url: successful.map((item) => item.result.source_doc_url),
+    source_endpoint: [...new Set(successful.map((item) => item.apiName))],
+    source_doc_url: [...new Set(successful.map((item) => item.result.source_doc_url))],
     fetched_at: successful.map((item) => item.result.fetched_at)
       .filter(Boolean).sort().at(-1) || null,
     retrieved_at: nowIso(now),
@@ -1049,6 +1069,9 @@ async function routeSearch(adapter, request, url, now) {
     warnings: [
       ...settled.flatMap((result, index) =>
         result.status === 'rejected' ? [`search_source_unavailable:${searchJobs[index][0]}`] : []),
+      ...successful.flatMap((item) =>
+        (item.result.warnings || []).map((warning) =>
+          `search_source_warning:${item.apiName}:${warning}`)),
       ...(allMatches.length > limit ? ['route_limit_applied'] : []),
     ],
     cache_status: Object.fromEntries(successful.map((item) => [

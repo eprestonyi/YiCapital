@@ -1858,7 +1858,10 @@
       subtitle: String(item.exchange || item.market || item.description || type),
       type,
       workspace: destination,
-      functionId: destination === 'stocks' ? 'overview' : destination === 'etf' ? 'quote' : 'overview',
+      functionId: String(
+        item.functionId || item.function_id ||
+        (destination === 'stocks' ? 'overview' : destination === 'etf' ? 'quote' : 'overview')
+      ),
       symbol,
       asset: String(item.asset || item.asset_class || ''),
       entityId: String(item.entity_id || item.entityId || '')
@@ -2049,13 +2052,27 @@
       ...localAtlasMatches(query)
     ];
     try {
-      const result = await apiRequest(ENDPOINTS.search, {
-        q: query,
-        domain: 'Stocks',
-        limit: 15
-      }, state.searchController.signal);
+      const remoteResults = await Promise.allSettled([
+        apiRequest(ENDPOINTS.search, {
+          q: query,
+          domain: 'Stocks',
+          limit: 15
+        }, state.searchController.signal),
+        apiRequest(ENDPOINTS.search, {
+          q: query,
+          domain: 'Supply',
+          limit: 8
+        }, state.searchController.signal)
+      ]);
       if (sequence !== state.searchSequence || state.composing) return;
-      const serverItems = normalizedRows(result.data).map(normalizeSearchItem).filter(Boolean);
+      const fulfilled = remoteResults
+        .filter((result) => result.status === 'fulfilled')
+        .map((result) => result.value);
+      if (!fulfilled.length) throw remoteResults[0].reason;
+      const serverItems = fulfilled
+        .flatMap((result) => normalizedRows(result.data))
+        .map(normalizeSearchItem)
+        .filter(Boolean);
       const combined = [];
       const seen = new Set();
       [...serverItems, ...localItems].forEach((item) => {
@@ -2065,7 +2082,10 @@
           combined.push(item);
         }
       });
-      renderSearchItems(combined, false);
+      renderSearchItems(
+        combined,
+        remoteResults.some((result) => result.status === 'rejected')
+      );
     } catch (error) {
       if (error.name === 'AbortError' || state.searchController.signal.aborted || sequence !== state.searchSequence) return;
       renderSearchItems(localItems, true);

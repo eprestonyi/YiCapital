@@ -581,7 +581,7 @@ test('stock search spans A-share, Hong Kong and US masters with explicit asset c
     };
   });
   const response = await handleTushareTerminalRequest(
-    new Request('https://terminal.test/api/terminal/search?q=NVIDIA&domain=Stocks'),
+    new Request('https://terminal.test/api/terminal/search?q=NVDA&domain=Stocks'),
     { TUSHARE_TOKEN: TOKEN },
     { fetchImpl, cache: new MockKV(), warehouse: createWarehouse(), now: fixedNow },
   );
@@ -592,8 +592,10 @@ test('stock search spans A-share, Hong Kong and US masters with explicit asset c
   assert.equal(body.data[0].asset_class, 'us-stock');
   assert.deepEqual(
     fetchImpl.calls.map((call) => call.body.api_name).sort(),
-    ['hk_basic', 'stock_basic', 'us_basic'],
+    ['hk_basic', 'stock_basic', 'us_basic', 'us_basic'],
   );
+  assert.ok(fetchImpl.calls.some((call) =>
+    call.body.api_name === 'us_basic' && call.body.params.ts_code === 'NVDA'));
 });
 
 test('stock detail keeps financial statements in the warehouse plane', async () => {

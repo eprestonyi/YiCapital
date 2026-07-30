@@ -251,10 +251,15 @@ export function createTerminalWarehouseAdapter(env) {
         .map((entity) => ({
           id: entity.id,
           name: entity.name,
+          ticker: entity.ticker || null,
+          symbol: String(entity.ticker || '').split(/[\s/|,]+/).filter(Boolean)[0] || null,
           kind: entity.kind || null,
           layer: entity.layer || null,
           cluster: entity.cluster || null,
           role: entity.role || null,
+          workspace: 'supply',
+          function_id: 'xray',
+          entity_id: entity.id,
         }));
       return envelope(snapshot, matches);
     },
