@@ -396,6 +396,12 @@
 
   function extractMeta(envelope, endpoint) {
     const meta = envelope && typeof envelope.meta === 'object' ? envelope.meta : {};
+    const sourceEndpoint = String(envelope?.source_endpoint || meta.endpoint || '');
+    const inferredSource = sourceEndpoint
+      ? envelope?.domain === 'Supply' || sourceEndpoint.startsWith('warehouse.')
+        ? 'YICAPITAL WAREHOUSE'
+        : 'TUSHARE'
+      : 'UNVERIFIED';
     const freshness = envelope?.freshness ?? envelope?.freshness_class ?? meta.freshness ??
       meta.freshness_class ?? envelope?.updateFrequency ?? 'UNKNOWN';
     const permission = envelope?.permission ?? envelope?.permission_status ??
@@ -403,8 +409,7 @@
       envelope?.entitlement ?? 'UNVERIFIED';
     return {
       endpoint: String(envelope?.endpoint || envelope?.source_endpoint || meta.endpoint || endpoint || 'UNKNOWN'),
-      source: String(envelope?.source || envelope?.provider || meta.source || meta.provider ||
-        (envelope?.source_endpoint ? 'TUSHARE / WAREHOUSE' : 'TUSHARE')),
+      source: String(envelope?.source || envelope?.provider || meta.source || meta.provider || inferredSource),
       freshness: typeof freshness === 'object' ? JSON.stringify(freshness) : String(freshness),
       permission: typeof permission === 'object' ? JSON.stringify(permission) : String(permission),
       asOf: envelope?.as_of || envelope?.asOf || envelope?.retrieved_at || envelope?.updated_at ||
