@@ -571,6 +571,15 @@ function buildEntryMarketPoints(navRows, benchmarkRows) {
   });
   const dates = [...portfolio.keys()].filter(date => benchmark.has(date)).sort();
   if (dates.length < 20) return null;
+  const firstNavDate = nav[0].date;
+  const lastNavDate = nav[nav.length - 1].date;
+  const benchmarkTradingDates = [...benchmark.keys()]
+    .filter(date => date >= firstNavDate && date <= lastNavDate)
+    .sort();
+  const missingCloseCount = benchmarkTradingDates.reduce(
+    (count, date) => count + (portfolio.has(date) ? 0 : 1),
+    0,
+  );
   const portfolioBase = portfolio.get(dates[0]);
   const benchmarkBase = benchmark.get(dates[0]);
   const points = dates.map(date => [
@@ -578,7 +587,13 @@ function buildEntryMarketPoints(navRows, benchmarkRows) {
     round(portfolio.get(date) / portfolioBase * 100, 6),
     round(benchmark.get(date) / benchmarkBase * 100, 6),
   ]);
-  return { points, start: dates[0], end: dates[dates.length - 1] };
+  return {
+    points,
+    start: dates[0],
+    end: dates[dates.length - 1],
+    missingCloseCount,
+    coverage: dates.length / Math.max(1, benchmarkTradingDates.length),
+  };
 }
 const pxRecord = v => typeof v === 'number' ? { close: v, date: null } : v;
 
@@ -1479,7 +1494,9 @@ export default {
             pointCount: history.points.length,
             historyComplete: nav.historyComplete === true,
             cacheVersion: 3,
-            review: navReview || benchmarkReview,
+            review: navReview || benchmarkReview || history.missingCloseCount > 0,
+            missingCloseCount: history.missingCloseCount,
+            coverage: round(history.coverage, 6),
             navAsOf: nav.asOf || nav.marketDate || null,
             benchmarkLabel: spec.benchmark,
             benchmarkSource: benchmark.sources && benchmark.sources[spec.benchmark] || null,

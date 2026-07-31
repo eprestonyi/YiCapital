@@ -7,21 +7,32 @@
 (function () {
   'use strict';
   const API = (window.YC_API || '').replace(/\/+$/, '');
-  const _p = location.pathname;
-  const ROOT = (/\/(posts|cn|en)\//.test(_p)) ? '../' : '';
+  const locale = window.YC_LANG === 'cn' ? 'cn' : window.YC_LANG === 'en' ? 'en' : 'tw';
+  const homePath = locale === 'cn' ? '/cn/' : locale === 'en' ? '/en/' : '/';
+  const portfolioPath = homePath + 'portfolios';
+  const loginPath = homePath + 'login';
   // 兼容舊 sessionStorage 會話（遷移到 localStorage）
   ['yc-token', 'yc-role', 'yc-user'].forEach(k => {
     if (!localStorage.getItem(k) && sessionStorage.getItem(k)) localStorage.setItem(k, sessionStorage.getItem(k));
   });
-  const tok = localStorage.getItem('yc-token');
-  const user = localStorage.getItem('yc-user');
-  const role = localStorage.getItem('yc-role');
-  if (!tok || !user) return;
-  const locale = window.YC_LANG === 'cn' ? 'cn' : window.YC_LANG === 'en' ? 'en' : 'tw';
-  const roleLabel = role === 'admin'
-    ? (locale === 'en' ? 'Administrator' : locale === 'cn' ? '管理员' : '管理員')
-    : (locale === 'en' ? 'Member' : locale === 'cn' ? '注册用户' : '註冊用戶');
-  const safeUser = user.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const tok = localStorage.getItem('yc-token') || '';
+  const user = localStorage.getItem('yc-user') || '';
+  const role = localStorage.getItem('yc-role') || '';
+  const isMember = /^[a-f0-9]{64}$/i.test(tok) && Boolean(user);
+  const isGuest = !isMember && localStorage.getItem('yc-guest') === '1';
+  if (!isMember && !isGuest) return;
+  const labels = {
+    tw: { guest: 'Guest 訪客', guestRole: '訪客模式', signIn: '登入 / 註冊', exit: '退出 Guest', logout: '登出 Logout', portfolio: '組合實錄', admin: '管理後台' },
+    cn: { guest: 'Guest 访客', guestRole: '访客模式', signIn: '登录 / 注册', exit: '退出 Guest', logout: '登出 Logout', portfolio: '组合实录', admin: '管理后台' },
+    en: { guest: 'Guest', guestRole: 'Guest access', signIn: 'Sign in / Register', exit: 'Exit Guest', logout: 'Sign out', portfolio: 'Portfolios', admin: 'Administration' },
+  }[locale];
+  const displayUser = isGuest ? labels.guest : user;
+  const roleLabel = isGuest
+    ? labels.guestRole
+    : role === 'admin'
+      ? (locale === 'en' ? 'Administrator' : locale === 'cn' ? '管理员' : '管理員')
+      : (locale === 'en' ? 'Member' : locale === 'cn' ? '注册用户' : '註冊用戶');
+  const safeUser = displayUser.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   function clearSession() {
     ['yc-token', 'yc-role', 'yc-user', 'yc-guest'].forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k); });
@@ -51,25 +62,28 @@
   document.head.appendChild(css);
 
   function mount() {
-    // 隱藏工具欄的 LOGIN 鏈接
-    document.querySelectorAll('a').forEach(a => {
-      var _h = a.getAttribute('href') || '';
-      if (/login(\.html)?$/.test(_h)) a.style.display = 'none';
-      document.querySelectorAll('.yc-authcta').forEach(function(el){ el.style.display='none'; });
-    });
+    // 會員已登入時隱藏 LOGIN；Guest 保留升級登入入口。
+    if (isMember) {
+      document.querySelectorAll('a').forEach(a => {
+        const href = a.getAttribute('href') || '';
+        if (/login(\.html)?$/.test(href)) a.style.display = 'none';
+      });
+      document.querySelectorAll('.yc-authcta').forEach(el => { el.style.display = 'none'; });
+    }
     const nav = document.querySelector('header .nav') || document.querySelector('header .wrap');
     if (!nav || document.querySelector('.yc-ava-wrap')) return;
 
     const wrap = document.createElement('div');
     wrap.className = 'yc-ava-wrap';
-    const initial = user.trim().charAt(0).toUpperCase();
+    const initial = displayUser.trim().charAt(0).toUpperCase();
     wrap.innerHTML = `
-      <div class="yc-ava" id="ycAva" title="${user}">${initial}</div>
+      <div class="yc-ava" id="ycAva" title="${safeUser}">${initial}</div>
       <div class="yc-menu" id="ycMenu">
         <div class="yc-id"><b>${safeUser}</b><span>${roleLabel}</span></div>
-        ${role === 'admin' ? `<a href="${ROOT}admin">管理後台</a>` : ''}
-        <a href="${ROOT}portfolios">組合實錄</a>
-        <button class="yc-out" id="ycLogout">登出 Logout</button>
+        ${isGuest ? `<a href="${loginPath}">${labels.signIn}</a>` : `
+          ${role === 'admin' ? `<a href="/admin">${labels.admin}</a>` : ''}
+          <a href="${portfolioPath}">${labels.portfolio}</a>`}
+        <button class="yc-out" id="ycLogout">${isGuest ? labels.exit : labels.logout}</button>
       </div>`;
     nav.appendChild(wrap);
 
@@ -85,17 +99,28 @@
       menu.classList.toggle('open');
     });
     document.addEventListener('click', () => menu.classList.remove('open'));
-    wrap.querySelector('#ycLogout').addEventListener('click', async () => {
-      try { if (API) await fetch(API + '/api/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + tok } }); } catch (e) {}
+    wrap.querySelector('#ycLogout').addEventListener('click', () => {
+      if (isMember && API) {
+        fetch(API + '/api/logout', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + tok },
+          keepalive: true,
+        }).catch(() => {});
+      }
       clearSession();
-      location.href = ROOT + 'index.html';
+      location.replace(homePath);
     });
   }
 
   // 靜默校驗會話：過期則清除並還原 LOGIN 鏈接
-  if (API) {
+  if (isMember && API) {
     fetch(API + '/api/me', { headers: { 'Authorization': 'Bearer ' + tok } })
-      .then(r => { if (r.status === 401) { clearSession(); location.reload(); } })
+      .then(r => {
+        if (r.status === 401) {
+          clearSession();
+          location.replace(homePath);
+        }
+      })
       .catch(() => {});
   }
 

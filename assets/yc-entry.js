@@ -4,11 +4,27 @@
   'use strict';
 
   const MODE = window.YC_ENTRY_MODE || 'gate';
-  const dashboardRequested = new URLSearchParams(window.location.search).get('dashboard') === '1';
+  const hasMemberSession = (() => {
+    try {
+      const token = localStorage.getItem('yc-token') || sessionStorage.getItem('yc-token') || '';
+      const user = localStorage.getItem('yc-user') || sessionStorage.getItem('yc-user') || '';
+      return /^[a-f0-9]{64}$/i.test(token) && Boolean(user);
+    } catch (error) {
+      return false;
+    }
+  })();
+  const hasGuestPass = (() => {
+    try {
+      return localStorage.getItem('yc-guest') === '1';
+    } catch (error) {
+      return false;
+    }
+  })();
   const fallbackShell = document.querySelector('.yc-entry-fallback');
-  if (MODE === 'gate' && dashboardRequested) {
+  if (MODE === 'gate' && (hasMemberSession || hasGuestPass)) {
     if (fallbackShell) fallbackShell.remove();
     document.documentElement.classList.remove('yc-entry-pending');
+    document.documentElement.classList.add('yc-dashboard-requested');
     return;
   }
 
@@ -449,10 +465,10 @@
     document.documentElement.classList.remove('yc-entry-pending');
     root.classList.add('is-leaving');
     if (destination === 'admin') {
-      setTimeout(() => { location.href = '/admin'; }, reduceMotion ? 20 : 820);
+      setTimeout(() => { location.replace('/admin'); }, reduceMotion ? 20 : 820);
       return;
     }
-    setTimeout(() => { location.href = paths.dashboard; }, reduceMotion ? 20 : 820);
+    setTimeout(() => { location.replace(paths.dashboard); }, reduceMotion ? 20 : 820);
   }
 
   function sessionIn(payload) {
@@ -684,8 +700,8 @@
     if (commonDates.length < 20) throw new Error('insufficient common closes');
     const commonEndDate = commonDates[commonDates.length - 1];
     const commonEnd = parseDate(commonEndDate);
-    let pf = commonDates.map(date => pfByDate.get(date));
-    let bm = commonDates.map(date => bmByDate.get(date));
+    let pf = commonDates.map((date, position) => ({ ...pfByDate.get(date), position }));
+    let bm = commonDates.map((date, position) => ({ ...bmByDate.get(date), position }));
     const commonStart = pf[0].time;
     const pfBase = pf[0].value;
     const bmBase = bm[0].value;
@@ -695,10 +711,11 @@
     const rawMin = Math.min(...values);
     const rawMax = Math.max(...values);
     const chartPadding = Math.max(1.25, (rawMax - rawMin) * 0.11);
-    const gaps = commonDates.reduce((count, date, index) => {
+    const calendarGaps = commonDates.reduce((count, date, index) => {
       if (!index) return count;
       return count + (parseDate(date) - parseDate(commonDates[index - 1]) > 12 * 86400000 ? 1 : 0);
     }, 0);
+    const gaps = Math.max(calendarGaps, Number(quality && quality.missingCloseCount || 0));
     const pfHistoryCount = portfolio.filter(point => point.time >= commonStart && point.time <= commonEnd).length;
     const bmHistoryCount = benchmark.filter(point => point.time >= commonStart && point.time <= commonEnd).length;
     const coverage = commonDates.length / Math.max(1, Math.min(pfHistoryCount, bmHistoryCount));
@@ -731,7 +748,10 @@
     }
     const pf = buildEntryPointSeries(compact.points, 1);
     const bm = buildEntryPointSeries(compact.points, 2);
-    return normalizeHistory(pf, bm, { review: compact.review === true });
+    return normalizeHistory(pf, bm, {
+      review: compact.review === true,
+      missingCloseCount: Number(compact.missingCloseCount || 0),
+    });
   }
 
   if (API) {
@@ -762,46 +782,38 @@
     return (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
   }
 
-  function lowerBoundTime(series, time) {
-    let low = 0;
-    let high = series.length;
-    while (low < high) {
-      const middle = Math.floor((low + high) / 2);
-      if (series[middle].time < time) low = middle + 1;
-      else high = middle;
-    }
-    return low;
-  }
-
-  function pointAtTime(series, time) {
+  function pointAtPosition(series, position) {
     if (!series.length) return null;
-    if (time <= series[0].time) return series[0];
+    if (position <= 0) return series[0];
     const last = series[series.length - 1];
-    if (time >= last.time) return last;
-    const index = lowerBoundTime(series, time);
-    const next = series[index];
-    const previous = series[index - 1];
-    const ratio = (time - previous.time) / Math.max(1, next.time - previous.time);
+    if (position >= last.position) return last;
+    const previousIndex = Math.floor(position);
+    const nextIndex = Math.ceil(position);
+    const previous = series[previousIndex];
+    const next = series[nextIndex];
+    const ratio = position - previousIndex;
     return {
-      date: previous.date,
-      time,
+      date: ratio < 0.5 ? previous.date : next.date,
+      time: previous.time + (next.time - previous.time) * ratio,
+      position,
       value: previous.value + (next.value - previous.value) * ratio,
     };
   }
 
   function chartTimeline(data, progress, overview) {
+    const endPosition = Math.max(0, data.portfolio.length - 1);
     if (overview) {
-      return { cursor: data.end, viewStart: data.start, viewEnd: data.end };
+      return { cursor: endPosition, viewStart: 0, viewEnd: endPosition };
     }
-    const span = Math.max(1, data.end - data.start);
+    const span = Math.max(1, endPosition);
     const viewportSpan = span * 0.56;
     const initialProgress = 0.50;
     const travel = Math.max(0, Math.min(1, progress));
-    const cursor = data.start + span * (initialProgress + (1 - initialProgress) * travel);
-    const viewEnd = Math.min(data.end, Math.max(data.start + viewportSpan, cursor));
+    const cursor = span * (initialProgress + (1 - initialProgress) * travel);
+    const viewEnd = Math.min(endPosition, Math.max(viewportSpan, cursor));
     return {
       cursor,
-      viewStart: Math.max(data.start, viewEnd - viewportSpan),
+      viewStart: Math.max(0, viewEnd - viewportSpan),
       viewEnd,
     };
   }
@@ -832,8 +844,8 @@
     }
     const effectiveProgress = Number.isFinite(progress) ? progress : 0;
     const timeline = chartTimeline(data, effectiveProgress, reduceMotion || manualScene);
-    const pf = pointAtTime(data.portfolio, timeline.cursor);
-    const bm = pointAtTime(data.benchmark, timeline.cursor);
+    const pf = pointAtPosition(data.portfolio, timeline.cursor);
+    const bm = pointAtPosition(data.benchmark, timeline.cursor);
     const pfReturn = pf.value - 100;
     const bmReturn = bm.value - 100;
     $('yc-entry-period').textContent = formatDate(data.start) + ' — ' + formatDate(data.end)
@@ -900,10 +912,10 @@
     };
   }
 
-  function pathSeries(points, startTime, endTime, x, y, color, width, muted) {
-    const first = pointAtTime(points, startTime);
-    const last = pointAtTime(points, endTime);
-    if (!first || !last || endTime <= startTime) return last || first;
+  function pathSeries(points, startPosition, endPosition, x, y, color, width, muted) {
+    const first = pointAtPosition(points, startPosition);
+    const last = pointAtPosition(points, endPosition);
+    if (!first || !last || endPosition <= startPosition) return last || first;
     context.save();
     context.beginPath();
     context.strokeStyle = color;
@@ -916,19 +928,19 @@
       context.shadowBlur = 13;
     }
     let previous = first;
-    context.moveTo(x(first.time), y(first.value));
-    const startIndex = lowerBoundTime(points, startTime);
+    context.moveTo(x(first.position), y(first.value));
+    const startIndex = Math.max(0, Math.ceil(startPosition));
     for (let index = startIndex; index < points.length; index += 1) {
       const point = points[index];
-      if (point.time <= startTime) continue;
-      if (point.time >= endTime) break;
-      const px = x(point.time);
+      if (point.position <= startPosition) continue;
+      if (point.position >= endPosition) break;
+      const px = x(point.position);
       const py = y(point.value);
       context.lineTo(px, py);
       previous = point;
     }
-    if (last.time > previous.time) {
-      context.lineTo(x(last.time), y(last.value));
+    if (last.position > previous.position) {
+      context.lineTo(x(last.position), y(last.value));
     }
     context.stroke();
     context.restore();
@@ -972,15 +984,17 @@
     const min = data.chartMin;
     const max = data.chartMax;
     const timeline = chartTimeline(data, progress, reduceMotion || manualScene);
-    const x = time => left + (time - timeline.viewStart)
+    const x = position => left + (position - timeline.viewStart)
       / Math.max(1, timeline.viewEnd - timeline.viewStart) * (right - left);
     const y = value => bottom - (value - min) / Math.max(0.0001, max - min) * (bottom - top);
 
     context.fillStyle = muted;
     context.font = '500 9px "IBM Plex Mono", monospace';
-    context.fillText(formatDate(timeline.viewStart), left, bottom + 19);
+    const viewStartPoint = data.portfolio[Math.max(0, Math.floor(timeline.viewStart))];
+    const viewEndPoint = data.portfolio[Math.min(data.portfolio.length - 1, Math.ceil(timeline.viewEnd))];
+    context.fillText(formatDate(viewStartPoint.time), left, bottom + 19);
     context.textAlign = 'right';
-    context.fillText(formatDate(timeline.viewEnd), right, bottom + 19);
+    context.fillText(formatDate(viewEndPoint.time), right, bottom + 19);
     context.textAlign = 'left';
 
     pathSeries(data.benchmark, timeline.viewStart, timeline.cursor, x, y, benchmarkColor, 1.25, true);
@@ -1000,7 +1014,7 @@
       context.shadowColor = lineColor;
       context.shadowBlur = 18;
       context.beginPath();
-      context.arc(x(last.time), y(last.value), 4.2, 0, Math.PI * 2);
+      context.arc(x(last.position), y(last.value), 4.2, 0, Math.PI * 2);
       context.fill();
       context.restore();
     }

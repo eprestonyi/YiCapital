@@ -83,8 +83,11 @@
     $('yca-logout').onclick = async e => {
       e.preventDefault();
       try { await api('/api/logout', { method: 'POST' }); } catch (err) {}
-      ['yc-token', 'yc-role', 'yc-user'].forEach(k => localStorage.removeItem(k));
-      location.href = 'login';
+      ['yc-token', 'yc-role', 'yc-user', 'yc-guest'].forEach(k => {
+        localStorage.removeItem(k);
+        sessionStorage.removeItem(k);
+      });
+      location.replace('/login');
     };
   }
 

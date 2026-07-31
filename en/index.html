@@ -11,13 +11,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/style.css">
-<link rel="stylesheet" href="../assets/yc-entry.css?v=8.8">
+<link rel="stylesheet" href="../assets/yc-entry.css?v=8.9">
 <script>
 window.YC_ENTRY_MODE='gate';
-(()=>{try{const q=new URLSearchParams(location.search);if(q.get('guest')==='1')localStorage.setItem('yc-guest','1');if(q.get('dashboard')==='1')document.documentElement.classList.add('yc-dashboard-requested');else document.documentElement.classList.add('yc-entry-pending');}catch(e){document.documentElement.classList.add('yc-entry-pending');}})();
+(()=>{try{const q=new URLSearchParams(location.search);if(q.get('guest')==='1')localStorage.setItem('yc-guest','1');const token=localStorage.getItem('yc-token')||sessionStorage.getItem('yc-token')||'';const user=localStorage.getItem('yc-user')||sessionStorage.getItem('yc-user')||'';const member=/^[a-f0-9]{64}$/i.test(token)&&!!user;const guest=localStorage.getItem('yc-guest')==='1';document.documentElement.classList.add(member||guest?'yc-dashboard-requested':'yc-entry-pending');}catch(e){document.documentElement.classList.add('yc-entry-pending');}})();
 </script>
-<script src="../assets/portal-config.js?v=8.8"></script>
-<script src="../assets/yc-entry.js?v=8.8" defer></script>
+<script src="../assets/portal-config.js?v=8.9"></script>
+<script src="../assets/yc-entry.js?v=8.9" defer></script>
 </head>
 <body>
 <div class="yc-entry-fallback" role="status"><div class="yc-entry-fallback-card">
@@ -169,6 +169,6 @@ renderReports("home-reports","","");document.addEventListener("yc-content-report
 </script>
 <script src="../assets/yc-home-live.js"></script>
 <script src="../assets/yc-i18n.js"></script>
-<script src="../assets/yc-session.js"></script>
+<script src="../assets/yc-session.js?v=8.9"></script>
 </body>
 </html>

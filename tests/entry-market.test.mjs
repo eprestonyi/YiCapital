@@ -71,6 +71,8 @@ test('entry market returns every common close without exposing raw portfolio fie
     assert.deepEqual(snapshot.points[0], ['2025-01-01', 100, 100]);
     assert.equal(snapshot.start, '2025-01-01');
     assert.equal(snapshot.end, rows(count, 0).at(-1).date);
+    assert.equal(snapshot.missingCloseCount, 0);
+    assert.equal(snapshot.coverage, 1);
     assert.equal(snapshot.review, true);
   }
   const serialized = JSON.stringify(body);
@@ -79,4 +81,50 @@ test('entry market returns every common close without exposing raw portfolio fie
   ]) {
     assert.equal(serialized.includes(forbidden), false, `response leaked ${forbidden}`);
   }
+});
+
+test('entry market flags A-share NAV trading-day holes without fabricating closes', async () => {
+  const benchmarkRows = rows(34, 0).map((row, index) => ({
+    date: row.date,
+    close: 1000 + index * 3,
+  }));
+  const missingDates = new Set(benchmarkRows.slice(14, 18).map(row => row.date));
+  const navRows = rows(34, 0.4).filter(row => !missingDates.has(row.date));
+  const response = await worker.fetch(
+    new Request('https://portal.test/api/entry-market'),
+    {
+      YC_KV: kvStore({
+        'navcache:a': JSON.stringify({
+          ok: true,
+          enabled: true,
+          historyComplete: true,
+          cacheVersion: 2,
+          asOf: navRows.at(-1).date,
+          navRows,
+          status: { stale: [], missing: [] },
+        }),
+        'bmset:a': JSON.stringify({
+          ok: true,
+          data: { HS300: benchmarkRows },
+          sources: { HS300: 'tushare' },
+          stale: false,
+          fetched: '2026-07-30T00:00:00.000Z',
+        }),
+      }),
+      ALLOWED_ORIGIN: 'https://www.yicapital.co',
+    },
+  );
+  assert.equal(response.status, 200);
+  const snapshot = (await response.json()).markets.a;
+  assert.equal(snapshot.pointCount, 30);
+  assert.equal(snapshot.missingCloseCount, 4);
+  assert.equal(snapshot.coverage, 0.882353);
+  assert.equal(snapshot.review, true);
+  assert.deepEqual(
+    snapshot.points.map(point => point[0]),
+    benchmarkRows.map(row => row.date).filter(date => !missingDates.has(date)),
+  );
+  snapshot.points.flatMap(point => point.slice(1)).forEach(value => {
+    assert.equal(Number.isFinite(value) && value > 0, true);
+  });
 });

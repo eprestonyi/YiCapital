@@ -12,7 +12,9 @@ test('all three home routes mount the market entry before the existing dashboard
     assert.match(html, /yc-entry\.js/);
     assert.match(html, /yc-entry-pending/);
     assert.match(html, /yc-entry-fallback/);
-    assert.match(html, /q\.get\('dashboard'\)==='1'/);
+    assert.match(html, /yc-token/);
+    assert.match(html, /yc-user/);
+    assert.match(html, /yc-guest/);
     assert.match(html, /yc-dashboard-requested/);
   }
 });
@@ -57,6 +59,8 @@ test('worker exposes a compact entry snapshot and keeps external data credential
   assert.match(worker, /TUSHARE_TOKEN/);
   assert.match(worker, /formatVersion:\s*3/);
   assert.match(worker, /buildEntryMarketPoints/);
+  assert.match(worker, /missingCloseCount/);
+  assert.match(worker, /coverage/);
   assert.match(worker, /benchmarkSource/);
   assert.match(worker, /sources\[b\.label\]/);
   const entryBranch = worker.slice(
@@ -74,19 +78,24 @@ test('worker exposes a compact entry snapshot and keeps external data credential
   assert.match(config, /YC_GOOGLE_CLIENT_ID\s*=\s*'[^']+\.apps\.googleusercontent\.com'/);
 });
 
-test('static motion modes stop the loop and explicit Dashboard navigation preserves the entry route', async () => {
+test('static motion modes stop the loop and persistent Dashboard state preserves the entry route', async () => {
   const entry = await read('assets/yc-entry.js');
+  const session = await read('assets/yc-session.js');
   assert.match(entry, /if \(!reduceMotion\) requestAnimationFrame\(animationFrame\)/);
   assert.match(entry, /if \(reduceMotion \|\| manualScene\) return/);
-  assert.match(entry, /location\.href = paths\.dashboard/);
-  assert.match(entry, /dashboardRequested/);
-  assert.doesNotMatch(entry, /hasSession|hasGuestPass|location\.reload\(\)/);
+  assert.match(entry, /location\.replace\(paths\.dashboard\)/);
+  assert.match(entry, /hasMemberSession/);
+  assert.match(entry, /hasGuestPass/);
+  assert.match(entry, /MODE === 'gate' && \(hasMemberSession \|\| hasGuestPass\)/);
+  assert.match(session, /\['yc-token', 'yc-role', 'yc-user', 'yc-guest'\]/);
+  assert.match(session, /location\.replace\(homePath\)/);
+  assert.match(session, /isGuest/);
   const sceneDuration = Number(entry.match(/const sceneDuration = (\d+);/)[1]);
   const drawDuration = Number(entry.match(/const drawDuration = (\d+);/)[1]);
   assert.ok(sceneDuration >= 30000);
   assert.equal(drawDuration, sceneDuration);
   assert.match(entry, /chartTimeline/);
-  assert.match(entry, /pointAtTime/);
+  assert.match(entry, /pointAtPosition/);
   assert.match(entry, /lastMetricsAt < 90/);
   assert.match(entry, /transitionScene\(Number\(button\.dataset\.sceneIndex\), false\)/);
   assert.match(entry, /transitionScene\(sceneIndex \+ 1, false\)/);
@@ -100,6 +109,7 @@ test('static motion modes stop the loop and explicit Dashboard navigation preser
   const timelineBody = entry.slice(entry.indexOf('function chartTimeline'), entry.indexOf('function updateSceneText'));
   assert.match(timelineBody, /viewportSpan = span \* 0\.56/);
   assert.match(timelineBody, /initialProgress = 0\.50/);
+  assert.match(timelineBody, /data\.portfolio\.length - 1/);
   assert.doesNotMatch(timelineBody, /travelEnd|zoom|easedZoom/);
   const historyBody = entry.slice(entry.indexOf('function normalizeHistory'), entry.indexOf('const entrySnapshotPromise'));
   assert.match(historyBody, /Math\.max\(1\.25, \(rawMax - rawMin\) \* 0\.11\)/);
@@ -107,6 +117,8 @@ test('static motion modes stop the loop and explicit Dashboard navigation preser
   assert.doesNotMatch(pathBody, /\.filter\(/);
   assert.doesNotMatch(entry, /6 \* 86400000/);
   assert.doesNotMatch(pathBody, /setLineDash|context\.moveTo\(px/);
+  assert.match(pathBody, /x\(first\.position\)/);
+  assert.doesNotMatch(pathBody, /x\(first\.time\)|lowerBoundTime/);
   const drawBody = entry.slice(entry.indexOf('function drawChart'), entry.indexOf('function activateScene'));
   assert.match(drawBody, /const top = 68/);
   assert.match(drawBody, /const bottom = chartHeight - 26/);
