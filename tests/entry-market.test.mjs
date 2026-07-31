@@ -31,7 +31,8 @@ function rows(count, offset) {
 
 test('entry market returns every common close without exposing raw portfolio fields', async () => {
   const count = 240;
-  const labels = { hk: 'HSI ETF', us: 'S&P 500', a: 'HS300' };
+  const labels = { hk: 'HSI', us: 'S&P 500', a: 'HS300' };
+  const endpoints = { hk: 'index_global', us: 'index_global', a: 'index_daily' };
   const initial = {};
   for (const [market, label] of Object.entries(labels)) {
     const navRows = rows(count, market === 'us' ? 0.2 : market === 'a' ? 0.4 : 0);
@@ -49,7 +50,15 @@ test('entry market returns every common close without exposing raw portfolio fie
       data: {
         [label]: navRows.map((row, index) => ({ date: row.date, close: 1000 + index * 2 })),
       },
-      sources: { [label]: market === 'a' ? 'tushare' : 'yahoo' },
+      source: 'tushare',
+      sources: { [label]: `tushare:${endpoints[market]}` },
+      source_meta: {
+        [label]: {
+          source: `tushare:${endpoints[market]}`,
+          source_endpoint: endpoints[market],
+          freshness_class: 'eod',
+        },
+      },
       stale: false,
       fetched: '2026-07-30T00:00:00.000Z',
     });
@@ -106,7 +115,15 @@ test('entry market flags A-share NAV trading-day holes without fabricating close
         'bmset:a': JSON.stringify({
           ok: true,
           data: { HS300: benchmarkRows },
-          sources: { HS300: 'tushare' },
+          source: 'tushare',
+          sources: { HS300: 'tushare:index_daily' },
+          source_meta: {
+            HS300: {
+              source: 'tushare:index_daily',
+              source_endpoint: 'index_daily',
+              freshness_class: 'eod',
+            },
+          },
           stale: false,
           fetched: '2026-07-30T00:00:00.000Z',
         }),

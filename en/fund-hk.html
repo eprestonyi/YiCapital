@@ -199,8 +199,9 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     if(!required||!Array.isArray(j.history)||j.history.length<5||!Array.isArray(j.curve)||!Array.isArray(j.varTable)||!Array.isArray(j.navRows)) return null;
     const cleanRp=(Array.isArray(j.rp)?j.rp:[]).map(Number).filter(Number.isFinite);
     const rp=cleanRp.length>=5?cleanRp:j.history.map(x=>Number(x.ret)).filter(Number.isFinite);
-    const stress=validStress(j.stress)?j.stress:YC.stressScenarios(rp);
+    const stress=validStress(j.stress)?j.stress:null;
     if(!stress)return null;
+    const snapshot=YC.snapshotMeta(j); if(!snapshot)return null;
     const assets=(j.assets||j.holdings||[]).map(h=>({
       ticker:String(h.ticker||h.t||''),name:String(h.name||h.n||h.ticker||h.t||''),
       qty:Number(h.qty??h.q)||0,price:Number(h.price??h.p)||0,marketValue:Number(h.marketValue??h.mv)||0,
@@ -215,8 +216,14 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       navRows:j.navRows,assets,benchmarks:{},primaryBM:null,
       start:(j.summary&&j.summary.start)||j.history[0].date,
       end:j.end||(j.summary&&j.summary.end)||j.history[j.history.length-1].date,
-      asOf:j.asOf||j.marketDate||j.end,
+      asOf:j.asOf||j.marketDate||j.end,snapshot,
     };
+  }
+  function snapshotSourceText(R){
+    const lang=document.documentElement.lang==='en'?'en':document.documentElement.lang==='zh-Hans'?'cn':'tw';
+    const prefix=lang==='en'?'Data source: ':lang==='cn'?'数据源：':'數據源：';
+    const bm=R.benchmarkSnapshot?YC.snapshotLabel(R.benchmarkSnapshot,lang):'';
+    return prefix+YC.snapshotLabel(R.snapshot,lang)+(bm?' · BM '+bm:'');
   }
   async function bootCache(){
     if(new URLSearchParams(location.search).has('data')) return false;
@@ -225,7 +232,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       const j=await (await fetch(api+'/api/nav/hk',{cache:'no-store'})).json();
       const R=cachedReport(j); if(!R) return false;
       render(await fetchBenchmarks(R));
-      $('srcstate').textContent='Data source: persisted backend snapshot (AUTO · CACHE)';
+      $('srcstate').textContent=snapshotSourceText(R);
       return true;
     }catch(e){ return false; }
   }
@@ -273,7 +280,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       [L('st.skew'), M.skew.toFixed(2)], [L('st.kurt'), M.kurt.toFixed(2)],
     ];
     if(R.primaryBM) rows.push([L('st.alpha')+' (vs '+R.primaryBM+') ', F.pct(M.alpha,1,true)], [L('st.beta'), M.beta.toFixed(2)], [L('st.ir'), M.infoRatio.toFixed(2)], ['R²', M.r2.toFixed(2)]);
-    $('c-metrics').innerHTML = '<table class="m"><tbody>' + rows.map(r=>`<tr><td>${r[0]}</td><td style="text-align:right;font-family:var(--mono)">${r[1]}</td></tr>`).join('') + '</tbody></table>' + (R.primaryBM?'':'<div class="legend" style="margin-top:12px">Awaiting HSCEI, Hang Seng and Hang Seng TECH ETF snapshots.</div>');
+    $('c-metrics').innerHTML = '<table class="m"><tbody>' + rows.map(r=>`<tr><td>${r[0]}</td><td style="text-align:right;font-family:var(--mono)">${r[1]}</td></tr>`).join('') + '</tbody></table>' + (R.primaryBM?'':'<div class="legend" style="margin-top:12px">Awaiting Hang Seng and Hang Seng TECH index snapshots.</div>');
 
     // 02 Holdings
     if(R.assets.length){
@@ -314,10 +321,10 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     R.benchmarks={}; R.primaryBM=null;
     try{
       const j=await (await fetch(api+'/api/benchmark?set=hk')).json();
+      R.benchmarkSnapshot=YC.snapshotMeta(j);
       if(j.ok) YC.attachBenchmarks(R,Object.fromEntries(Object.entries({
-        'HSCEI ETF (2828.HK)':j.data&&j.data['HSCEI ETF'],
-        'Hang Seng ETF (2800.HK)':j.data&&j.data['HSI ETF'],
-        'Hang Seng TECH ETF (3032.HK)':j.data&&j.data['HSTECH ETF'],
+        'Hang Seng Index':j.data&&j.data.HSI,
+        'Hang Seng TECH Index':j.data&&j.data.HSTECH,
       }).filter(([,rows])=>Array.isArray(rows))));
     }catch(e){}
     return R;
@@ -386,7 +393,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     await idb.del('handle-hk'); clearInterval(liveTimer); liveHandle=null;
     $('bindbtn').style.display='inline-block'; $('unbindbtn').style.display='none'; $('synctick').style.display='none';
     $('srcstate').textContent='Data source: unbound (using site data)';
-    bootFetch();
+    bootCache();
   });
 
   
@@ -410,7 +417,8 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   
   function bootFetch(){
     const remote=new URLSearchParams(location.search).get('data');
-    const url=remote||DATA_URL;
+    if(!remote)return;
+    const url=remote;
     
     const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
     fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
@@ -419,10 +427,12 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   }
 
   (async ()=>{
+    const remote=new URLSearchParams(location.search).get('data');
+    if(remote){ bootFetch(); return; }
     if(await bootCache()) return;
-    if(!IS_ADMIN){ bootFetch(); return; }
-    const st=await bootHandle();
-    if(st!==true) bootFetch();   
+    $('loader').style.display='block';
+    $('loader').firstChild.textContent='The persisted backend snapshot is temporarily unavailable; an older Excel file will not replace it.';
+    $('srcstate').textContent='Data source: awaiting the last successful backend snapshot';
   })();
 
   

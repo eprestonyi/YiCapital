@@ -198,8 +198,9 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     if(!required||!Array.isArray(j.history)||j.history.length<5||!Array.isArray(j.curve)||!Array.isArray(j.varTable)||!Array.isArray(j.navRows)) return null;
     const cleanRp=(Array.isArray(j.rp)?j.rp:[]).map(Number).filter(Number.isFinite);
     const rp=cleanRp.length>=5?cleanRp:j.history.map(x=>Number(x.ret)).filter(Number.isFinite);
-    const stress=validStress(j.stress)?j.stress:YC.stressScenarios(rp);
+    const stress=validStress(j.stress)?j.stress:null;
     if(!stress)return null;
+    const snapshot=YC.snapshotMeta(j); if(!snapshot)return null;
     const assets=(j.assets||j.holdings||[]).map(h=>({
       ticker:String(h.ticker||h.t||''),name:String(h.name||h.n||h.ticker||h.t||''),
       qty:Number(h.qty??h.q)||0,price:Number(h.price??h.p)||0,marketValue:Number(h.marketValue??h.mv)||0,
@@ -214,8 +215,14 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       navRows:j.navRows,assets,benchmarks:{},primaryBM:null,
       start:(j.summary&&j.summary.start)||j.history[0].date,
       end:j.end||(j.summary&&j.summary.end)||j.history[j.history.length-1].date,
-      asOf:j.asOf||j.marketDate||j.end,
+      asOf:j.asOf||j.marketDate||j.end,snapshot,
     };
+  }
+  function snapshotSourceText(R){
+    const lang=document.documentElement.lang==='en'?'en':document.documentElement.lang==='zh-Hans'?'cn':'tw';
+    const prefix=lang==='en'?'Data source: ':lang==='cn'?'数据源：':'數據源：';
+    const bm=R.benchmarkSnapshot?YC.snapshotLabel(R.benchmarkSnapshot,lang):'';
+    return prefix+YC.snapshotLabel(R.snapshot,lang)+(bm?' · BM '+bm:'');
   }
   async function bootCache(){
     if(new URLSearchParams(location.search).has('data')) return false;
@@ -224,7 +231,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       const j=await (await fetch(api+'/api/nav/hk',{cache:'no-store'})).json();
       const R=cachedReport(j); if(!R) return false;
       render(await fetchBenchmarks(R));
-      $('srcstate').textContent='數據源：後台持久化快照（AUTO · CACHE）';
+      $('srcstate').textContent=snapshotSourceText(R);
       return true;
     }catch(e){ return false; }
   }
@@ -272,7 +279,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       [L('st.skew'), M.skew.toFixed(2)], [L('st.kurt'), M.kurt.toFixed(2)],
     ];
     if(R.primaryBM) rows.push([L('st.alpha')+'（vs '+R.primaryBM+'）', F.pct(M.alpha,1,true)], [L('st.beta'), M.beta.toFixed(2)], [L('st.ir'), M.infoRatio.toFixed(2)], ['R²', M.r2.toFixed(2)]);
-    $('c-metrics').innerHTML = '<table class="m"><tbody>' + rows.map(r=>`<tr><td>${r[0]}</td><td style="text-align:right;font-family:var(--mono)">${r[1]}</td></tr>`).join('') + '</tbody></table>' + (R.primaryBM?'':'<div class="legend" style="margin-top:12px">等待後台國企、恒生與恒科 ETF 基準快照。</div>');
+    $('c-metrics').innerHTML = '<table class="m"><tbody>' + rows.map(r=>`<tr><td>${r[0]}</td><td style="text-align:right;font-family:var(--mono)">${r[1]}</td></tr>`).join('') + '</tbody></table>' + (R.primaryBM?'':'<div class="legend" style="margin-top:12px">等待後台恒生與恒生科技指數基準快照。</div>');
 
     // 02 Holdings
     if(R.assets.length){
@@ -313,10 +320,10 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     R.benchmarks={}; R.primaryBM=null;
     try{
       const j=await (await fetch(api+'/api/benchmark?set=hk')).json();
+      R.benchmarkSnapshot=YC.snapshotMeta(j);
       if(j.ok) YC.attachBenchmarks(R,Object.fromEntries(Object.entries({
-        '國企 ETF（2828.HK）':j.data&&j.data['HSCEI ETF'],
-        '恒生 ETF（2800.HK）':j.data&&j.data['HSI ETF'],
-        '恒科 ETF（3032.HK）':j.data&&j.data['HSTECH ETF'],
+        '恒生指數':j.data&&j.data.HSI,
+        '恒生科技指數':j.data&&j.data.HSTECH,
       }).filter(([,rows])=>Array.isArray(rows))));
     }catch(e){}
     return R;
@@ -391,7 +398,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     await idb.del('handle-hk'); clearInterval(liveTimer); liveHandle=null;
     $('bindbtn').style.display='inline-block'; $('unbindbtn').style.display='none'; $('synctick').style.display='none';
     $('srcstate').textContent='數據源：已解除綁定（改用站內數據）';
-    bootFetch();
+    bootCache();
   });
 
   // 頁面打開：先嘗試恢復已綁定的句柄
@@ -415,7 +422,8 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   // 遠程/站內 fetch
   function bootFetch(){
     const remote=new URLSearchParams(location.search).get('data');
-    const url=remote||DATA_URL;
+    if(!remote)return;
+    const url=remote;
     // cache-bust：避免瀏覽器/CDN 緩存舊淨值表
     const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
     fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
@@ -424,10 +432,12 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   }
 
   (async ()=>{
+    const remote=new URLSearchParams(location.search).get('data');
+    if(remote){ bootFetch(); return; }
     if(await bootCache()) return;
-    if(!IS_ADMIN){ bootFetch(); return; }
-    const st=await bootHandle();
-    if(st!==true) bootFetch();   // pending 時也先顯示站內數據，連接後自動切換
+    $('loader').style.display='block';
+    $('loader').firstChild.textContent='後台持久化快照暫時不可用；不會以舊 Excel 覆蓋。';
+    $('srcstate').textContent='數據源：等待後台最後成功快照';
   })();
 
   // 拖入 / 選擇文件（單次預覽）

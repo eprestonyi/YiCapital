@@ -13,37 +13,18 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/style.css">
-<link rel="stylesheet" href="../assets/terminal-v2.css?v=20260730e">
+<link rel="stylesheet" href="../assets/terminal-v2.css?v=20260730f">
 <script src="../assets/portal-config.js" defer></script>
 <script src="../assets/yc-i18n.js" defer></script>
-<script src="../assets/yc-terminal-v2.js?v=20260730e" defer></script>
+<script src="../assets/yc-atlas-visuals.js?v=20260730f" defer></script>
+<script src="../assets/yc-terminal-v2.js?v=20260730f" defer></script>
 </head>
 <body class="terminal-v2-page" data-terminal-lang="en">
 <a class="terminal-skip" href="#terminal-canvas">Skip to workspace</a>
 
-<header class="terminal-site-header">
-  <div class="terminal-site-header-inner">
-    <a class="terminal-brand terminal-brand-link" href="./" aria-label="YiCapital home"><span class="logo">Yi<b>Capital</b></span></a>
-    <nav class="terminal-site-links" aria-label="Site navigation">
-      <a href="insights" data-i18n="nav.insights">Insights</a>
-      <a href="forum" data-i18n="nav.forum">Forum</a>
-      <a href="portfolios" data-i18n="nav.portfolios">Portfolios</a>
-      <a class="link active" href="terminal" aria-current="page" data-i18n="nav.terminal">Terminal</a>
-    </nav>
-    <div class="terminal-site-tools">
-      <a class="terminal-about" href="about" data-i18n="nav.about">About</a>
-      <div class="terminal-language" aria-label="Language">
-        <a href="../terminal.html" lang="zh-Hant" data-language-link>繁</a>
-        <a href="../cn/terminal.html" lang="zh-Hans" data-language-link>简</a>
-        <a class="on" href="terminal.html" lang="en" aria-current="page" data-language-link>EN</a>
-      </div>
-      <a href="login">Login</a>
-    </div>
-  </div>
-</header>
-
 <main class="terminal-app" aria-label="YiCapital Terminal">
   <section class="terminal-command" aria-label="Global command bar">
+    <a class="terminal-home-mark" href="terminal" aria-label="Back to Terminal home">YC</a>
     <div class="terminal-query">
       <span class="terminal-query-mark" aria-hidden="true">⌕</span>
       <label class="terminal-visually-hidden" for="terminal-search">Search markets, stocks or functions</label>
@@ -55,12 +36,18 @@
       <div id="terminal-search-results" class="terminal-search-results" role="listbox" hidden></div>
     </div>
     <div id="terminal-context" class="terminal-context" aria-live="polite">
-      <span class="terminal-context-code">MKT</span>
-      <strong>Market News</strong>
+      <span class="terminal-context-code">HOME</span>
+      <strong>Yi Terminal</strong>
     </div>
     <div class="terminal-command-meta">
-      <label><span>YEAR</span><select id="terminal-year" aria-label="Canonical year"></select></label>
+      <label class="terminal-year-control"><span>YEAR</span><select id="terminal-year" aria-label="Canonical year"></select></label>
       <span id="terminal-clock" class="terminal-clock">HKT --:--:--</span>
+      <div class="terminal-language" aria-label="Language">
+        <a href="../terminal.html" lang="zh-Hant" data-language-link>繁</a>
+        <a href="../cn/terminal.html" lang="zh-Hans" data-language-link>简</a>
+        <a class="on" href="terminal.html" lang="en" aria-current="page" data-language-link>EN</a>
+      </div>
+      <a class="terminal-exit" href="./" aria-label="Back to YiCapital website">↗</a>
     </div>
   </section>
 

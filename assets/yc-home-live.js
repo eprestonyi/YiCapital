@@ -8,23 +8,22 @@
     tw: {
       wait: 'AUTO · 等待後台快照', fail: 'AUTO · 數據暫不可用', chart: '後台曲線同步中',
       fund: 'HK Fund', benchWait: 'Benchmark 等待同步',
-      hscei: '國企 ETF', hsi: '恒生 ETF', hstech: '恒科 ETF',
+      hsi: '恒生指數', hstech: '恒生科技指數',
     },
     cn: {
       wait: 'AUTO · 等待后台快照', fail: 'AUTO · 数据暂不可用', chart: '后台曲线同步中',
       fund: 'HK Fund', benchWait: 'Benchmark 等待同步',
-      hscei: '国企 ETF', hsi: '恒生 ETF', hstech: '恒科 ETF',
+      hsi: '恒生指数', hstech: '恒生科技指数',
     },
     en: {
       wait: 'AUTO · awaiting backend snapshot', fail: 'AUTO · data unavailable', chart: 'Backend curve is syncing',
       fund: 'HK Fund', benchWait: 'Benchmarks awaiting sync',
-      hscei: 'HSCEI ETF', hsi: 'Hang Seng ETF', hstech: 'Hang Seng TECH ETF',
+      hsi: 'Hang Seng Index', hstech: 'Hang Seng TECH Index',
     },
   }[lang];
   const hkBenchmarks = [
-    { key: 'HSCEI ETF', label: copy.hscei, color: '#60a5fa' },
-    { key: 'HSI ETF', label: copy.hsi, color: '#a78bfa' },
-    { key: 'HSTECH ETF', label: copy.hstech, color: '#fb923c' },
+    { key: 'HSI', label: copy.hsi, color: '#a78bfa' },
+    { key: 'HSTECH', label: copy.hstech, color: '#fb923c' },
   ];
   const set = (id, value, cls) => {
     const el = document.getElementById(id); if (!el) return;

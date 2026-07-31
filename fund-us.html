@@ -197,8 +197,9 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     if(!required||!Array.isArray(j.history)||j.history.length<5||!Array.isArray(j.curve)||!Array.isArray(j.varTable)||!Array.isArray(j.navRows)) return null;
     const cleanRp=(Array.isArray(j.rp)?j.rp:[]).map(Number).filter(Number.isFinite);
     const rp=cleanRp.length>=5?cleanRp:j.history.map(x=>Number(x.ret)).filter(Number.isFinite);
-    const stress=validStress(j.stress)?j.stress:YC.stressScenarios(rp);
+    const stress=validStress(j.stress)?j.stress:null;
     if(!stress)return null;
+    const snapshot=YC.snapshotMeta(j); if(!snapshot)return null;
     const assets=(j.assets||j.holdings||[]).map(h=>({
       ticker:String(h.ticker||h.t||''),name:String(h.name||h.n||h.ticker||h.t||''),
       qty:Number(h.qty??h.q)||0,price:Number(h.price??h.p)||0,marketValue:Number(h.marketValue??h.mv)||0,
@@ -213,8 +214,14 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       navRows:j.navRows,assets,benchmarks:{},primaryBM:null,
       start:(j.summary&&j.summary.start)||j.history[0].date,
       end:j.end||(j.summary&&j.summary.end)||j.history[j.history.length-1].date,
-      asOf:j.asOf||j.marketDate||j.end,
+      asOf:j.asOf||j.marketDate||j.end,snapshot,
     };
+  }
+  function snapshotSourceText(R){
+    const lang=document.documentElement.lang==='en'?'en':document.documentElement.lang==='zh-Hans'?'cn':'tw';
+    const prefix=lang==='en'?'Data source: ':lang==='cn'?'数据源：':'數據源：';
+    const bm=R.benchmarkSnapshot?YC.snapshotLabel(R.benchmarkSnapshot,lang):'';
+    return prefix+YC.snapshotLabel(R.snapshot,lang)+(bm?' · BM '+bm:'');
   }
   async function bootCache(){
     if(new URLSearchParams(location.search).has('data')) return false;
@@ -223,7 +230,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       const j=await (await fetch(api+'/api/nav/us',{cache:'no-store'})).json();
       const R=cachedReport(j); if(!R) return false;
       render(await fetchBenchmarks(R));
-      $('srcstate').textContent='數據源：後台持久化快照（AUTO · CACHE）';
+      $('srcstate').textContent=snapshotSourceText(R);
       return true;
     }catch(e){ return false; }
   }
@@ -310,7 +317,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     const api=(window.YC_API||'').replace(/\/+$/,'');
     if(R.error||!api) return R;
     R.benchmarks={}; R.primaryBM=null;
-    try{ const j=await (await fetch(api+'/api/benchmark?set=us')).json(); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
+    try{ const j=await (await fetch(api+'/api/benchmark?set=us')).json(); R.benchmarkSnapshot=YC.snapshotMeta(j); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
     return R;
   }
   async function loadArrayBuffer(buf, srcLabel){
@@ -383,7 +390,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     await idb.del('handle'); clearInterval(liveTimer); liveHandle=null;
     $('bindbtn').style.display='inline-block'; $('unbindbtn').style.display='none'; $('synctick').style.display='none';
     $('srcstate').textContent='數據源：已解除綁定（改用站內數據）';
-    bootFetch();
+    bootCache();
   });
 
   // 頁面打開：先嘗試恢復已綁定的句柄
@@ -407,7 +414,8 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   // 遠程/站內 fetch
   function bootFetch(){
     const remote=new URLSearchParams(location.search).get('data');
-    const url=remote||DATA_URL;
+    if(!remote)return;
+    const url=remote;
     // cache-bust：避免瀏覽器/CDN 緩存舊淨值表
     const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
     fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
@@ -416,10 +424,12 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   }
 
   (async ()=>{
+    const remote=new URLSearchParams(location.search).get('data');
+    if(remote){ bootFetch(); return; }
     if(await bootCache()) return;
-    if(!IS_ADMIN){ bootFetch(); return; }
-    const st=await bootHandle();
-    if(st!==true) bootFetch();   // pending 時也先顯示站內數據，連接後自動切換
+    $('loader').style.display='block';
+    $('loader').firstChild.textContent='後台持久化快照暫時不可用；不會以舊 Excel 覆蓋。';
+    $('srcstate').textContent='數據源：等待後台最後成功快照';
   })();
 
   // 拖入 / 選擇文件（單次預覽）

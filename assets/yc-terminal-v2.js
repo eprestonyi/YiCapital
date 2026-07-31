@@ -102,7 +102,22 @@
       'Terminal 控制面無法完成初始化；各資料端點仍會獨立 fail closed。',
       'Terminal 控制面无法完成初始化；各数据端点仍会独立 fail closed。',
       'The Terminal control plane could not initialize. Each data endpoint will still fail closed independently.'
-    )
+    ),
+    terminalHome: t3('易終端首頁', '易终端首页', 'Terminal Home'),
+    dailyDesk: t3('每日市場綜合屏', '每日市场综合屏', 'Daily Market Desk'),
+    dailyDeskBody: t3(
+      '新聞與市場資料按來源時間更新；沒有可核驗資料的面板會明確停止顯示。',
+      '新闻与市场数据按来源时间更新；没有可核验数据的面板会明确停止显示。',
+      'News and market panels update to their source timestamps. Panels without verified data stop explicitly.'
+    ),
+    sevenDesks: t3('七大綜合工作台', '七大综合工作台', 'Seven integrated desks'),
+    openDesk: t3('打開綜合屏', '打开综合屏', 'Open dashboard'),
+    securitySearch: t3('搜尋 A／H／美股後進入公司工作台', '搜索 A／H／美股后进入公司工作台', 'Search A/H/US equities to open a company workspace'),
+    records: t3('筆可發布記錄', '条可发布记录', 'publishable records'),
+    dashboard: t3('綜合屏', '综合屏', 'Dashboard'),
+    chartSource: t3('圖表只使用目前端點返回的可核驗記錄', '图表只使用当前端点返回的可核验记录', 'Charts use only verifiable rows returned by the active endpoint'),
+    atlasMode: t3('星雲網絡', '星云网络', 'Nebula network'),
+    highwayMode: t3('產業高速公路', '产业高速公路', 'Supply highway')
   };
 
   const workspace = (id, code, name, description, functions) => ({
@@ -226,6 +241,10 @@
   ];
 
   const workspaceMap = new Map(WORKSPACES.map((item) => [item.id, item]));
+  const YEAR_FUNCTIONS = new Set([
+    'financials', 'model', 'supply-chain', 'price-history',
+    'valuation', 'estimates', 'ownership'
+  ]);
   const MARKET_SHORTCUTS = Object.freeze([
     { symbol: 'SPX', name: 'S&P 500', asset: 'global-index' },
     { symbol: 'IXIC', name: 'NASDAQ Composite', asset: 'global-index' },
@@ -240,7 +259,7 @@
   ]);
   const defaultYear = String(Math.max(2010, Math.min(2026, new Date().getUTCFullYear() - 1)));
   const state = {
-    workspace: 'market',
+    workspace: null,
     functionId: 'overview',
     year: defaultYear,
     symbol: '',
@@ -248,6 +267,7 @@
     securityName: '',
     entityId: '',
     atlas: null,
+    atlasVisual: null,
     atlasPromise: null,
     atlasMeta: null,
     entityMap: new Map(),
@@ -266,6 +286,14 @@
     newsFilter: '',
     newsSelection: 0
   };
+
+  function terminalMode() {
+    if (!state.workspace) return 'home';
+    if (state.workspace === 'supply') return 'supply';
+    if (state.symbol) return 'security';
+    if (state.workspace === 'stocks') return 'equity-dashboard';
+    return 'dashboard';
+  }
 
   function create(tag, className, value) {
     const element = document.createElement(tag);
@@ -491,6 +519,7 @@
     );
     fragment.append(source, freshness, permission);
     if (meta?.asOf) fragment.appendChild(create('span', 'terminal-tag', `${localize(COPY.asOf)} · ${formatTimestamp(meta.asOf)}`));
+    if (meta?.partial) fragment.appendChild(create('span', 'terminal-source-badge is-partial', 'PARTIAL COVERAGE'));
     return fragment;
   }
 
@@ -528,15 +557,22 @@
   }
 
   function renderLoading() {
+    if (state.atlasVisual?.destroy) state.atlasVisual.destroy();
+    state.atlasVisual = null;
     setBusy(true);
     canvas.replaceChildren(create('div', 'terminal-loading', localize(COPY.loading)));
   }
 
   function currentRouteParameters() {
+    const mode = terminalMode();
     return {
-      workspace: state.workspace,
-      function: state.functionId,
-      year: state.year,
+      workspace: state.workspace || null,
+      function: mode === 'home' || mode === 'dashboard' || mode === 'equity-dashboard'
+        ? null
+        : state.functionId,
+      year: mode === 'supply' || (mode === 'security' && YEAR_FUNCTIONS.has(state.functionId))
+        ? state.year
+        : null,
       symbol: state.symbol || null,
       asset: state.asset || null,
       entity: state.entityId || null
@@ -559,7 +595,9 @@
   function readRoute() {
     const params = new URLSearchParams(window.location.search);
     const requestedWorkspace = params.get('workspace');
-    if (requestedWorkspace && workspaceMap.has(requestedWorkspace)) state.workspace = requestedWorkspace;
+    state.workspace = requestedWorkspace && workspaceMap.has(requestedWorkspace)
+      ? requestedWorkspace
+      : null;
     const area = currentWorkspace();
     const requestedFunction = params.get('function');
     state.functionId = area.functions.some((item) => item.id === requestedFunction)
@@ -569,9 +607,7 @@
     if (requestedYear && /^(201\d|202[0-6])$/.test(requestedYear)) state.year = requestedYear;
     state.symbol = String(params.get('symbol') || '').trim().slice(0, 40);
     state.asset = String(params.get('asset') || '').trim().slice(0, 24);
-    state.entityId = String(
-      params.get('entity') || (state.workspace === 'supply' && !state.symbol ? 'nvda' : '')
-    ).trim().slice(0, 80);
+    state.entityId = String(params.get('entity') || '').trim().slice(0, 80);
   }
 
   function compactDate(date) {
@@ -703,13 +739,32 @@
   }
 
   function updateContext() {
+    if (terminalMode() === 'home') {
+      contextBar.replaceChildren(
+        create('span', 'terminal-context-code', 'HOME'),
+        create('strong', '', 'Yi Terminal'),
+        create('span', '', localize(COPY.dailyDesk))
+      );
+      return;
+    }
     const area = currentWorkspace();
     const activeFunction = currentFunction();
-    const code = create('span', 'terminal-context-code', `${area.code}:${activeFunction.code}`);
-    const title = create('strong', '', localize(activeFunction.name));
+    const mode = terminalMode();
+    const code = create(
+      'span',
+      'terminal-context-code',
+      mode === 'security' ? `${area.code}:${activeFunction.code}` : area.code
+    );
+    const title = create(
+      'strong',
+      '',
+      mode === 'security' ? localize(activeFunction.name) : `${localize(area.name)} · ${localize(COPY.dashboard)}`
+    );
     const suffixParts = [];
     if (state.symbol) suffixParts.push(state.securityName || state.symbol);
-    suffixParts.push(`${localize(COPY.canonicalYear)} ${state.year}`);
+    if (mode === 'security' && YEAR_FUNCTIONS.has(state.functionId)) {
+      suffixParts.push(`${localize(COPY.canonicalYear)} ${state.year}`);
+    }
     contextBar.replaceChildren(code, title, create('span', '', suffixParts.join(' · ')));
   }
 
@@ -734,6 +789,7 @@
       button.setAttribute('role', 'tab');
       button.setAttribute('aria-selected', selected ? 'true' : 'false');
       button.setAttribute('aria-controls', 'terminal-canvas');
+      button.title = `${index + 1} ${area.code} · ${localize(area.name)}`;
       button.tabIndex = selected ? 0 : -1;
       button.append(create('code', '', `${index + 1} ${area.code}`), create('span', '', localize(area.name)));
       button.addEventListener('keydown', (event) => {
@@ -763,9 +819,28 @@
     });
   }
 
+  function updateChromeVisibility() {
+    const mode = terminalMode();
+    body.classList.remove(
+      'terminal-mode-home',
+      'terminal-mode-dashboard',
+      'terminal-mode-equity-dashboard',
+      'terminal-mode-security',
+      'terminal-mode-supply'
+    );
+    body.classList.add(`terminal-mode-${mode}`);
+    workspaceTabs.hidden = mode === 'home';
+    functionTabs.hidden = mode !== 'security';
+    const yearControl = document.querySelector('.terminal-year-control');
+    if (yearControl) {
+      yearControl.hidden = !(mode === 'security' && YEAR_FUNCTIONS.has(state.functionId));
+    }
+  }
+
   function syncShell() {
     renderWorkspaceTabs();
     renderFunctionTabs();
+    updateChromeVisibility();
     updateContext();
     if (yearSelect) yearSelect.value = state.year;
   }
@@ -776,7 +851,7 @@
       state.symbol = '';
       state.asset = '';
       state.securityName = '';
-      state.entityId = id === 'supply' ? 'nvda' : '';
+      state.entityId = '';
     }
     state.workspace = id;
     state.functionId = workspaceMap.get(id).functions[0].id;
@@ -828,6 +903,410 @@
     });
     wrapper.append(head, grid);
     return wrapper;
+  }
+
+  function rowDate(row) {
+    return String(
+      row?.trade_date ?? row?.date ?? row?.cal_date ?? row?.ann_date ??
+      row?.pub_time ?? row?.datetime ?? row?.time ?? ''
+    );
+  }
+
+  function rowInstrument(row) {
+    return String(
+      row?.ts_code ?? row?.symbol ?? row?.code ?? row?.name ??
+      row?.index_name ?? row?.curve_type ?? row?.exchange ?? 'SERIES'
+    );
+  }
+
+  function rowMarketValue(row) {
+    const candidates = [
+      row?.close, row?.last, row?.price, row?.settle, row?.nav,
+      row?.value, row?.rate, row?.yield
+    ];
+    for (const candidate of candidates) {
+      const numeric = finiteNumber(candidate);
+      if (numeric != null) return numeric;
+    }
+    return null;
+  }
+
+  function latestRowsByInstrument(rows) {
+    const latest = new Map();
+    rows.forEach((row) => {
+      const key = rowInstrument(row);
+      const previous = latest.get(key);
+      if (!previous || rowDate(row) >= rowDate(previous)) latest.set(key, row);
+    });
+    return [...latest.values()];
+  }
+
+  function normalizedPerformanceChart(rows, label) {
+    const root = create('div', 'terminal-performance-chart');
+    const groups = new Map();
+    rows.forEach((row) => {
+      const value = rowMarketValue(row);
+      const date = rowDate(row);
+      if (value == null || !date) return;
+      const key = rowInstrument(row);
+      if (!groups.has(key)) groups.set(key, new Map());
+      groups.get(key).set(date, value);
+    });
+    const series = [...groups.entries()]
+      .map(([name, values]) => ({
+        name,
+        points: [...values.entries()].sort(([left], [right]) => left.localeCompare(right))
+      }))
+      .filter((item) => item.points.length >= 8)
+      .sort((left, right) => right.points.length - left.points.length)
+      .slice(0, 5);
+    if (!series.length) return unavailableNode('DASHBOARD:SERIES', state.lastMeta, localize(COPY.noRows));
+
+    const width = 820;
+    const height = 270;
+    const padding = { top: 22, right: 18, bottom: 28, left: 36 };
+    const normalized = series.map((item) => {
+      const base = item.points[0][1] || 1;
+      return {
+        ...item,
+        points: item.points.map(([date, value]) => [date, (value / base) * 100])
+      };
+    });
+    const allValues = normalized.flatMap((item) => item.points.map((point) => point[1]));
+    const minimum = Math.min(...allValues);
+    const maximum = Math.max(...allValues);
+    const spread = maximum - minimum || 1;
+    const colors = ['#22d3ee', '#6e9af4', '#b54bfa', '#f3c969', '#36d39a'];
+    const svg = createSvg('svg', {
+      viewBox: `0 0 ${width} ${height}`,
+      role: 'img',
+      'aria-label': label,
+      preserveAspectRatio: 'none'
+    });
+    for (let line = 0; line <= 4; line += 1) {
+      const y = padding.top + ((height - padding.top - padding.bottom) * line) / 4;
+      svg.appendChild(createSvg('line', {
+        x1: padding.left,
+        y1: y,
+        x2: width - padding.right,
+        y2: y,
+        stroke: '#18263a',
+        'stroke-width': 1
+      }));
+    }
+    normalized.forEach((item, seriesIndex) => {
+      const path = item.points.map((point, index) => {
+        const x = padding.left +
+          ((width - padding.left - padding.right) * index) / Math.max(1, item.points.length - 1);
+        const y = height - padding.bottom -
+          ((point[1] - minimum) / spread) * (height - padding.top - padding.bottom);
+        return `${index ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`;
+      }).join(' ');
+      svg.appendChild(createSvg('path', {
+        d: path,
+        fill: 'none',
+        stroke: colors[seriesIndex],
+        'stroke-width': seriesIndex === 0 ? 2.4 : 1.5,
+        opacity: seriesIndex === 0 ? 1 : .82,
+        'vector-effect': 'non-scaling-stroke'
+      }));
+    });
+    const legend = create('div', 'terminal-chart-legend');
+    normalized.forEach((item, index) => {
+      const key = create('span');
+      key.append(
+        append(create('i'), []),
+        document.createTextNode(item.name)
+      );
+      key.querySelector('i').style.background = colors[index];
+      legend.appendChild(key);
+    });
+    root.append(svg, legend, create('p', 'terminal-chart-caption', `${localize(COPY.chartSource)} · BASE 100`));
+    return root;
+  }
+
+  function rankBars(rows) {
+    const candidates = latestRowsByInstrument(rows).map((row) => {
+      const change = finiteNumber(row.pct_chg ?? row.change_pct ?? row.change);
+      const fallback = finiteNumber(row.amount ?? row.vol ?? row.volume ?? row.open_interest ?? row.oi);
+      return {
+        name: rowInstrument(row),
+        value: change == null ? fallback : change,
+        measure: change == null ? 'ACTIVITY' : 'CHANGE %',
+        signed: change != null
+      };
+    }).filter((item) => item.value != null);
+    candidates.sort((left, right) => Math.abs(right.value) - Math.abs(left.value));
+    const visible = candidates.slice(0, 10);
+    if (!visible.length) return unavailableNode('DASHBOARD:RANKING', state.lastMeta, localize(COPY.noRows));
+    const maximum = Math.max(...visible.map((item) => Math.abs(item.value)), 1);
+    const root = create('div', 'terminal-rank-bars');
+    visible.forEach((item) => {
+      const row = create('div', 'terminal-rank-row');
+      const label = create('span', 'terminal-rank-label', item.name);
+      const track = create('span', 'terminal-rank-track');
+      const bar = create('i', item.signed && item.value < 0 ? 'is-negative' : '');
+      bar.style.width = `${Math.max(3, Math.abs(item.value) / maximum * 100)}%`;
+      track.appendChild(bar);
+      row.append(
+        label,
+        track,
+        create('strong', item.signed && item.value < 0 ? 'is-down' : item.signed ? 'is-up' : '', formatNumber(item.value))
+      );
+      root.appendChild(row);
+    });
+    root.appendChild(create('p', 'terminal-chart-caption', visible[0].measure));
+    return root;
+  }
+
+  function categoricalBars(rows, keys) {
+    const field = (keys || []).find((key) => rows.some((row) => row?.[key] != null));
+    if (!field) return rankBars(rows);
+    const counts = new Map();
+    rows.forEach((row) => {
+      const value = String(row?.[field] || 'UNKNOWN');
+      counts.set(value, (counts.get(value) || 0) + 1);
+    });
+    const visible = [...counts.entries()]
+      .map(([name, value]) => ({ name, value }))
+      .sort((left, right) => right.value - left.value)
+      .slice(0, 10);
+    const maximum = Math.max(...visible.map((item) => item.value), 1);
+    const root = create('div', 'terminal-rank-bars');
+    visible.forEach((item) => {
+      const row = create('div', 'terminal-rank-row');
+      const track = create('span', 'terminal-rank-track');
+      const bar = create('i');
+      bar.style.width = `${Math.max(3, item.value / maximum * 100)}%`;
+      track.appendChild(bar);
+      row.append(
+        create('span', 'terminal-rank-label', item.name),
+        track,
+        create('strong', '', formatNumber(item.value, 0))
+      );
+      root.appendChild(row);
+    });
+    root.appendChild(create('p', 'terminal-chart-caption', `${field.toUpperCase()} · COUNT`));
+    return root;
+  }
+
+  function moneyCurve(rows) {
+    const latest = [...rows].sort((left, right) => rowDate(left).localeCompare(rowDate(right))).at(-1);
+    if (!latest) return unavailableNode('DASHBOARD:CURVE', state.lastMeta, localize(COPY.noRows));
+    const tenors = ['on', '1w', '2w', '1m', '3m', '6m', '9m', '1y']
+      .map((key) => ({ key, value: finiteNumber(latest[key]) }))
+      .filter((item) => item.value != null);
+    if (tenors.length < 3) return rankBars(rows);
+    const width = 720;
+    const height = 245;
+    const padding = 34;
+    const values = tenors.map((item) => item.value);
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    const spread = maximum - minimum || 1;
+    const svg = createSvg('svg', {
+      viewBox: `0 0 ${width} ${height}`,
+      role: 'img',
+      'aria-label': `${rowDate(latest)} SHIBOR curve`,
+      preserveAspectRatio: 'none'
+    });
+    let path = '';
+    tenors.forEach((item, index) => {
+      const x = padding + (width - padding * 2) * index / Math.max(1, tenors.length - 1);
+      const y = height - padding - (item.value - minimum) / spread * (height - padding * 2);
+      path += `${index ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)} `;
+      svg.append(
+        createSvg('circle', { cx: x, cy: y, r: 4, fill: '#22d3ee' }),
+        createSvg('text', {
+          x,
+          y: height - 10,
+          fill: '#74849a',
+          'font-size': 11,
+          'text-anchor': 'middle',
+          'font-family': 'IBM Plex Mono, monospace'
+        }, item.key.toUpperCase())
+      );
+    });
+    svg.prepend(createSvg('path', {
+      d: path.trim(),
+      fill: 'none',
+      stroke: '#22d3ee',
+      'stroke-width': 2.2,
+      'vector-effect': 'non-scaling-stroke'
+    }));
+    const root = create('div', 'terminal-performance-chart');
+    root.append(svg, create('p', 'terminal-chart-caption', `${rowDate(latest)} · SHIBOR`));
+    return root;
+  }
+
+  function dashboardKpis(rows, meta) {
+    const instruments = new Set(rows.map(rowInstrument).filter(Boolean));
+    const latestDate = rows.map(rowDate).filter(Boolean).sort().at(-1) || '—';
+    return kpiStrip([
+      { label: localize(COPY.records), value: rows.length },
+      { label: localize(COPY.asOf), value: latestDate },
+      { label: localize(COPY.category), value: instruments.size },
+      { label: localize(COPY.source), value: meta?.source || 'UNKNOWN' }
+    ]);
+  }
+
+  function dashboardVisual(area, rows) {
+    if (area.id === 'money') return moneyCurve(rows);
+    const chart = normalizedPerformanceChart(rows, `${area.code} ${localize(COPY.dashboard)}`);
+    if (!chart.classList?.contains('terminal-unavailable')) return chart;
+    return rankBars(rows);
+  }
+
+  function renderDomainDashboard(result, secondaryResult) {
+    const area = currentWorkspace();
+    const rows = normalizedRows(result.data);
+    const secondaryRows = secondaryResult ? normalizedRows(secondaryResult.data) : [];
+    const screen = create('div', 'terminal-screen terminal-domain-screen');
+    screen.appendChild(screenHeader(
+      `${area.code} · ${localize(area.name)}`,
+      localize(area.description),
+      result.meta
+    ));
+    if (area.id === 'stocks') {
+      const prompt = create('section', 'terminal-dashboard-search');
+      prompt.append(
+        create('code', '', 'EQT'),
+        create('strong', '', localize(COPY.securitySearch)),
+        create('span', '', 'DES · CN · RES · FA · MODL · SPLC · Q · GP · HP · VAL · EE · OWN · EVT · VWAP · AVAT')
+      );
+      prompt.addEventListener('click', () => searchInput.focus());
+      screen.appendChild(prompt);
+    }
+    const grid = create('div', 'terminal-grid');
+    if (rows.length || secondaryRows.length) {
+      const visualBody = create('div', 'terminal-panel-body');
+      visualBody.appendChild(
+        rows.length
+          ? dashboardVisual(area, rows)
+          : unavailableNode(ENDPOINTS.market, result.meta, localize(COPY.noRows))
+      );
+      grid.appendChild(panel(
+        area.id === 'money' ? t3('利率曲線', '利率曲线', 'Rate curve')[language] : localize(COPY.dashboard),
+        visualBody,
+        8,
+        `${rows.length}`
+      ));
+      const rankingBody = create('div', 'terminal-panel-body');
+      rankingBody.appendChild(
+        area.id === 'etf' && secondaryRows.length
+          ? categoricalBars(secondaryRows, ['exchange', 'etf_type', 'mgr_name'])
+          : rankBars(rows)
+      );
+      grid.appendChild(panel(
+        area.id === 'etf'
+          ? t3('ETF 市場結構', 'ETF 市场结构', 'ETF universe')[language]
+          : t3('市場截面', '市场截面', 'Market cross-section')[language],
+        rankingBody,
+        4,
+        area.id === 'etf' ? `${secondaryRows.length}` : rowDate(rows.at(-1))
+      ));
+      const kpiBody = create('div', 'terminal-panel-body');
+      kpiBody.appendChild(dashboardKpis(rows.length ? rows : secondaryRows, result.meta));
+      grid.appendChild(panel(t3('資料覆蓋', '数据覆盖', 'Data coverage')[language], kpiBody, 12));
+      const tableBody = create('div', 'terminal-panel-body');
+      const tableRows = secondaryRows.length ? secondaryRows : rows;
+      tableBody.appendChild(tableNode(tableRows.slice(-24).reverse()));
+      grid.appendChild(panel(t3('最新可發布記錄', '最新可发布记录', 'Latest publishable records')[language], tableBody, 12, `${tableRows.length}`));
+    } else {
+      grid.appendChild(panel(localize(COPY.dashboard), unavailableNode(ENDPOINTS.market, result.meta, localize(COPY.noRows)), 12));
+    }
+    screen.appendChild(grid);
+    canvas.replaceChildren(screen);
+    state.lastMeta = result.meta;
+    setBusy(false);
+    updateStatusbar();
+  }
+
+  function workspaceAvailability(area) {
+    const service = state.serviceStatus || {};
+    if (area.id === 'supply') {
+      return service.warehouse_ready === true
+        ? service.warehouse_complete === true ? 'PUBLISHED' : 'PARTIAL'
+        : 'CHECKING';
+    }
+    return service.ready === true || service.token_configured === true ? 'TUSHARE READY' : 'SOURCE CHECK';
+  }
+
+  function workspaceCards() {
+    const wrapper = create('section', 'terminal-home-workspaces');
+    wrapper.appendChild(create('h2', '', localize(COPY.sevenDesks)));
+    const grid = create('div', 'terminal-workspace-card-grid');
+    WORKSPACES.forEach((area, index) => {
+      const card = makeButton('', `terminal-workspace-card terminal-workspace-card-${area.id}`, () => {
+        selectWorkspace(area.id);
+      });
+      card.append(
+        append(create('span', 'terminal-workspace-card-code'), [
+          create('b', '', String(index + 1).padStart(2, '0')),
+          create('code', '', area.code)
+        ]),
+        create('strong', '', localize(area.name)),
+        create('p', '', localize(area.description)),
+        append(create('span', 'terminal-workspace-card-foot'), [
+          create('small', '', workspaceAvailability(area)),
+          create('i', '', '→')
+        ])
+      );
+      grid.appendChild(card);
+    });
+    wrapper.appendChild(grid);
+    return wrapper;
+  }
+
+  function homeNewsPanel(newsResult) {
+    const rows = newsResult ? newsRows(newsResult.data) : [];
+    if (!rows.length) return unavailableNode(ENDPOINTS.news, newsResult?.meta, localize(COPY.noRows));
+    const stream = create('div', 'terminal-home-news');
+    rows.slice(0, 16).forEach((row) => {
+      const item = create('article', 'terminal-home-news-item');
+      item.append(
+        create('time', '', formatTimestamp(row.time)),
+        append(create('div'), [
+          create('strong', '', row.title),
+          create('small', '', `${row.source || 'UNKNOWN'}${row.category ? ` · ${row.category}` : ''}`)
+        ])
+      );
+      stream.appendChild(item);
+    });
+    return stream;
+  }
+
+  function renderHome(marketResult, newsResult) {
+    const marketRows = marketResult ? normalizedRows(marketResult.data) : [];
+    const meta = newsResult?.meta || marketResult?.meta || {
+      source: 'UNKNOWN',
+      freshness: 'UNKNOWN',
+      permission: 'UNVERIFIED'
+    };
+    const isTerminalHome = terminalMode() === 'home';
+    const screen = create('div', `terminal-screen ${isTerminalHome ? 'terminal-home-screen' : 'terminal-domain-screen'}`);
+    screen.appendChild(screenHeader(
+      isTerminalHome ? localize(COPY.dailyDesk) : `MKT · ${localize(COPY.dashboard)}`,
+      localize(COPY.dailyDeskBody),
+      meta
+    ));
+    const hero = create('div', 'terminal-home-hero');
+    const newsBody = create('div', 'terminal-panel-body');
+    newsBody.appendChild(homeNewsPanel(newsResult));
+    hero.appendChild(panel(localize(COPY.news), newsBody, 12, newsResult?.meta?.asOf ? formatTimestamp(newsResult.meta.asOf) : ''));
+    const chartBody = create('div', 'terminal-panel-body');
+    chartBody.appendChild(
+      marketRows.length
+        ? normalizedPerformanceChart(marketRows, localize(COPY.dailyDesk))
+        : unavailableNode(ENDPOINTS.market, marketResult?.meta, localize(COPY.noRows))
+    );
+    hero.appendChild(panel(t3('全球市場走勢', '全球市场走势', 'Global market performance')[language], chartBody, 12, 'BASE 100'));
+    screen.appendChild(hero);
+    if (isTerminalHome) screen.appendChild(workspaceCards());
+    canvas.replaceChildren(screen);
+    state.lastMeta = meta;
+    setBusy(false);
+    updateStatusbar();
   }
 
   function primitiveColumns(rows) {
@@ -923,7 +1402,6 @@
         grid.appendChild(panel(localize(activeFunction.name), unavailableNode(endpoint, result.meta, localize(COPY.noRows)), 12));
       }
     }
-    if (activeFunction.id === 'overview') grid.appendChild(functionDirectory(area));
     screen.appendChild(grid);
     canvas.replaceChildren(screen);
     setBusy(false);
@@ -1096,7 +1574,6 @@
     const rows = newsResult ? newsRows(newsResult.data) : [];
     if (!rows.length) {
       screen.appendChild(unavailableNode(ENDPOINTS.news, newsResult?.meta, localize(COPY.noRows)));
-      screen.appendChild(functionDirectory(currentWorkspace()));
       canvas.replaceChildren(screen);
       setBusy(false);
       return;
@@ -1150,7 +1627,7 @@
       storyPanel.appendChild(create('p', '', localize(COPY.storyUnavailable)));
     }
     layout.append(filters, streamPanel, storyPanel);
-    screen.append(layout, functionDirectory(currentWorkspace()));
+    screen.appendChild(layout);
     canvas.replaceChildren(screen);
     setBusy(false);
   }
@@ -1226,9 +1703,7 @@
       return match || null;
     }
     if (state.entityMap.has(state.entityId)) return state.entityMap.get(state.entityId);
-    return state.workspace === 'supply'
-      ? state.entityMap.get('nvda') || state.atlas.entities.find((entity) => entity.kind === 'company')
-      : null;
+    return null;
   }
 
   function relationshipApplies(relation) {
@@ -1440,6 +1915,82 @@
     ]);
   }
 
+  function supplyToolbar() {
+    const toolbar = create('div', 'terminal-supply-toolbar');
+    [
+      { id: 'network', code: 'ATLAS', label: localize(COPY.atlasMode) },
+      { id: 'chain', code: 'HIGHWAY', label: localize(COPY.highwayMode) },
+      { id: 'xray', code: 'XRAY', label: localize(WORKSPACES[3].functions[3].name) },
+      { id: 'flows', code: 'FLOW', label: localize(WORKSPACES[3].functions[4].name) },
+      { id: 'evidence', code: 'EVD', label: localize(WORKSPACES[3].functions[5].name) },
+      { id: 'coverage', code: 'COV', label: localize(WORKSPACES[3].functions[6].name) }
+    ].forEach((item) => {
+      const selected = (state.functionId === 'overview' && item.id === 'network') || state.functionId === item.id;
+      const button = makeButton(`${item.code} · ${item.label}`, 'terminal-supply-mode', () => {
+        selectFunction(item.id);
+      });
+      button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      toolbar.appendChild(button);
+    });
+    const yearWrap = create('label', 'terminal-supply-year');
+    yearWrap.appendChild(create('span', '', 'YEAR'));
+    const select = create('select');
+    select.setAttribute('aria-label', localize(COPY.canonicalYear));
+    for (let year = 2026; year >= 2010; year -= 1) {
+      const option = create('option', '', String(year));
+      option.value = String(year);
+      select.appendChild(option);
+    }
+    select.value = state.year;
+    select.addEventListener('change', () => {
+      if (!/^(201\d|202[0-6])$/.test(select.value)) return;
+      state.year = select.value;
+      writeRoute('push');
+      renderAtlas();
+    });
+    yearWrap.appendChild(select);
+    toolbar.appendChild(yearWrap);
+    return toolbar;
+  }
+
+  function supplyFocusSheet() {
+    const root = create('div', 'terminal-focus-sheet');
+    const entity = atlasEntityForSelection();
+    if (!entity) {
+      root.append(
+        create('strong', '', t3('選擇一個節點', '选择一个节点', 'Select a node')[language]),
+        create('p', '', t3(
+          '點擊星點或道路節點，查看一跳供應商、ToB 客戶與證據狀態。',
+          '点击星点或道路节点，查看一跳供应商、ToB 客户与证据状态。',
+          'Select a star or highway node to inspect one-hop suppliers, ToB customers and evidence.'
+        )[language])
+      );
+      return root;
+    }
+    const applies = state.atlas.relationships
+      .filter(relationshipApplies)
+      .filter((relation) => {
+        return typeof window.YCAtlasVisuals?.hasEvidence === 'function'
+          ? window.YCAtlasVisuals.hasEvidence(relation, state.year)
+          : true;
+      });
+    const upstream = applies.filter((relation) => relation.to === entity.id);
+    const downstream = applies.filter((relation) => relation.from === entity.id);
+    root.append(
+      create('code', '', entity.ticker || entity.id),
+      create('h3', '', entity.name),
+      create('p', '', localize(entity.role)),
+      create('h4', '', `${localize(COPY.upstream)} · ${upstream.length}`)
+    );
+    upstream.slice(0, 8).forEach((relation) => root.appendChild(relationCard(relation, relation.from)));
+    root.appendChild(create('h4', '', `${localize(COPY.tob)} / ${localize(COPY.toc)} · ${downstream.length}`));
+    downstream.slice(0, 8).forEach((relation) => root.appendChild(relationCard(relation, relation.to)));
+    if (!upstream.length && !downstream.length) {
+      root.appendChild(create('p', '', localize(COPY.noRelations)));
+    }
+    return root;
+  }
+
   async function renderAtlas(sequence = state.loadSequence, signal = state.loadController?.signal) {
     const activeFunction = currentFunction();
     try {
@@ -1454,11 +2005,27 @@
       return;
     }
     if (signal?.aborted || sequence !== state.loadSequence) return;
-    const screen = create('div', 'terminal-screen');
-    screen.append(screenHeader(localize(activeFunction.name), localize(activeFunction.description), atlasMeta()), partialNotice());
+    if (state.atlasVisual?.destroy) state.atlasVisual.destroy();
+    state.atlasVisual = null;
+    const screen = create('div', 'terminal-screen terminal-supply-screen');
+    screen.append(
+      screenHeader(
+        activeFunction.id === 'chain'
+          ? localize(COPY.highwayMode)
+          : activeFunction.id === 'network' || activeFunction.id === 'overview'
+            ? localize(COPY.atlasMode)
+            : localize(activeFunction.name),
+        localize(activeFunction.description),
+        atlasMeta()
+      ),
+      supplyToolbar(),
+      partialNotice()
+    );
     const grid = create('div', 'terminal-grid');
     let bodyNode;
-    if (activeFunction.id === 'network') bodyNode = supplyNetwork();
+    const visualMode = activeFunction.id === 'network' || activeFunction.id === 'overview' || activeFunction.id === 'chain';
+    const visualHost = visualMode ? create('div', 'terminal-atlas-visual-host') : null;
+    if (visualMode) bodyNode = visualHost;
     else if (activeFunction.id === 'xray') bodyNode = supplyXray();
     else if (activeFunction.id === 'flows') bodyNode = accountingFlow();
     else if (activeFunction.id === 'evidence') bodyNode = evidenceTable();
@@ -1466,13 +2033,49 @@
     else bodyNode = supplyStageGrid();
     const panelBody = create('div', 'terminal-panel-body');
     panelBody.appendChild(bodyNode);
-    grid.appendChild(panel(localize(activeFunction.name), panelBody, 12, `${localize(COPY.canonicalYear)} ${state.year}`));
-    if (activeFunction.id === 'overview') grid.appendChild(functionDirectory(currentWorkspace()));
+    grid.appendChild(panel(
+      visualMode
+        ? activeFunction.id === 'chain' ? localize(COPY.highwayMode) : localize(COPY.atlasMode)
+        : localize(activeFunction.name),
+      panelBody,
+      visualMode && state.entityId ? 9 : 12,
+      `${localize(COPY.canonicalYear)} ${state.year}`
+    ));
+    if (visualMode && state.entityId) {
+      const focusBody = create('div', 'terminal-panel-body');
+      focusBody.appendChild(supplyFocusSheet());
+      grid.appendChild(panel('X-RAY', focusBody, 3, state.entityId));
+    }
     screen.appendChild(grid);
     canvas.replaceChildren(screen);
     state.lastMeta = atlasMeta();
     updateStatusbar();
     setBusy(false);
+    if (visualMode && visualHost) {
+      window.requestAnimationFrame(() => {
+        if (signal?.aborted || sequence !== state.loadSequence || !visualHost.isConnected) return;
+        const factory = activeFunction.id === 'chain'
+          ? window.YCAtlasVisuals?.createHighway
+          : window.YCAtlasVisuals?.createStarfield;
+        if (typeof factory !== 'function') {
+          visualHost.replaceChildren(unavailableNode('ATLAS:VISUAL', atlasMeta(), localize(COPY.unavailableBody)));
+          return;
+        }
+        state.atlasVisual = factory(visualHost, state.atlas, {
+          locale: language,
+          year: state.year,
+          focusId: state.entityId || null,
+          onFocusChange: ({ entity }) => {
+            if (!entity || entity.id === state.entityId) return;
+            state.entityId = entity.id;
+            state.securityName = entity.name || '';
+            if (entity.ticker) state.symbol = String(entity.ticker).split(/[ /|,]+/)[0];
+            writeRoute('replace');
+            renderAtlas();
+          }
+        });
+      });
+    }
   }
 
   function statementTable(rows, record) {
@@ -1667,7 +2270,7 @@
     const content = create('div');
     content.append(create('strong', '', localize(COPY.searchHint)), create('p', '', localize(COPY.selectSecurity)));
     empty.appendChild(content);
-    screen.append(empty, functionDirectory(currentWorkspace()));
+    screen.appendChild(empty);
     canvas.replaceChildren(screen);
     setBusy(false);
   }
@@ -1696,13 +2299,126 @@
     renderNewsResult(marketResult, newsResult);
   }
 
+  async function loadHomeDashboard(signal, sequence) {
+    const [marketResponse, newsResponse] = await Promise.allSettled([
+      apiRequest(ENDPOINTS.market, {
+        domain: 'Market',
+        dataset: 'index_global',
+        ...recentRange(45),
+        limit: 800
+      }, signal),
+      apiRequest(ENDPOINTS.news, {
+        dataset: 'news',
+        src: 'sina',
+        limit: 100
+      }, signal)
+    ]);
+    if (signal.aborted || sequence !== state.loadSequence) return;
+    const marketResult = marketResponse.status === 'fulfilled' ? marketResponse.value : null;
+    const newsResult = newsResponse.status === 'fulfilled' ? newsResponse.value : null;
+    const failures = [marketResponse, newsResponse].filter((item) => item.status === 'rejected');
+    showAlert(failures.length
+      ? `${localize(COPY.unavailableTitle)} · ${failures.map((item) => item.reason?.endpoint || 'UNKNOWN').join(', ')}`
+      : '');
+    renderHome(marketResult, newsResult);
+  }
+
+  async function loadDomainDashboard(signal, sequence) {
+    const area = currentWorkspace();
+    if (area.id === 'market') {
+      await loadHomeDashboard(signal, sequence);
+      return;
+    }
+    try {
+      let result;
+      let secondaryResult = null;
+      if (area.id === 'etf') {
+        const range = recentRange(45);
+        const responses = await Promise.allSettled([
+          apiRequest(ENDPOINTS.market, {
+            domain: 'ETF',
+            dataset: 'fund_daily',
+            ts_code: '510300.SH',
+            start: range.start,
+            end: range.end,
+            limit: 400
+          }, signal),
+          apiRequest(ENDPOINTS.market, {
+            domain: 'ETF',
+            dataset: 'etf_basic',
+            limit: 400
+          }, signal)
+        ]);
+        result = responses[0].status === 'fulfilled'
+          ? responses[0].value
+          : {
+              data: [],
+              meta: responses[0].reason?.meta || {
+                source: 'TUSHARE',
+                freshness: 'UNKNOWN',
+                permission: responses[0].reason?.status === 403 ? 'DENIED' : 'UNVERIFIED'
+              }
+            };
+        secondaryResult = responses[1].status === 'fulfilled' ? responses[1].value : null;
+        if (!normalizedRows(result.data).length && !secondaryResult) throw responses[0].reason;
+        if (secondaryResult) {
+          result.meta = {
+            ...result.meta,
+            source: `${result.meta?.source || 'TUSHARE'} + ${secondaryResult.meta?.source || 'TUSHARE'}`,
+            partial: result.meta?.partial === true || secondaryResult.meta?.partial === true
+          };
+        }
+        if (responses.some((response) => response.status === 'rejected')) {
+          showAlert(`${localize(COPY.unavailableTitle)} · ETF PARTIAL`);
+        }
+      } else {
+        result = await apiRequest(
+          ENDPOINTS.market,
+          marketParameters(area, area.functions[0]),
+          signal
+        );
+      }
+      if (signal.aborted || sequence !== state.loadSequence) return;
+      if (area.id !== 'etf') showAlert('');
+      renderDomainDashboard(result, secondaryResult);
+    } catch (error) {
+      if (error.name === 'AbortError' || signal.aborted || sequence !== state.loadSequence) return;
+      const meta = error.meta || {
+        source: 'TUSHARE',
+        freshness: 'UNKNOWN',
+        permission: error.status === 403 ? 'DENIED' : 'UNVERIFIED'
+      };
+      state.lastMeta = meta;
+      showAlert(`${localize(COPY.unavailableTitle)} · ${error.endpoint || ENDPOINTS.market}`);
+      const areaName = `${area.code} · ${localize(area.name)}`;
+      const screen = create('div', 'terminal-screen terminal-domain-screen');
+      screen.append(
+        screenHeader(areaName, localize(area.description), meta),
+        unavailableNode(error.endpoint || ENDPOINTS.market, meta)
+      );
+      canvas.replaceChildren(screen);
+      setBusy(false);
+      updateStatusbar('error');
+    }
+  }
+
   async function loadCurrentFunction() {
     const sequence = ++state.loadSequence;
     if (state.loadController) state.loadController.abort();
     state.loadController = new AbortController();
     const signal = state.loadController.signal;
+    const mode = terminalMode();
     const activeFunction = currentFunction();
     renderLoading();
+
+    if (mode === 'home') {
+      await loadHomeDashboard(signal, sequence);
+      return;
+    }
+    if (mode === 'dashboard' || mode === 'equity-dashboard') {
+      await loadDomainDashboard(signal, sequence);
+      return;
+    }
 
     if (activeFunction.requiresSecurity && !state.symbol) {
       renderRequiredSecurity();
@@ -1718,8 +2434,7 @@
       };
       screen.append(
         screenHeader(localize(activeFunction.name), localize(activeFunction.description), meta),
-        unavailableNode(meta.endpoint, meta, localize(COPY.notPublished)),
-        functionDirectory(currentWorkspace())
+        unavailableNode(meta.endpoint, meta, localize(COPY.notPublished))
       );
       canvas.replaceChildren(screen);
       state.lastMeta = meta;

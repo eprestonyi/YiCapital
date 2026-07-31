@@ -1,11 +1,12 @@
 import {
+  createTushareAdapter,
   handleTushareTerminalRequest,
   refreshTushareTerminalSnapshots,
 } from './tushare.js';
 import { createTerminalWarehouseAdapter } from './warehouse.js';
 
 /* ═══════════════════════════════════════════════════════════════
-   Yi Capital Portal Backend v8.5 — Cloudflare Worker（全歷史極簡入口）
+   Yi Capital Portal Backend v8.10 — Cloudflare Worker（全歷史入口 + Terminal Atlas）
    ─────────────────────────────────────────────────────────────
    帳號模型：
      · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則發 6 位驗證碼）
@@ -36,7 +37,7 @@ import { createTerminalWarehouseAdapter } from './warehouse.js';
      POST /api/reset            找回密碼第二步 {email, code, password}
      POST /api/users/setpw      [admin] 重設任意用戶密碼
      GET  /api/nav/us|hk|a      公開：只讀每日持久化快照（不即時計算/抓行情）
-     ⏰ Cron: "30 21 * * *" 美股收盤後更新 US ｜ "0 9 * * *" 北京 17:00 更新 HK/A
+     ⏰ Cron: "30 21 * * *" 美股 ｜ "0 9 * * *" 亞洲即時 ｜ "30 10 * * *" 亞洲 EOD 對賬
    KV 鍵：
      user:{用戶名} / email:{郵箱}→用戶名 / sess:{token} /
      pending:{郵箱}(驗證碼,15分鐘) / gsetup:{token}(Google待設置,15分鐘) /
@@ -341,108 +342,17 @@ async function createUser(env, rec) {
 }
 
 /* ── 收件：極簡 MIME 文本提取（best-effort，覆蓋常見 text/plain、QP、base64、multipart）── */
-/* ── 三市場報價鏈：Stooq 優先，Yahoo Chart API 備援 ── */
-function symbolMap(ticker, market) {
-  const t = String(ticker || '').trim();
-  if (market === 'hk') return { stooq: t.replace(/\.HK$/i, '').padStart(4, '0') + '.hk', yahoo: t.toUpperCase() };
-  if (market === 'a') return { stooq: null, yahoo: t.toUpperCase() };
-  return { stooq: t.toLowerCase().replace(/\./g, '-') + '.us', yahoo: t.toUpperCase() };
-}
-async function stooqQuoteRaw(symbol) {
-  if (!symbol) return null;
-  const r = await fetch('https://stooq.com/q/l/?s=' + encodeURIComponent(symbol) + '&f=sd2t2ohlcv&h&e=csv', { headers: { 'User-Agent': 'yicapital-portal' } });
-  if (!r.ok) return null;
-  const lines = (await r.text()).trim().split('\n');
-  if (lines.length < 2) return null;
-  const c = lines[1].split(','), close = parseFloat(c[6]), date = String(c[1] || '').slice(0, 10);
-  return isFinite(close) && close > 0 && /^\d{4}-\d{2}-\d{2}$/.test(date) ? { date, close } : null;
-}
-async function yahooChart(symbol, range) {
-  const r = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) + '?range=' + (range || '5d') + '&interval=1d&events=history&includeAdjustedClose=true', { headers: { 'User-Agent': 'Mozilla/5.0 yicapital-portal' } });
-  if (!r.ok) return null;
-  const j = await r.json().catch(() => null);
-  return j && j.chart && j.chart.result && j.chart.result[0] || null;
-}
-async function yahooQuote(symbol) {
-  const res = await yahooChart(symbol, '10d');
-  if (!res || !res.timestamp || !res.indicators || !res.indicators.quote) return null;
-  const close = res.indicators.quote[0].close || [];
-  for (let i = res.timestamp.length - 1; i >= 0; i--) {
-    if (isFinite(close[i]) && close[i] > 0) return { date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), close: close[i] };
-  }
-  return null;
-}
-async function quote(ticker, market) {
-  const m = symbolMap(ticker, market);
-  try { const q = await yahooQuote(m.yahoo); if (q) return q; } catch (e) {}
-  if (m.stooq) { try { return await stooqQuoteRaw(m.stooq); } catch (e) {} }
-  return null;
-}
-async function stooqSeries(symbol) {
-  if (!symbol) return null;
-  const r = await fetch('https://stooq.com/q/d/l/?s=' + encodeURIComponent(symbol) + '&i=d', { headers: { 'User-Agent': 'yicapital-portal' } });
-  if (!r.ok) return null;
-  const rows = (await r.text()).trim().split('\n').slice(1).map(l => l.split(','));
-  const series = rows.filter(c => c.length >= 5 && c[4] && c[4] !== 'N/D').map(c => ({ date: c[0], close: parseFloat(c[4]) })).filter(p => isFinite(p.close));
-  return series.length > 20 ? series : null;
-}
-async function yahooSeries(symbol) {
-  const res = await yahooChart(symbol, 'max');
-  if (!res || !res.timestamp || !res.indicators || !res.indicators.quote) return null;
-  const close = res.indicators.quote[0].close || [], out = [];
-  for (let i = 0; i < res.timestamp.length; i++) {
-    if (isFinite(close[i]) && close[i] > 0) out.push({ date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), close: close[i] });
-  }
-  return out.length > 20 ? out : null;
-}
-async function hangSengSeries(code) {
-  const r = await fetch('https://www.hsi.com.hk/data/eng/indexes/' + encodeURIComponent(code) + '/chart.json', { headers: { 'User-Agent': 'Mozilla/5.0 yicapital-portal' } });
-  if (!r.ok) return null;
-  const j = await r.json().catch(() => null);
-  const levels = j && (j['indexLevels-5y'] || j['indexLevels-3y'] || j['indexLevels-1y']);
-  if (!Array.isArray(levels)) return null;
-  const out = levels.map(p => ({ date: new Date(Number(p[0])).toISOString().slice(0, 10), close: Number(p[1]) })).filter(p => isFinite(p.close) && p.close > 0);
-  return out.length > 20 ? out : null;
-}
-async function tushareIndexSeries(token, tsCode) {
-  if (!token || !tsCode) return null;
-  const end = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const start = '19900101';
-  const response = await fetch('https://api.tushare.pro', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'User-Agent': 'yicapital-portal' },
-    body: JSON.stringify({
-      api_name: 'index_daily',
-      token,
-      params: { ts_code: tsCode, start_date: start, end_date: end },
-      fields: 'trade_date,close',
-    }),
-  });
-  if (!response.ok) return null;
-  const payload = await response.json().catch(() => null);
-  if (!payload || payload.code !== 0 || !payload.data || !Array.isArray(payload.data.items)) return null;
-  const fields = Array.isArray(payload.data.fields) ? payload.data.fields : [];
-  const dateIndex = fields.indexOf('trade_date');
-  const closeIndex = fields.indexOf('close');
-  if (dateIndex < 0 || closeIndex < 0) return null;
-  const out = payload.data.items.map(item => {
-    const rawDate = String(item[dateIndex] || '');
-    return {
-      date: rawDate.length === 8 ? rawDate.slice(0, 4) + '-' + rawDate.slice(4, 6) + '-' + rawDate.slice(6, 8) : '',
-      close: Number(item[closeIndex]),
-    };
-  }).filter(point => /^\d{4}-\d{2}-\d{2}$/.test(point.date) && Number.isFinite(point.close) && point.close > 0)
-    .sort((a, b) => a.date.localeCompare(b.date));
-  return out.length > 20 ? out : null;
-}
 const BM_SETS = {
-  us: [{ label: 'S&P 500', stooq: '^spx', yahoo: '^GSPC' }, { label: 'NASDAQ', stooq: '^ndq', yahoo: '^IXIC' }, { label: 'DOW', stooq: '^dji', yahoo: '^DJI' }],
-  hk: [
-    { label: 'HSCEI ETF', stooq: '2828.hk', yahoo: '2828.HK' },
-    { label: 'HSI ETF', stooq: '2800.hk', yahoo: '2800.HK' },
-    { label: 'HSTECH ETF', stooq: '3032.hk', yahoo: '3032.HK' },
+  us: [
+    { label: 'S&P 500', tushare: { dataset: 'index_global', tsCode: 'SPX' } },
+    { label: 'NASDAQ', tushare: { dataset: 'index_global', tsCode: 'IXIC' } },
+    { label: 'DOW', tushare: { dataset: 'index_global', tsCode: 'DJI' } },
   ],
-  a: [{ label: 'HS300', stooq: '000300.cn', yahoo: '000300.SS', tushare: '000300.SH' }],
+  hk: [
+    { label: 'HSI', tushare: { dataset: 'index_global', tsCode: 'HSI' } },
+    { label: 'HSTECH', tushare: { dataset: 'index_global', tsCode: 'HKTECH' } },
+  ],
+  a: [{ label: 'HS300', tushare: { dataset: 'index_daily', tsCode: '000300.SH' } }],
 };
 function mergeBenchmarkSeries(oldRows, freshRows) {
   const byDate = new Map();
@@ -457,68 +367,227 @@ function mergeBenchmarkSeries(oldRows, freshRows) {
   });
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
-async function fetchBenchmarkSet(set, env) {
-  const cfg = BM_SETS[set]; if (!cfg) return null;
-  const data = {}, sources = {};
-  await Promise.all(cfg.map(async b => {
-    let series = null, source = null;
-    if (b.tushare && env && env.TUSHARE_TOKEN) {
-      try {
-        series = await tushareIndexSeries(env.TUSHARE_TOKEN, b.tushare);
-        if (series) source = 'tushare';
-      } catch (e) {}
-    }
-    if (!series && b.official) {
-      try {
-        series = await hangSengSeries(b.official);
-        if (series) source = 'official';
-      } catch (e) {}
-    }
-    if (series && b.yahoo) {
-      try {
-        const latest = await yahooQuote(b.yahoo);
-        if (latest && (!series.length || latest.date > series[series.length - 1].date)) {
-          series.push(latest);
-          source = source ? source + '+yahoo-latest' : 'yahoo';
-        }
-      } catch (e) {}
-    }
-    if (!series) {
-      try {
-        series = await yahooSeries(b.yahoo);
-        if (series) source = 'yahoo';
-      } catch (e) {}
-    }
-    if (!series && b.stooq) {
-      try {
-        series = await stooqSeries(b.stooq);
-        if (series) source = 'stooq';
-      } catch (e) {}
-    }
-    if (series) {
-      data[b.label] = series;
-      sources[b.label] = source || 'unknown';
-    }
-  }));
-  return Object.keys(data).length ? { data, sources } : null;
+
+function benchmarkLabelIsTushare(snapshot, label, endpoint) {
+  if (!snapshot || !Array.isArray(snapshot.data && snapshot.data[label])) return false;
+  const meta = snapshot.source_meta && snapshot.source_meta[label] || {};
+  const source = String(meta.source || snapshot.sources && snapshot.sources[label] || '');
+  const sourceEndpoint = String(meta.source_endpoint || '');
+  return source === `tushare:${endpoint}`
+    || (source.startsWith('tushare:') && sourceEndpoint === endpoint);
 }
-async function prewarmBenchmark(env, sets) {
+
+function benchmarkSnapshotIsTushare(snapshot, set) {
+  const config = BM_SETS[set];
+  if (!snapshot || !config || snapshot.source !== 'tushare') return false;
+  const published = config.filter(item =>
+    Array.isArray(snapshot.data && snapshot.data[item.label]));
+  return published.length > 0 && published.every(item =>
+    benchmarkLabelIsTushare(snapshot, item.label, item.tushare.dataset));
+}
+
+const isoTradeDate = value => {
+  const text = String(value || '').replaceAll('-', '');
+  return /^\d{8}$/.test(text)
+    ? text.slice(0, 4) + '-' + text.slice(4, 6) + '-' + text.slice(6, 8)
+    : null;
+};
+const compactUtcDate = date => date.toISOString().slice(0, 10).replaceAll('-', '');
+const maxText = values => values.filter(Boolean).map(String).sort().at(-1) || null;
+
+function tusharePortfolioSymbol(ticker, market) {
+  const value = String(ticker || '').trim().toUpperCase();
+  if (market === 'hk') {
+    const digits = value.replace(/\.HK$/i, '').replace(/\D/g, '');
+    return digits ? digits.padStart(5, '0') + '.HK' : value;
+  }
+  if (market === 'a') {
+    if (/\.(SH|SZ|BJ)$/.test(value)) return value;
+    if (/^\d{6}$/.test(value)) {
+      return value + (/^[5689]/.test(value) ? '.SH' : /^[48]/.test(value) ? '.BJ' : '.SZ');
+    }
+    return value;
+  }
+  return value.replace(/\.US$/i, '');
+}
+
+function portfolioDataset(market) {
+  return { us: 'us_daily', hk: 'hk_daily', a: 'daily' }[market] || null;
+}
+
+function portfolioRealtimeDataset(market) {
+  return { hk: 'rt_hk_k', a: 'rt_k' }[market] || null;
+}
+
+function portfolioMarketDate(now, market) {
+  const timeZone = market === 'us' ? 'America/New_York' : 'Asia/Hong_Kong';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(now));
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function realtimeQuoteDate(row, market, now) {
+  const raw = String(row && (row.trade_time || row.trade_date || row.date) || '');
+  const match = raw.match(/(\d{4})[-/]?(\d{2})[-/]?(\d{2})/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : portfolioMarketDate(now, market);
+}
+
+async function tushareSeries(adapter, request, now = Date.now) {
+  const endDate = new Date(now());
+  const startDate = new Date('2010-01-01T00:00:00.000Z');
+  const result = await adapter.query(request.dataset, {
+    params: {
+      ts_code: request.tsCode,
+      start_date: compactUtcDate(startDate),
+      end_date: compactUtcDate(endDate),
+    },
+    fields: 'ts_code,trade_date,close',
+  });
+  const series = (Array.isArray(result.data) ? result.data : [])
+    .map(row => ({ date: isoTradeDate(row.trade_date), close: Number(row.close) }))
+    .filter(point => point.date && Number.isFinite(point.close) && point.close > 0)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  if (series.length < 20) throw new Error('tushare_series_unavailable');
+  return {
+    series,
+    source: `tushare:${request.dataset}`,
+    source_endpoint: request.dataset,
+    fetched_at: result.fetched_at || result.retrieved_at || new Date(now()).toISOString(),
+    as_of: series[series.length - 1].date,
+    freshness_class: result.freshness_class || 'eod',
+  };
+}
+
+async function tusharePortfolioQuote(adapter, ticker, market, now = Date.now) {
+  const dataset = portfolioDataset(market);
+  if (!dataset) throw new Error('portfolio_market_unsupported');
+  const realtimeDataset = portfolioRealtimeDataset(market);
+  const symbol = tusharePortfolioSymbol(ticker, market);
+  let realtimeFailure = null;
+  if (realtimeDataset) {
+    try {
+      const realtimeResult = await adapter.query(realtimeDataset, {
+        params: { ts_code: symbol },
+        fields: realtimeDataset === 'rt_k'
+          ? 'ts_code,close,trade_time'
+          : 'ts_code,close',
+      });
+      const realtime = (Array.isArray(realtimeResult.data) ? realtimeResult.data : [])
+        .map(row => ({
+          date: realtimeQuoteDate(row, market, now()),
+          close: Number(row.close),
+        }))
+        .find(point => point.date && Number.isFinite(point.close) && point.close > 0);
+      if (!realtime) throw new Error('tushare_realtime_quote_unavailable');
+      return {
+        ...realtime,
+        source: `tushare:${realtimeDataset}`,
+        source_endpoint: realtimeDataset,
+        fetched_at: realtimeResult.fetched_at || realtimeResult.retrieved_at || new Date(now()).toISOString(),
+        as_of: realtime.date,
+        freshness_class: realtimeResult.freshness_class || 'intraday_snapshot',
+        quote_mode: 'realtime',
+        fallback: null,
+      };
+    } catch (error) {
+      realtimeFailure = error && (error.code || error.message) || 'tushare_realtime_quote_unavailable';
+    }
+  }
+  const endDate = new Date(now());
+  const startDate = new Date(endDate.getTime() - 14 * 86400000);
+  const result = await adapter.query(dataset, {
+    params: {
+      ts_code: symbol,
+      start_date: compactUtcDate(startDate),
+      end_date: compactUtcDate(endDate),
+    },
+    fields: 'ts_code,trade_date,close',
+  });
+  const latest = (Array.isArray(result.data) ? result.data : [])
+    .map(row => ({ date: isoTradeDate(row.trade_date), close: Number(row.close) }))
+    .filter(point => point.date && Number.isFinite(point.close) && point.close > 0)
+    .sort((left, right) => right.date.localeCompare(left.date))[0];
+  if (!latest) throw new Error('tushare_quote_unavailable');
+  return {
+    ...latest,
+    source: `tushare:${dataset}`,
+    source_endpoint: dataset,
+    fetched_at: result.fetched_at || result.retrieved_at || new Date(now()).toISOString(),
+    as_of: latest.date,
+    freshness_class: result.freshness_class || 'eod',
+    quote_mode: realtimeDataset ? 'eod_fallback' : 'eod',
+    fallback: realtimeDataset ? 'latest_eod_snapshot' : null,
+    realtime_failure: realtimeDataset ? realtimeFailure : null,
+  };
+}
+
+async function fetchBenchmarkSet(set, env, options = {}) {
+  const cfg = BM_SETS[set]; if (!cfg) return null;
+  const adapter = options.adapter || createTushareAdapter(env, options);
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const data = {}, sources = {}, sourceMeta = {};
+  await Promise.all(cfg.map(async b => {
+    try {
+      const result = await tushareSeries(adapter, b.tushare, now);
+      data[b.label] = result.series;
+      sources[b.label] = result.source;
+      sourceMeta[b.label] = {
+        source: result.source,
+        source_endpoint: result.source_endpoint,
+        as_of: result.as_of,
+        fetched_at: result.fetched_at,
+        freshness_class: result.freshness_class,
+        stale: false,
+      };
+    } catch (e) {}
+  }));
+  return Object.keys(data).length ? { data, sources, sourceMeta } : null;
+}
+async function prewarmBenchmark(env, sets, options = {}) {
   return Promise.all((sets || ['us', 'hk', 'a']).map(async set => {
-    const ranAt = new Date().toISOString(), cacheKey = 'bmset:' + set, statusKey = 'bmstatus:' + set;
+    const now = typeof options.now === 'function' ? options.now : Date.now;
+    const ranAt = new Date(now()).toISOString(), cacheKey = 'bmset:' + set, statusKey = 'bmstatus:' + set;
     let fresh = null, error = null;
-    try { fresh = await fetchBenchmarkSet(set, env); } catch (e) { error = e.message || String(e); }
+    try { fresh = await fetchBenchmarkSet(set, env, options); } catch (e) { error = 'tushare_unavailable'; }
     const oldRaw = await env.YC_KV.get(cacheKey);
     const old = oldRaw ? JSON.parse(oldRaw) : null;
-    const expected = BM_SETS[set].map(x => x.label);
-    const data = {}, sources = {};
-    expected.forEach(label => {
+    const config = BM_SETS[set];
+    const expected = config.map(x => x.label);
+    const data = {}, sources = {}, sourceMeta = {};
+    config.forEach(item => {
+      const label = item.label;
+      const oldIsTushare = benchmarkLabelIsTushare(
+        old,
+        label,
+        item.tushare.dataset,
+      );
       if (fresh && fresh.data[label]) {
-        data[label] = mergeBenchmarkSeries(old && old.data && old.data[label], fresh.data[label]);
+        data[label] = mergeBenchmarkSeries(
+          oldIsTushare ? old.data[label] : [],
+          fresh.data[label],
+        );
         sources[label] = fresh.sources[label];
+        sourceMeta[label] = fresh.sourceMeta[label];
       }
-      else if (old && old.data && old.data[label]) {
+      else if (oldIsTushare) {
         data[label] = old.data[label];
         if (old.sources && old.sources[label]) sources[label] = old.sources[label];
+        const previousMeta = old.source_meta && old.source_meta[label] || {};
+        sourceMeta[label] = {
+          ...previousMeta,
+          source: previousMeta.source || old.sources && old.sources[label] || 'persisted-snapshot',
+          as_of: previousMeta.as_of || old.as_of || null,
+          fetched_at: previousMeta.fetched_at || old.fetched || null,
+          freshness_class: previousMeta.freshness_class || 'eod',
+          stale: true,
+          fallback_reason: 'latest_tushare_request_failed',
+          last_attempt_at: ranAt,
+        };
       }
     });
     const refreshed = expected.filter(label => fresh && fresh.data[label]);
@@ -526,11 +595,20 @@ async function prewarmBenchmark(env, sets) {
     const unavailable = expected.filter(label => !data[label]);
     const status = {
       ok: unavailable.length === 0, set, ranAt, refreshed, missing, unavailable,
-      stale: missing.length > 0, error, sources,
+      stale: missing.length > 0, error, sources, source_meta: sourceMeta,
     };
     if (Object.keys(data).length) {
+      const asOf = maxText(Object.values(sourceMeta).map(meta => meta.as_of));
       const payload = {
-        ok: true, set, data, sources,
+        ok: true, set, data, sources, source_meta: sourceMeta,
+        source: 'tushare',
+        as_of: asOf,
+        freshness_class: 'eod',
+        freshness: {
+          class: 'eod',
+          stale: missing.length > 0,
+          fallback: missing.length > 0 ? 'last_successful_snapshot' : null,
+        },
         fetched: missing.length ? (old && old.fetched) || ranAt : ranAt,
         partialFetched: refreshed.length ? ranAt : null,
         lastAttempt: ranAt, missing, unavailable, stale: missing.length > 0,
@@ -1062,9 +1140,35 @@ function makePortfolioCache(led, live, status) {
     date: row.date,
     v: (curveValue *= 1 + row.ret),
   }));
+  const sourceMeta = live.sourceMeta || {
+    source: 'ledger',
+    source_endpoint: 'portfolio-ledger',
+    as_of: asOf,
+    fetched_at: led.savedAt || live.updatedAt || null,
+    freshness_class: 'disclosure',
+  };
+  const snapshotId = 'portfolio-' + contentHash(JSON.stringify({
+    portfolio: led.portfolio,
+    end,
+    navRows,
+    holdings: holdings.map(row => [
+      row.t || row.ticker, row.q || row.qty, row.price, row.marketValue || row.mv, row.date,
+    ]),
+  }));
 
   return {
     ok: true, enabled: true, portfolio: led.portfolio, currency: led.currency,
+    snapshot_id: snapshotId,
+    source: sourceMeta.source,
+    source_endpoint: sourceMeta.source_endpoint,
+    as_of: sourceMeta.as_of || asOf,
+    fetched_at: sourceMeta.fetched_at || live.updatedAt || led.savedAt || null,
+    freshness_class: sourceMeta.freshness_class || 'eod',
+    freshness: {
+      class: sourceMeta.freshness_class || 'eod',
+      stale: false,
+      fallback: null,
+    },
     base: {
       date: led.lastDate, unitNav: led.lastUnitNav, marketValue: led.baseMarketValue,
       totalAssets: led.baseTotalAssets, netValue: led.baseNetValue, cash: led.cash,
@@ -1078,7 +1182,7 @@ function makePortfolioCache(led, live, status) {
     rows: live.rows || [], holdings, assets: holdings,
     asOf, end,
     marketDate: live.marketDate || null, updatedAt: live.updatedAt || led.savedAt || null,
-    status: status || null, cacheVersion: 2,
+    status: status || null, cacheVersion: 3,
   };
 }
 async function persistPortfolioCache(env, pf, led, live, status) {
@@ -1091,47 +1195,123 @@ async function persistPortfolioCache(env, pf, led, live, status) {
   return cache;
 }
 
-/* 持倉/現金/負債/份額為唯一營運基準；行情日期為實際追加日期。 */
-async function updatePortfolioNav(env, pf) {
-  const now = new Date(), st = { pf, ranAt: now.toISOString() };
+async function writePortfolioAttempt(env, pf, status) {
+  await env.YC_KV.put('navstatus:' + pf, JSON.stringify(status));
+  return status;
+}
+
+function publicPortfolioSnapshot(cache, latestStatus) {
+  const latestFailed = latestStatus && latestStatus.fallback === true;
+  const source = cache.source || cache.source_endpoint || 'persisted-snapshot';
+  const asOf = cache.as_of || cache.asOf || cache.marketDate || cache.end || null;
+  const fetchedAt = cache.fetched_at || cache.updatedAt || null;
+  const freshnessClass = cache.freshness_class || 'eod';
+  return {
+    ...cache,
+    source,
+    as_of: asOf,
+    fetched_at: fetchedAt,
+    freshness_class: freshnessClass,
+    freshness: {
+      class: freshnessClass,
+      stale: latestFailed || cache.freshness && cache.freshness.stale === true,
+      fallback: latestFailed ? 'last_successful_snapshot' : cache.freshness && cache.freshness.fallback || null,
+      last_attempt_at: latestStatus && latestStatus.ranAt || null,
+      reason: latestFailed ? latestStatus.reason || 'latest_tushare_request_failed' : null,
+    },
+    fallback: latestFailed,
+    status: latestStatus || cache.status || null,
+  };
+}
+
+/* 持倉/現金/負債/份額為唯一營運基準；Tushare 日線是唯一自動估值源。 */
+async function updatePortfolioNav(env, pf, options = {}) {
+  const nowFn = typeof options.now === 'function' ? options.now : Date.now;
+  const now = new Date(nowFn());
+  const st = {
+    pf,
+    ranAt: now.toISOString(),
+    source: 'tushare',
+    freshness_class: 'eod',
+  };
   const ledRaw = await env.YC_KV.get('ledger:' + pf);
   if (!ledRaw) {
     st.skip = 'no-ledger';
     await Promise.all([
       env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)),
-      env.YC_KV.put('navcache:' + pf, JSON.stringify({ ok: true, enabled: false, portfolio: pf, history: [], rows: [], holdings: [], status: st, cacheVersion: 2 })),
+      env.YC_KV.put('navcache:' + pf, JSON.stringify({
+        ok: true,
+        enabled: false,
+        portfolio: pf,
+        history: [],
+        rows: [],
+        holdings: [],
+        status: st,
+        source: 'portfolio-ledger',
+        as_of: null,
+        fetched_at: null,
+        freshness_class: 'eod',
+        freshness: { class: 'eod', stale: true, fallback: null },
+        cacheVersion: 3,
+      })),
     ]);
     return st;
   }
   const led = JSON.parse(ledRaw), market = led.market || pf;
   const liveRaw = await env.YC_KV.get('live:' + pf), live = liveRaw ? JSON.parse(liveRaw) : { rows: [] };
   const lastPxRaw = await env.YC_KV.get('lastpx:' + pf), lastPx = lastPxRaw ? JSON.parse(lastPxRaw) : {};
-  const fetched = await Promise.all(led.positions.map(async p => ({ p, q: await quote(p.t, market).catch(() => null) })));
+  const adapter = options.adapter || createTushareAdapter(env, options);
+  const fetched = await Promise.all(led.positions.map(async p => ({
+    p,
+    q: await tusharePortfolioQuote(adapter, p.t, market, nowFn).catch(() => null),
+  })));
+  const unavailable = fetched.filter(item => !item.q).map(item => item.p.t);
+  if (unavailable.length) {
+    return writePortfolioAttempt(env, pf, {
+      ...st,
+      skip: 'latest-source-unavailable',
+      reason: 'latest_tushare_request_failed',
+      unavailable,
+      fallback: true,
+    });
+  }
   const freshDates = fetched.filter(x => x.q && x.q.date).map(x => x.q.date).sort();
   if (!freshDates.length) {
-    st.skip = 'no-quotes';
-    await persistPortfolioCache(env, pf, led, live, st);
-    return st;
+    return writePortfolioAttempt(env, pf, {
+      ...st,
+      skip: 'latest-source-unavailable',
+      reason: 'latest_tushare_request_failed',
+      fallback: true,
+    });
   }
   const marketDate = freshDates[freshDates.length - 1];
+  const pricingFreshness = fetched.every(item =>
+    item.q && item.q.freshness_class === 'intraday_snapshot')
+    ? 'intraday_snapshot'
+    : 'eod';
+  const pricingFallback = fetched.some(item =>
+    item.q && item.q.fallback === 'latest_eod_snapshot');
+  Object.assign(st, {
+    freshness_class: pricingFreshness,
+    source_endpoint: [...new Set(fetched.map(item => item.q.source_endpoint))].join(','),
+    pricing_fallback: pricingFallback ? 'latest_eod_snapshot' : null,
+  });
   const lastDate = live.rows.length ? live.rows[live.rows.length - 1].date : led.lastDate;
   if (lastDate && marketDate <= lastDate) {
     st.skip = 'already-updated:' + lastDate; st.marketDate = marketDate;
-    await persistPortfolioCache(env, pf, led, live, st);
-    return st;
+    st.as_of = marketDate;
+    st.fallback = pricingFallback;
+    if (pricingFallback) {
+      st.reason = 'latest_realtime_unavailable_eod_not_newer';
+    }
+    return writePortfolioAttempt(env, pf, st);
   }
 
-  const missing = [], stale = [], holdings = [];
+  const stale = [], holdings = [];
   for (const item of fetched) {
     const p = item.p; let q = item.q;
-    if (q && q.close) {
-      lastPx[p.t] = q;
-      if (q.date && q.date < marketDate) stale.push(p.t);
-    }
-    else {
-      const old = pxRecord(lastPx[p.t]);
-      if (old && old.close) { q = old; stale.push(p.t); } else { missing.push(p.t); continue; }
-    }
+    lastPx[p.t] = q;
+    if (q.date && q.date < marketDate) stale.push(p.t);
     const mv = Number(p.q) * Number(q.close);
     const pnl = Number(p.pnl) + mv - Number(p.mv);
     holdings.push({
@@ -1144,11 +1324,6 @@ async function updatePortfolioNav(env, pf) {
       weight: 0,
     });
   }
-  if (missing.length) {
-    st.skip = 'missing-quotes:' + missing.join(',');
-    await persistPortfolioCache(env, pf, led, live, st);
-    return st;
-  }
   const marketValue = holdings.reduce((s, h) => s + h.marketValue, 0);
   holdings.forEach(h => { h.weight = marketValue ? round(h.marketValue / marketValue * 100, 6) : 0; });
   const cash = Number(led.cash) || 0, liability = Number(led.liability) || 0;
@@ -1157,9 +1332,12 @@ async function updatePortfolioNav(env, pf) {
   const unitNav = units > 0 ? netValue / units : (prev.unitNav && prev.netValue ? prev.unitNav * netValue / prev.netValue : 0);
   const ret = prev.unitNav > 0 ? unitNav / prev.unitNav - 1 : netValue / prev.netValue - 1;
   if (!isFinite(ret) || !isFinite(unitNav) || Math.abs(ret) > 0.75) {
-    st.skip = 'sanity-fail:' + ret;
-    await persistPortfolioCache(env, pf, led, live, st);
-    return st;
+    return writePortfolioAttempt(env, pf, {
+      ...st,
+      skip: 'sanity-fail',
+      reason: 'portfolio_nav_sanity_check_failed',
+      fallback: true,
+    });
   }
   live.rows.push({
     date: marketDate, ret: round(ret, 10), unitNav: round(unitNav, 8), units: round(units, 6),
@@ -1167,8 +1345,23 @@ async function updatePortfolioNav(env, pf) {
     totalAssets: round(totalAssets, 2), netValue: round(netValue, 2), mv: round(netValue, 2),
   });
   live.holdings = holdings; live.updatedAt = now.toISOString(); live.marketDate = marketDate;
+  live.sourceMeta = {
+    source: 'tushare',
+    source_endpoint: [...new Set(fetched.map(item => item.q.source_endpoint))].join(','),
+    as_of: marketDate,
+    fetched_at: maxText(fetched.map(item => item.q.fetched_at)) || now.toISOString(),
+    freshness_class: pricingFreshness,
+  };
   live.note = stale.length ? 'stale:' + stale.join(',') : null;
-  Object.assign(st, { appended: marketDate, marketValue: round(marketValue, 2), netValue: round(netValue, 2), stale });
+  Object.assign(st, {
+    appended: marketDate,
+    as_of: marketDate,
+    fetched_at: live.sourceMeta.fetched_at,
+    marketValue: round(marketValue, 2),
+    netValue: round(netValue, 2),
+    stale,
+    fallback: false,
+  });
   await Promise.all([
     env.YC_KV.put('lastpx:' + pf, JSON.stringify(lastPx)),
     persistPortfolioCache(env, pf, led, live, st),
@@ -1238,6 +1431,19 @@ function normalizeContentItems(items, kind) {
   });
 }
 
+export {
+  benchmarkSnapshotIsTushare,
+  fetchBenchmarkSet,
+  makePortfolioCache,
+  portfolioDataset,
+  portfolioRealtimeDataset,
+  prewarmBenchmark,
+  publicPortfolioSnapshot,
+  tusharePortfolioQuote,
+  tusharePortfolioSymbol,
+  updatePortfolioNav,
+};
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -1266,7 +1472,7 @@ export default {
           }
         } catch (e) {}
         return J(env, {
-          ok: true, version: 'v8.5-entry',
+          ok: true, version: 'v8.10-terminal-atlas',
           kv: kvOk,
           feedback: feedbackOk,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
@@ -1441,7 +1647,28 @@ export default {
         const set = String(url.searchParams.get('set') || 'us').toLowerCase();
         if (!BM_SETS[set]) return J(env, { error: 'set 只支持 us/hk/a' }, 400);
         const cacheKey = 'bmset:' + set, cached = await env.YC_KV.get(cacheKey);
-        if (cached) return J(env, JSON.parse(cached));
+        if (cached) {
+          const snapshot = JSON.parse(cached);
+          if (!benchmarkSnapshotIsTushare(snapshot, set)) {
+            const status = await env.YC_KV.get('bmstatus:' + set);
+            return J(env, {
+              ok: false, set, pending: true, data: {},
+              status: status ? JSON.parse(status) : null,
+              error: '基準快照來源不符合 Tushare 發布口徑，等待刷新',
+            }, 503);
+          }
+          return J(env, {
+            ...snapshot,
+            source: snapshot.source || 'tushare',
+            as_of: snapshot.as_of || maxText(Object.values(snapshot.data || {}).flat().map(row => row.date)),
+            freshness_class: snapshot.freshness_class || 'eod',
+            freshness: snapshot.freshness || {
+              class: 'eod',
+              stale: snapshot.stale === true,
+              fallback: snapshot.stale === true ? 'last_successful_snapshot' : null,
+            },
+          });
+        }
         const status = await env.YC_KV.get('bmstatus:' + set);
         return J(env, {
           ok: false, set, pending: true, data: {},
@@ -1453,7 +1680,7 @@ export default {
       /* ════ 登入首屏：返回三市場全部共同歷史的歸一化點，不暴露金額/持倉 ════ */
       if (path === '/api/entry-market' && request.method === 'GET') {
         const specs = {
-          hk: { benchmark: 'HSI ETF' },
+          hk: { benchmark: 'HSI' },
           us: { benchmark: 'S&P 500' },
           a: { benchmark: 'HS300' },
         };
@@ -1470,7 +1697,9 @@ export default {
           const nav = JSON.parse(navRaw);
           const benchmark = JSON.parse(benchmarkRaw);
           const benchmarkRows = benchmark.data && benchmark.data[spec.benchmark];
-          if (!nav.ok || !nav.enabled || !Array.isArray(nav.navRows) || !Array.isArray(benchmarkRows)) {
+          if (!nav.ok || !nav.enabled || !Array.isArray(nav.navRows)
+              || !benchmarkSnapshotIsTushare(benchmark, market)
+              || !Array.isArray(benchmarkRows)) {
             markets[market] = null;
             return;
           }
@@ -1498,8 +1727,11 @@ export default {
             missingCloseCount: history.missingCloseCount,
             coverage: round(history.coverage, 6),
             navAsOf: nav.asOf || nav.marketDate || null,
+            navSource: nav.source || nav.source_endpoint || null,
+            navFreshness: nav.freshness || null,
             benchmarkLabel: spec.benchmark,
             benchmarkSource: benchmark.sources && benchmark.sources[spec.benchmark] || null,
+            benchmarkSourceMeta: benchmark.source_meta && benchmark.source_meta[spec.benchmark] || null,
             benchmarkStatus: {
               stale: benchmark.stale === true,
               fetched: benchmark.fetched || null,
@@ -2113,11 +2345,22 @@ export default {
       if (path.startsWith('/api/nav/') && request.method === 'GET') {
         const pf = path.split('/')[3];
         if (!/^(us|hk|a)$/.test(pf)) return J(env, { error: 'not found' }, 404);
-        const cached = await env.YC_KV.get('navcache:' + pf);
-        if (cached) return J(env, JSON.parse(cached));
+        const [cached, statusRaw] = await Promise.all([
+          env.YC_KV.get('navcache:' + pf),
+          env.YC_KV.get('navstatus:' + pf),
+        ]);
+        if (cached) {
+          const status = statusRaw ? JSON.parse(statusRaw) : null;
+          return J(env, publicPortfolioSnapshot(JSON.parse(cached), status));
+        }
         return J(env, {
           ok: false, enabled: false, portfolio: pf, pending: true,
           history: [], rets: [], rows: [], holdings: [], assets: [],
+          source: 'portfolio-snapshot',
+          as_of: null,
+          fetched_at: null,
+          freshness_class: 'eod',
+          freshness: { class: 'eod', stale: true, fallback: null },
           error: '組合快照尚未建立，請等待每日任務或由管理員手動刷新',
         }, 503);
       }
@@ -2199,7 +2442,8 @@ export default {
 
   /* ⏰ Cron Triggers：Cloudflare → Worker → Settings → Triggers → Cron 添加
      "30 21 * * *"  美股收盤後約1小時（21:30 UTC ≈ 美東 4:30/5:30PM）→ 更新 US
-     "0 9 * * *"    北京時間 17:00 → HK / A ＋ 基準預熱 */
+     "0 9 * * *"    北京時間 17:00 → HK / A 即時收盤快照
+     "30 10 * * *"  北京時間 18:30 → HK / A 官方 EOD 對賬與回退刷新 */
   async scheduled(event, env, ctx) {
     const cron = event.cron || '';
     if (cron === '30 21 * * *') {
@@ -2215,6 +2459,12 @@ export default {
         refreshTushareTerminalSnapshots(env).catch(e =>
           console.error('terminal_tushare_refresh_failed', e)),
         cleanupFeedbackRateLimits(env).catch(e => console.error('feedback_rate_cleanup_failed', e)),
+      ]));
+    } else if (cron === '30 10 * * *') {
+      ctx.waitUntil(Promise.all([
+        refreshMarketCaches(env, ['hk', 'a'], ['hk', 'a'], 'cron:asia-eod'),
+        refreshTushareTerminalSnapshots(env).catch(e =>
+          console.error('terminal_tushare_refresh_failed', e)),
       ]));
     }
   },

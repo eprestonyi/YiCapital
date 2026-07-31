@@ -199,8 +199,9 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     if(!required||!Array.isArray(j.history)||j.history.length<5||!Array.isArray(j.curve)||!Array.isArray(j.varTable)||!Array.isArray(j.navRows)) return null;
     const cleanRp=(Array.isArray(j.rp)?j.rp:[]).map(Number).filter(Number.isFinite);
     const rp=cleanRp.length>=5?cleanRp:j.history.map(x=>Number(x.ret)).filter(Number.isFinite);
-    const stress=validStress(j.stress)?j.stress:YC.stressScenarios(rp);
+    const stress=validStress(j.stress)?j.stress:null;
     if(!stress)return null;
+    const snapshot=YC.snapshotMeta(j); if(!snapshot)return null;
     const assets=(j.assets||j.holdings||[]).map(h=>({
       ticker:String(h.ticker||h.t||''),name:String(h.name||h.n||h.ticker||h.t||''),
       qty:Number(h.qty??h.q)||0,price:Number(h.price??h.p)||0,marketValue:Number(h.marketValue??h.mv)||0,
@@ -215,8 +216,14 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       navRows:j.navRows,assets,benchmarks:{},primaryBM:null,
       start:(j.summary&&j.summary.start)||j.history[0].date,
       end:j.end||(j.summary&&j.summary.end)||j.history[j.history.length-1].date,
-      asOf:j.asOf||j.marketDate||j.end,
+      asOf:j.asOf||j.marketDate||j.end,snapshot,
     };
+  }
+  function snapshotSourceText(R){
+    const lang=document.documentElement.lang==='en'?'en':document.documentElement.lang==='zh-Hans'?'cn':'tw';
+    const prefix=lang==='en'?'Data source: ':lang==='cn'?'数据源：':'數據源：';
+    const bm=R.benchmarkSnapshot?YC.snapshotLabel(R.benchmarkSnapshot,lang):'';
+    return prefix+YC.snapshotLabel(R.snapshot,lang)+(bm?' · BM '+bm:'');
   }
   async function bootCache(){
     if(new URLSearchParams(location.search).has('data')) return false;
@@ -225,7 +232,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       const j=await (await fetch(api+'/api/nav/a',{cache:'no-store'})).json();
       const R=cachedReport(j); if(!R) return false;
       render(await fetchBenchmarks(R));
-      $('srcstate').textContent='数据源：后台持久化快照（AUTO · CACHE）';
+      $('srcstate').textContent=snapshotSourceText(R);
       return true;
     }catch(e){ return false; }
   }
@@ -314,6 +321,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     R.benchmarks={}; R.primaryBM=null;
     try{
       const j=await (await fetch(api+'/api/benchmark?set=a')).json();
+      R.benchmarkSnapshot=YC.snapshotMeta(j);
       if(j.ok) YC.attachBenchmarks(R,Object.fromEntries(Object.entries({'沪深 300':j.data&&j.data.HS300}).filter(([,rows])=>Array.isArray(rows))));
     }catch(e){}
     return R;
@@ -388,7 +396,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     await idb.del('handle-a'); clearInterval(liveTimer); liveHandle=null;
     $('bindbtn').style.display='inline-block'; $('unbindbtn').style.display='none'; $('synctick').style.display='none';
     $('srcstate').textContent='數据源：已解除绑定（改用站内數据）';
-    bootFetch();
+    bootCache();
   });
 
   // 页面打开：先尝试恢复已绑定的句柄
@@ -412,7 +420,8 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   // 远程/站内 fetch
   function bootFetch(){
     const remote=new URLSearchParams(location.search).get('data');
-    const url=remote||DATA_URL;
+    if(!remote)return;
+    const url=remote;
     // cache-bust：避免浏览器/CDN 缓存旧净值表
     const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
     fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
@@ -421,10 +430,12 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   }
 
   (async ()=>{
+    const remote=new URLSearchParams(location.search).get('data');
+    if(remote){ bootFetch(); return; }
     if(await bootCache()) return;
-    if(!IS_ADMIN){ bootFetch(); return; }
-    const st=await bootHandle();
-    if(st!==true) bootFetch();   // pending 时也先显示站内數据，連接后自动切換
+    $('loader').style.display='block';
+    $('loader').firstChild.textContent='后台持久化快照暂时不可用；不会以旧 Excel 覆盖。';
+    $('srcstate').textContent='数据源：等待后台最后成功快照';
   })();
 
   // 拖入 / 选择文件（单次预览）

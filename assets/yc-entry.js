@@ -91,7 +91,7 @@
       dataPending: 'MARKET DATA SYNCHRONIZING',
       dataUnavailable: '真實資料暫時不可用，未使用模擬數據。',
       scene: {
-        hk: { eyebrow: '01 / 03 · HONG KONG', market: 'Yi Capital HK', benchmark: 'HSI ETF · 2800.HK' },
+        hk: { eyebrow: '01 / 03 · HONG KONG', market: 'Yi Capital HK', benchmark: 'HANG SENG INDEX · HSI' },
         us: { eyebrow: '02 / 03 · UNITED STATES', market: 'Yi Capital US', benchmark: 'S&P 500' },
         a: { eyebrow: '03 / 03 · A SHARE', market: 'Yi Capital A', benchmark: 'CSI 300' },
       },
@@ -154,7 +154,7 @@
       dataPending: 'MARKET DATA SYNCHRONIZING',
       dataUnavailable: '真实数据暂时不可用，未使用模拟数据。',
       scene: {
-        hk: { eyebrow: '01 / 03 · HONG KONG', market: 'Yi Capital HK', benchmark: 'HSI ETF · 2800.HK' },
+        hk: { eyebrow: '01 / 03 · HONG KONG', market: 'Yi Capital HK', benchmark: 'HANG SENG INDEX · HSI' },
         us: { eyebrow: '02 / 03 · UNITED STATES', market: 'Yi Capital US', benchmark: 'S&P 500' },
         a: { eyebrow: '03 / 03 · A SHARE', market: 'Yi Capital A', benchmark: 'CSI 300' },
       },
@@ -217,7 +217,7 @@
       dataPending: 'MARKET DATA SYNCHRONIZING',
       dataUnavailable: 'Live data is unavailable. No simulated data is being shown.',
       scene: {
-        hk: { eyebrow: '01 / 03 · HONG KONG', market: 'Yi Capital HK', benchmark: 'HSI ETF · 2800.HK' },
+        hk: { eyebrow: '01 / 03 · HONG KONG', market: 'Yi Capital HK', benchmark: 'HANG SENG INDEX · HSI' },
         us: { eyebrow: '02 / 03 · UNITED STATES', market: 'Yi Capital US', benchmark: 'S&P 500' },
         a: { eyebrow: '03 / 03 · A SHARE', market: 'Yi Capital A', benchmark: 'CSI 300' },
       },

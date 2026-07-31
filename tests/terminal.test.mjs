@@ -176,38 +176,21 @@ test('the three localized Terminal pages have the correct shell and asset paths'
       );
 
       const anchors = anchorTags(html);
-      const logos = anchors.filter(
-        (anchor) =>
-          classNames(anchor).has('terminal-brand-link') &&
-          /<span\b[^>]*class=(["'])[^"']*\blogo\b[^"']*\1/i.test(anchor),
+      const homeMarks = anchors.filter((anchor) =>
+        classNames(anchor).has('terminal-home-mark'),
       );
-      assert.equal(logos.length, 1, `${page.file} must contain one linked logo`);
-      assert.equal(attribute(logos[0], 'href'), './');
-      assert.equal(textContent(logos[0]).replace(/\s+/g, ''), 'YiCapital');
-
-      const terminalNavLinks = anchors.filter(
-        (anchor) => attribute(anchor, 'data-i18n') === 'nav.terminal',
+      assert.equal(homeMarks.length, 1, `${page.file} must contain one compact Terminal home mark`);
+      assert.equal(attribute(homeMarks[0], 'href'), 'terminal');
+      assert.equal(textContent(homeMarks[0]), 'YC');
+      assert.doesNotMatch(
+        html,
+        /class=(["'])[^"']*\bterminal-site-header\b[^"']*\1/i,
+        `${page.file} must not render the large website navigation inside Terminal`,
       );
       assert.equal(
-        terminalNavLinks.length,
-        1,
-        `${page.file} must contain one nav.terminal link`,
-      );
-      const terminalLink = terminalNavLinks[0];
-      assert.equal(attribute(terminalLink, 'href'), 'terminal');
-      assert.equal(textContent(terminalLink), page.navLabel);
-      assert.ok(classNames(terminalLink).has('link'));
-      assert.ok(classNames(terminalLink).has('active'));
-
-      const activeNavLinks = anchors.filter((anchor) => {
-        const classes = classNames(anchor);
-        return classes.has('link') && classes.has('active');
-      });
-      assert.equal(activeNavLinks.length, 1, `${page.file} must have one active nav link`);
-      assert.equal(
-        attribute(activeNavLinks[0], 'data-i18n'),
-        'nav.terminal',
-        `${page.file} must only mark Terminal active`,
+        anchors.filter((anchor) => attribute(anchor, 'data-i18n') === 'nav.terminal').length,
+        0,
+        `${page.file} must not duplicate Terminal as a large navigation tab`,
       );
       const searchInput = html.match(/<input\b[^>]*id=["']terminal-search["'][^>]*>/i)?.[0];
       assert.ok(searchInput, `${page.file} must contain the global Terminal search`);
@@ -228,6 +211,7 @@ test('the three localized Terminal pages have the correct shell and asset paths'
       const expectedScripts = [
         'portal-config.js',
         'yc-i18n.js',
+        'yc-atlas-visuals.js',
         'yc-terminal-v2.js',
       ].map((file) => page.assetPrefix + file);
 
@@ -259,11 +243,11 @@ test('the three localized Terminal pages have the correct shell and asset paths'
   }
 });
 
-test('all localized navigation links use the correct Terminal route depth', async () => {
+test('site navigation links use the correct Terminal route depth and Terminal stays search-first', async () => {
   const htmlFiles = await listHtmlFiles();
   const legacyContactLabels = new Set(['聯繫我們', '联系我们']);
   let terminalLinkCount = 0;
-  let navAboutCount = 0;
+  let terminalUtilityNavCount = 0;
   const legacyContacts = [];
 
   for (const relativePath of htmlFiles) {
@@ -281,15 +265,7 @@ test('all localized navigation links use the correct Terminal route depth', asyn
         );
       }
       if (key === 'nav.about') {
-        navAboutCount += 1;
-        assert.ok(
-          /(^|\/)terminal\.html$/.test(relativePath),
-          `${relativePath} may not retain nav.about outside the Terminal utility area`,
-        );
-        assert.ok(
-          classNames(anchor).has('terminal-about'),
-          `${relativePath} nav.about must be the small Terminal utility link`,
-        );
+        if (/(^|\/)terminal\.html$/.test(relativePath)) terminalUtilityNavCount += 1;
       }
       if (legacyContactLabels.has(label) || /^contact$/i.test(label)) {
         legacyContacts.push(`${relativePath}: ${label}`);
@@ -298,7 +274,7 @@ test('all localized navigation links use the correct Terminal route depth', asyn
   }
 
   assert.ok(terminalLinkCount > 0, 'the site must expose at least one nav.terminal link');
-  assert.equal(navAboutCount, 3, 'the three Terminal pages must expose About as a utility link');
+  assert.equal(terminalUtilityNavCount, 0, 'Terminal pages must not restore the website navigation');
   assert.deepEqual(legacyContacts, [], 'legacy Contact labels must be removed from HTML');
 });
 

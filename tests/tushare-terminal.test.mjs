@@ -62,6 +62,17 @@ function upstreamResponse(apiName, params = {}) {
         [params.ts_code || '000001.SZ', '20260730', 10.2, 10.5, 10.1, 10.4, 1.96],
       ],
     },
+    rt_hk_k: {
+      fields: ['ts_code', 'trade_time', 'open', 'high', 'low', 'close', 'pct_chg'],
+      items: [[params.ts_code || '00700.HK', '2026-07-30 15:59:00', 550, 558, 548, 556, 1.1]],
+    },
+    hk_daily: {
+      fields: ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pct_chg'],
+      items: [
+        [params.ts_code || '00700.HK', '20260729', 545, 552, 542, 550, 0.9],
+        [params.ts_code || '00700.HK', '20260730', 550, 558, 548, 556, 1.1],
+      ],
+    },
     daily_basic: {
       fields: ['ts_code', 'trade_date', 'close', 'turnover_rate', 'pe_ttm', 'pb', 'total_mv', 'circ_mv'],
       items: [[params.ts_code || '000001.SZ', '20260730', 10.4, 0.8, 6.5, 0.7, 20000000, 18000000]],
@@ -642,6 +653,9 @@ test('history ordering, quote selection and news freshness are deterministic', a
   ));
   assert.equal(quote.data.trade_date, '20260730');
   assert.equal(quote.row_count, 1);
+  assert.equal(quote.quote_mode, 'realtime');
+  assert.equal(quote.freshness_class, 'intraday_snapshot');
+  assert.ok(fetchImpl.calls.some((call) => call.body.api_name === 'rt_k'));
 
   const news = await json(await handleTushareTerminalRequest(
     new Request('https://terminal.test/api/terminal/news?src=sina&start=2026-07-30%2009%3A00%3A00&end=2026-07-30%2016%3A00%3A00'),
@@ -659,6 +673,63 @@ test('history ordering, quote selection and news freshness are deterministic', a
   ));
   assert.equal(major.ok, true);
   assert.equal(majorFetch.calls[0].body.params.src, '新浪财经');
+});
+
+test('A-share quote falls back from Tushare realtime to the latest Tushare EOD snapshot', async () => {
+  const fetchImpl = createFetchMock(({ body }) => {
+    if (body.api_name === 'rt_k') {
+      return { code: 2002, msg: 'permission unavailable', data: null };
+    }
+    return { code: 0, msg: null, data: upstreamResponse(body.api_name, body.params) };
+  });
+  const body = await json(await handleTushareTerminalRequest(
+    new Request('https://terminal.test/api/terminal/quote?symbol=000001.SZ'),
+    { TUSHARE_TOKEN: TOKEN },
+    { fetchImpl, cache: new MockKV(), warehouse: createWarehouse(), now: fixedNow },
+  ));
+  assert.equal(body.ok, true);
+  assert.equal(body.quote_mode, 'eod_fallback');
+  assert.equal(body.fallback, 'latest_eod_snapshot');
+  assert.equal(body.freshness_class, 'eod');
+  assert.match(body.warnings.join(' '), /TUSHARE_PERMISSION_DENIED/);
+  assert.deepEqual(
+    fetchImpl.calls.map((call) => call.body.api_name),
+    ['rt_k', 'daily'],
+  );
+});
+
+test('HK quote uses Tushare realtime and deterministically falls back to hk_daily', async () => {
+  const liveFetch = createFetchMock();
+  const live = await json(await handleTushareTerminalRequest(
+    new Request('https://terminal.test/api/terminal/quote?symbol=00700.HK&asset=hk-stock'),
+    { TUSHARE_TOKEN: TOKEN },
+    { fetchImpl: liveFetch, cache: new MockKV(), warehouse: createWarehouse(), now: fixedNow },
+  ));
+  assert.equal(live.ok, true);
+  assert.equal(live.quote_mode, 'realtime');
+  assert.equal(live.data.close, 556);
+  assert.deepEqual(liveFetch.calls.map((call) => call.body.api_name), ['rt_hk_k']);
+
+  const fallbackFetch = createFetchMock(({ body }) => {
+    if (body.api_name === 'rt_hk_k') {
+      return { code: 2002, msg: 'permission unavailable', data: null };
+    }
+    return { code: 0, msg: null, data: upstreamResponse(body.api_name, body.params) };
+  });
+  const fallback = await json(await handleTushareTerminalRequest(
+    new Request('https://terminal.test/api/terminal/quote?symbol=00700.HK&asset=hk-stock'),
+    { TUSHARE_TOKEN: TOKEN },
+    { fetchImpl: fallbackFetch, cache: new MockKV(), warehouse: createWarehouse(), now: fixedNow },
+  ));
+  assert.equal(fallback.ok, true);
+  assert.equal(fallback.quote_mode, 'eod_fallback');
+  assert.equal(fallback.fallback, 'latest_eod_snapshot');
+  assert.equal(fallback.data.trade_date, '20260730');
+  assert.match(fallback.warnings.join(' '), /TUSHARE_PERMISSION_DENIED/);
+  assert.deepEqual(
+    fallbackFetch.calls.map((call) => call.body.api_name),
+    ['rt_hk_k', 'hk_daily'],
+  );
 });
 
 test('empty upstream data is never replaced with synthetic quote/history data', async () => {

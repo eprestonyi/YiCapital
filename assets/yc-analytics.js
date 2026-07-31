@@ -13,6 +13,56 @@
 
   const TRADING_DAYS = 252;
   const RISK_FREE = 0.04;
+  const SNAPSHOT_FRESHNESS = new Set([
+    'static', 'disclosure', 'macro_release', 'eod',
+    'news_incremental', 'intraday_snapshot', 'live_minute_bar',
+  ]);
+
+  function snapshotMeta(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const freshness = payload.freshness && typeof payload.freshness === 'object'
+      ? payload.freshness : {};
+    const freshnessClass = String(
+      payload.freshness_class || freshness.class || 'eod',
+    );
+    const asOf = String(
+      payload.as_of || payload.asOf || payload.marketDate || payload.end || '',
+    ).slice(0, 10);
+    const source = String(
+      payload.source || payload.source_endpoint || 'persisted-snapshot',
+    ).slice(0, 120);
+    const fetchedAt = String(
+      payload.fetched_at || payload.updatedAt || '',
+    ).slice(0, 40);
+    if (!asOf || !source || !SNAPSHOT_FRESHNESS.has(freshnessClass)) return null;
+    return {
+      snapshotId: String(payload.snapshot_id || '').slice(0, 120) || null,
+      asOf,
+      source,
+      fetchedAt: fetchedAt || null,
+      freshnessClass,
+      stale: freshness.stale === true || payload.stale === true || payload.fallback === true,
+      fallback: freshness.fallback || (payload.fallback === true ? 'last_successful_snapshot' : null),
+    };
+  }
+
+  function snapshotLabel(meta, lang = 'tw') {
+    if (!meta) return '';
+    const stale = meta.stale
+      ? ({
+          tw: ' · 備援：最後成功快照',
+          cn: ' · 备用：最后成功快照',
+          en: ' · fallback: last successful snapshot',
+        }[lang] || '')
+      : '';
+    const sourceLabel = ({
+      tw: '來源', cn: '来源', en: 'source',
+    }[lang] || 'source');
+    const freshnessLabel = ({
+      tw: '新鮮度', cn: '新鲜度', en: 'freshness',
+    }[lang] || 'freshness');
+    return `${sourceLabel} ${meta.source} · ${freshnessLabel} ${meta.freshnessClass}${stale}`;
+  }
 
   /* ───────────── 基礎統計 ───────────── */
   const sum = a => a.reduce((s, x) => s + x, 0);
@@ -740,6 +790,7 @@
 
   return {
     analyze, appendLive, applyLiveHoldings, extractLedger, attachBenchmarks, parseNavSheet, parseAssetSheet, parseBenchmarkSheet,
+    snapshotMeta, snapshotLabel,
     fundReturns, calcMetrics, equityCurve, drawdownSeries, monthlyReturns,
     rollingVol, rollingSharpe, rollingAlphaBeta, histogram, varTable,
     fitNctMoments, stressTest, stressScenarios, align, priceToReturns,

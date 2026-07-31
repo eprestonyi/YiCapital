@@ -109,6 +109,9 @@ const ENDPOINT_DEFINITIONS = {
   hk_daily: endpoint('Stocks', 'eod', 30 * MINUTE, 5000, [
     'ts_code', 'trade_date', 'start_date', 'end_date',
   ], 192),
+  rt_hk_k: endpoint('Stocks', 'intraday_snapshot', MINUTE, 5000, [
+    'ts_code',
+  ], 383),
   us_basic: endpoint('Stocks', 'static', DAY, 6000, [
     'ts_code', 'classify', 'offset', 'limit',
   ], 252),
@@ -279,6 +282,16 @@ const QUOTE_ENDPOINTS = Object.freeze({
   options: 'opt_daily',
   fx: 'fx_daily',
   currency: 'fx_daily',
+});
+const REALTIME_QUOTE_ENDPOINTS = Object.freeze({
+  stock: 'rt_k',
+  stocks: 'rt_k',
+  'a-stock': 'rt_k',
+  'hk-stock': 'rt_hk_k',
+  index: 'rt_idx_k',
+  market: 'rt_idx_k',
+  etf: 'rt_etf_k',
+  fund: 'rt_etf_k',
 });
 
 const DEFAULT_MARKET_ENDPOINT = Object.freeze({
@@ -518,7 +531,7 @@ function inferAsOf(rows, fallback) {
 
 function rowDateValue(row) {
   return String(
-    row?.datetime ?? row?.pub_time ?? row?.trade_date ??
+    row?.datetime ?? row?.pub_time ?? row?.trade_time ?? row?.trade_date ??
     row?.ann_date ?? row?.date ?? row?.month ?? '',
   );
 }
@@ -1201,6 +1214,30 @@ async function routeQuote(adapter, url, now) {
   if (apiName !== mapped.apiName || !TUSHARE_ENDPOINTS[apiName]) {
     throw adapterError('ENDPOINT_NOT_ALLOWED', 'Quote dataset is not allowed', 400);
   }
+  const realtimeName = REALTIME_QUOTE_ENDPOINTS[mapped.asset];
+  let realtimeFailure = null;
+  if (realtimeName) {
+    try {
+      const realtimeConfig = TUSHARE_ENDPOINTS[realtimeName];
+      const realtime = ensureRows(await adapter.query(realtimeName, {
+        params: { ts_code: symbol },
+        fields: '',
+      }), realtimeConfig.freshness_class);
+      const latest = [...realtime.data].sort((left, right) =>
+        rowDateValue(right).localeCompare(rowDateValue(left)))[0];
+      return {
+        ...realtime,
+        route: 'quote',
+        data: latest,
+        row_count: 1,
+        quote_mode: 'realtime',
+        fallback: null,
+      };
+    } catch (error) {
+      realtimeFailure = error?.code || 'REALTIME_UNAVAILABLE';
+      if (['TUSHARE_AUTH_FAILED', 'TUSHARE_NOT_CONFIGURED'].includes(realtimeFailure)) throw error;
+    }
+  }
   const config = TUSHARE_ENDPOINTS[apiName];
   const range = recentDateRange(now, 14);
   const result = ensureRows(await adapter.query(apiName, {
@@ -1214,6 +1251,11 @@ async function routeQuote(adapter, url, now) {
     route: 'quote',
     data: latest,
     row_count: 1,
+    quote_mode: realtimeName ? 'eod_fallback' : 'eod',
+    fallback: realtimeName ? 'latest_eod_snapshot' : null,
+    warnings: realtimeName
+      ? [...(result.warnings || []), `realtime_unavailable:${realtimeFailure}`]
+      : (result.warnings || []),
   };
 }
 

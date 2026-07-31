@@ -1,4 +1,4 @@
-Cloudflare Worker v8.5 部署步驟（全歷史極簡入口 + Google 一鍵註冊 + 用戶意見 D1）
+Cloudflare Worker v8.10 部署步驟（Terminal Atlas + 全歷史入口 + Google 一鍵註冊 + 用戶意見 D1）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
@@ -83,20 +83,21 @@ Cloudflare Worker v8.5 部署步驟（全歷史極簡入口 + Google 一鍵註�
   · 每日 Cron 以實際收盤行情計算市場價值、總資產、淨值與每份 NAV；
     Excel 的 NAV Statement 只保留歷史曲線，不再要求每日手工上傳。
   · GET /api/benchmark?set=us：S&P 500 / NASDAQ / DOW
-  · GET /api/benchmark?set=hk：國企 ETF 2828 / 恒生 ETF 2800 / 恒科 ETF 3032
-  · GET /api/benchmark?set=a：滬深 300（有 TUSHARE_TOKEN 時優先 Tushare，
-    失敗時自動退回原行情源；token 永不下發瀏覽器）
-  · GET /api/entry-market：登入入口專用的三市場精簡快照，只含最近半年淨值、
-    基準與資料質量狀態，不包含持倉
+  · GET /api/benchmark?set=hk：恒生指數 HSI / 恒生科技指數 HKTECH
+  · GET /api/benchmark?set=a：滬深 300（只使用 Tushare；失敗時讀取上一份
+    持久化成功快照，token 永不下發瀏覽器）
+  · GET /api/entry-market：登入入口專用的三市場全歷史精簡快照，只含對齊後
+    的組合/基準指數點與資料質量狀態，不包含持倉
   · 行情、基準、Sharpe、回撤、VaR、壓測及持倉資料全部寫入 KV；
     首頁、portfolios 與 fund-us 直接展示同一份快照。
 
 ⑦ 配置每日任務（Worker → Settings → Triggers → Cron Triggers）
      30 21 * * *   US 收盤後更新 US + US 三大指數
-     0 9 * * *     北京 17:00 更新 HK/A + 三隻港股 ETF/滬深300
+     0 9 * * *     北京 17:00 更新 HK/A 即時收盤快照
+     30 10 * * *   北京 18:30 以官方 EOD 對賬 HK/A + 三隻港股 ETF/滬深300
 
 ⑧ 首次啟用
-   部署 v8.5 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
+   部署 v8.10 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
    再點「立即刷新後台緩存」預熱三市場行情與基準。
    以後只有交易、出入金、股息、公司行動或負債改變時才需重新發布。
 
