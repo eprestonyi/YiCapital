@@ -336,6 +336,8 @@ test('Terminal v2 uses the production API contract and fails closed without synt
   assert.match(source, /is_complete\s*===\s*false/);
   assert.match(source, /activeFunction\.loader\s*===\s*['"]unavailable['"]/);
   assert.match(source, /return records\[state\.year\]\s*\|\|\s*null/);
+  assert.match(source, /disclosedTitle\s*\|\|\s*disclosedBody/);
+  assert.match(source, /newsRows\(newsResult\.data,\s*newsResult\.meta\?\.source/);
   assert.match(source, /replaceChildren\(/);
   assert.match(source, /setAttribute\('role',\s*'tab'\)/);
   for (const code of ['DES', 'RES', 'FA', 'MODL', 'SPLC', 'GP', 'HP', 'VAL', 'VWAP', 'AVAT']) {

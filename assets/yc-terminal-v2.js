@@ -1259,7 +1259,9 @@
   }
 
   function homeNewsPanel(newsResult) {
-    const rows = newsResult ? newsRows(newsResult.data) : [];
+    const rows = newsResult
+      ? newsRows(newsResult.data, newsResult.meta?.source || 'TUSHARE')
+      : [];
     if (!rows.length) return unavailableNode(ENDPOINTS.news, newsResult?.meta, localize(COPY.noRows));
     const stream = create('div', 'terminal-home-news');
     rows.slice(0, 16).forEach((row) => {
@@ -1523,15 +1525,19 @@
     window.requestAnimationFrame(() => drawHistory(chart, rows));
   }
 
-  function newsRows(value) {
-    return normalizedRows(value).map((row, index) => ({
-      original: row,
-      title: String(row.title || row.headline || row.name || row.subject || `#${index + 1}`),
-      summary: String(row.summary || row.description || row.content || row.body || ''),
-      time: String(row.pub_time || row.datetime || row.published_at || row.time || row.date || ''),
-      source: String(row.source || row.src || row.publisher || row.source_name || ''),
-      category: String(row.category || row.channel || row.channels || row.topic || '')
-    }));
+  function newsRows(value, defaultSource = '') {
+    return normalizedRows(value).map((row, index) => {
+      const disclosedTitle = row.title || row.headline || row.name || row.subject || '';
+      const disclosedBody = row.summary || row.description || row.content || row.body || '';
+      return {
+        original: row,
+        title: String(disclosedTitle || disclosedBody || `#${index + 1}`),
+        summary: disclosedTitle ? String(disclosedBody) : '',
+        time: String(row.pub_time || row.datetime || row.published_at || row.time || row.date || ''),
+        source: String(row.source || row.src || row.publisher || row.source_name || defaultSource),
+        category: String(row.category || row.channel || row.channels || row.topic || '')
+      };
+    });
   }
 
   function renderNewsResult(marketResult, newsResult) {
@@ -1571,7 +1577,9 @@
       screen.appendChild(unavailableNode(ENDPOINTS.market, null));
     }
 
-    const rows = newsResult ? newsRows(newsResult.data) : [];
+    const rows = newsResult
+      ? newsRows(newsResult.data, newsResult.meta?.source || 'TUSHARE')
+      : [];
     if (!rows.length) {
       screen.appendChild(unavailableNode(ENDPOINTS.news, newsResult?.meta, localize(COPY.noRows)));
       canvas.replaceChildren(screen);
@@ -1622,7 +1630,8 @@
         create('span', 'terminal-freshness', formatTimestamp(selected.time)),
         selected.category ? create('span', 'terminal-tag', selected.category) : null
       );
-      storyPanel.append(create('h2', '', selected.title), storyMeta, create('p', '', selected.summary || localize(COPY.storyUnavailable)));
+      storyPanel.append(create('h2', '', selected.title), storyMeta);
+      if (selected.summary) storyPanel.appendChild(create('p', '', selected.summary));
     } else {
       storyPanel.appendChild(create('p', '', localize(COPY.storyUnavailable)));
     }
