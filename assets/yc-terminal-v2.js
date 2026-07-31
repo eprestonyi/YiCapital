@@ -396,12 +396,18 @@
 
   function extractMeta(envelope, endpoint) {
     const meta = envelope && typeof envelope.meta === 'object' ? envelope.meta : {};
-    const sourceEndpoint = String(envelope?.source_endpoint || meta.endpoint || '');
-    const inferredSource = sourceEndpoint
-      ? envelope?.domain === 'Supply' || sourceEndpoint.startsWith('warehouse.')
-        ? 'YICAPITAL WAREHOUSE'
-        : 'TUSHARE'
-      : 'UNVERIFIED';
+    const sourceEndpoints = (Array.isArray(envelope?.source_endpoint)
+      ? envelope.source_endpoint
+      : [envelope?.source_endpoint || meta.endpoint])
+      .filter(Boolean)
+      .map(String);
+    const hasWarehouse = envelope?.domain === 'Supply' ||
+      sourceEndpoints.some((value) => value.startsWith('warehouse.'));
+    const hasTushare = sourceEndpoints.some((value) => !value.startsWith('warehouse.'));
+    const inferredSource = hasWarehouse && hasTushare
+      ? 'TUSHARE + YICAPITAL WAREHOUSE'
+      : hasWarehouse ? 'YICAPITAL WAREHOUSE'
+        : hasTushare ? 'TUSHARE' : 'UNVERIFIED';
     const freshness = envelope?.freshness ?? envelope?.freshness_class ?? meta.freshness ??
       meta.freshness_class ?? envelope?.updateFrequency ?? 'UNKNOWN';
     const permission = envelope?.permission ?? envelope?.permission_status ??
@@ -2151,11 +2157,16 @@
     const record = result?.data?.financials;
     if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
     const profile = result.data.profile || {};
+    const warehouseMeta = {
+      ...result.meta,
+      endpoint: 'warehouse.stockDetail',
+      source: 'YICAPITAL WAREHOUSE'
+    };
     const screen = create('div', 'terminal-screen');
     screen.appendChild(screenHeader(
       localize(currentFunction().name),
       String(profile.name || profile.enname || state.securityName || state.symbol),
-      result.meta
+      warehouseMeta
     ));
     const securityHead = create('section', 'terminal-security-head');
     const identity = create('div', 'terminal-security-id');
@@ -2197,7 +2208,7 @@
     if (!rendered) return false;
     screen.appendChild(grid);
     canvas.replaceChildren(screen);
-    state.lastMeta = result.meta;
+    state.lastMeta = warehouseMeta;
     updateStatusbar();
     setBusy(false);
     return true;
@@ -2205,6 +2216,11 @@
 
   function renderWarehouseModule(result, key) {
     const warehouse = result?.data?.supply;
+    const warehouseMeta = {
+      ...result?.meta,
+      endpoint: 'warehouse.stockDetail',
+      source: 'YICAPITAL WAREHOUSE'
+    };
     let value = warehouse && typeof warehouse === 'object' ? warehouse[key] : null;
     if (key === 'supply' && warehouse && typeof warehouse === 'object') {
       const rows = [];
@@ -2232,14 +2248,14 @@
       const activeFunction = currentFunction();
       const screen = create('div', 'terminal-screen');
       screen.append(
-        screenHeader(localize(activeFunction.name), localize(activeFunction.description), result?.meta),
-        unavailableNode(ENDPOINTS.stockDetail, result?.meta, localize(COPY.noRows))
+        screenHeader(localize(activeFunction.name), localize(activeFunction.description), warehouseMeta),
+        unavailableNode(ENDPOINTS.stockDetail, warehouseMeta, localize(COPY.noRows))
       );
       canvas.replaceChildren(screen);
       setBusy(false);
       return;
     }
-    renderGeneric({ ...result, data: value }, ENDPOINTS.stockDetail);
+    renderGeneric({ ...result, data: value, meta: warehouseMeta }, ENDPOINTS.stockDetail);
   }
 
   function renderValuation(result) {

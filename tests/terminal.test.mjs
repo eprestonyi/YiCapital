@@ -338,7 +338,9 @@ test('Terminal v2 uses the production API contract and fails closed without synt
   assert.match(source, /return records\[state\.year\]\s*\|\|\s*null/);
   assert.match(source, /disclosedTitle\s*\|\|\s*disclosedBody/);
   assert.match(source, /newsRows\(newsResult\.data,\s*newsResult\.meta\?\.source/);
-  assert.match(source, /sourceEndpoint\.startsWith\('warehouse\.'\)/);
+  assert.match(source, /TUSHARE \+ YICAPITAL WAREHOUSE/);
+  assert.match(source, /endpoint:\s*'warehouse\.stockDetail'/);
+  assert.match(source, /source:\s*'YICAPITAL WAREHOUSE'/);
   assert.doesNotMatch(source, /TUSHARE \/ WAREHOUSE/);
   assert.match(source, /replaceChildren\(/);
   assert.match(source, /setAttribute\('role',\s*'tab'\)/);
