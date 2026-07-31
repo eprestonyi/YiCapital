@@ -33,7 +33,7 @@ async function checkPortal() {
   try {
     const response = await fetchChecked(url);
     const health = await response.json();
-    if (health.version !== 'v8.10-terminal-atlas') throw new Error(`unexpected version ${health.version}`);
+    if (health.version !== 'v8.11-terminal-visuals') throw new Error(`unexpected version ${health.version}`);
     if (health.feedback !== true) throw new Error('feedback D1 binding is unavailable');
     if (health.feedback_rate_limit !== true) throw new Error('feedback rate-limit secret is unavailable');
     if (health.kv !== true) throw new Error('KV binding is unavailable');

@@ -6,7 +6,7 @@ import {
 import { createTerminalWarehouseAdapter } from './warehouse.js';
 
 /* ═══════════════════════════════════════════════════════════════
-   Yi Capital Portal Backend v8.10 — Cloudflare Worker（全歷史入口 + Terminal Atlas）
+   Yi Capital Portal Backend v8.11 — Cloudflare Worker（Terminal Visuals + Atlas）
    ─────────────────────────────────────────────────────────────
    帳號模型：
      · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則發 6 位驗證碼）
@@ -1472,7 +1472,7 @@ export default {
           }
         } catch (e) {}
         return J(env, {
-          ok: true, version: 'v8.10-terminal-atlas',
+          ok: true, version: 'v8.11-terminal-visuals',
           kv: kvOk,
           feedback: feedbackOk,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,

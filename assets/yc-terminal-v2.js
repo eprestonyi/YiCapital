@@ -117,7 +117,19 @@
     dashboard: t3('綜合屏', '综合屏', 'Dashboard'),
     chartSource: t3('圖表只使用目前端點返回的可核驗記錄', '图表只使用当前端点返回的可核验记录', 'Charts use only verifiable rows returned by the active endpoint'),
     atlasMode: t3('星雲網絡', '星云网络', 'Nebula network'),
-    highwayMode: t3('產業高速公路', '产业高速公路', 'Supply highway')
+    highwayMode: t3('產業高速公路', '产业高速公路', 'Supply highway'),
+    chooseDesk: t3('選擇七大綜合工作台', '选择七大综合工作台', 'Choose one of seven workspaces'),
+    curatedWatchlist: t3('常用關注 · 人工選定，非即時熱門排名', '常用关注 · 人工选定，非实时热门排名', 'Common watchlist · curated, not a live popularity ranking'),
+    currentFunctions: t3('目前證券功能', '当前证券功能', 'Current security functions'),
+    workspaceFunctions: t3('工作台功能', '工作台功能', 'Workspace functions'),
+    latestHeadlines: t3('最新市場訊息', '最新市场消息', 'Latest market headlines'),
+    derivedTopic: t3('關鍵詞歸類 · DERIVED', '关键词归类 · DERIVED', 'Keyword routing · DERIVED'),
+    openFullDesk: t3('打開完整綜合屏', '打开完整综合屏', 'Open full dashboard'),
+    marketPulse: t3('全球市場脈衝', '全球市场脉冲', 'Global market pulse'),
+    sessionMap: t3('市場截面', '市场截面', 'Market cross-section'),
+    newsPulse: t3('新聞脈衝', '新闻脉冲', 'News pulse'),
+    lineBase: t3('各序列首日 = 100', '各序列首日 = 100', 'Each series starts at 100'),
+    previewUnavailable: t3('本工作台即時預覽暫不可用；打開後仍會獨立重試。', '本工作台实时预览暂不可用；打开后仍会独立重试。', 'This live preview is unavailable. The full dashboard retries independently.')
   };
 
   const workspace = (id, code, name, description, functions) => ({
@@ -257,6 +269,75 @@
     { symbol: '399001.SZ', name: 'Shenzhen Component', asset: 'index' },
     { symbol: '399006.SZ', name: 'ChiNext', asset: 'index' }
   ]);
+  const WORKSPACE_DOMAINS = Object.freeze({
+    market: 'Market',
+    stocks: 'Stocks',
+    debt: 'Debt',
+    supply: 'Supply',
+    etf: 'ETF',
+    derivatives: 'Derivatives',
+    money: 'Money & Currency'
+  });
+  const INSTRUMENT_LABELS = Object.freeze({
+    SPX: t3('標普 500', '标普 500', 'S&P 500'),
+    IXIC: t3('納斯達克綜合', '纳斯达克综合', 'NASDAQ Composite'),
+    DJI: t3('道瓊斯工業', '道琼斯工业', 'Dow Jones Industrial Average'),
+    RUT: t3('羅素 2000', '罗素 2000', 'Russell 2000'),
+    HSI: t3('恆生指數', '恒生指数', 'Hang Seng Index'),
+    HKTECH: t3('恆生科技指數', '恒生科技指数', 'Hang Seng TECH Index'),
+    N225: t3('日經 225', '日经 225', 'Nikkei 225'),
+    FTSE: t3('英國富時 100', '英国富时 100', 'FTSE 100'),
+    GDAXI: t3('德國 DAX', '德国 DAX', 'DAX'),
+    FCHI: t3('法國 CAC 40', '法国 CAC 40', 'CAC 40'),
+    SPTSX: t3('加拿大 S&P/TSX', '加拿大 S&P/TSX', 'S&P/TSX Composite'),
+    AS51: t3('澳洲標普 200', '澳洲标普 200', 'S&P/ASX 200'),
+    TWII: t3('台灣加權指數', '台湾加权指数', 'Taiwan Weighted Index'),
+    KS11: t3('韓國綜合指數', '韩国综合指数', 'KOSPI'),
+    SENSEX: t3('印度 SENSEX', '印度 SENSEX', 'SENSEX'),
+    '000300.SH': t3('滬深 300', '沪深 300', 'CSI 300'),
+    '000001.SH': t3('上證綜合指數', '上证综合指数', 'SSE Composite'),
+    '399001.SZ': t3('深證成份指數', '深证成份指数', 'Shenzhen Component'),
+    '399006.SZ': t3('創業板指數', '创业板指数', 'ChiNext'),
+    NVDA: t3('英偉達', '英伟达', 'NVIDIA'),
+    TSM: t3('台積電 ADR', '台积电 ADR', 'TSMC ADR'),
+    MSFT: t3('微軟', '微软', 'Microsoft'),
+    AAPL: t3('蘋果', '苹果', 'Apple'),
+    '00700.HK': t3('騰訊控股', '腾讯控股', 'Tencent Holdings'),
+    '9988.HK': t3('阿里巴巴', '阿里巴巴', 'Alibaba'),
+    '600519.SH': t3('貴州茅台', '贵州茅台', 'Kweichow Moutai'),
+    '510300.SH': t3('滬深 300 ETF', '沪深 300 ETF', 'CSI 300 ETF')
+  });
+  const COMMON_WATCHLIST = Object.freeze({
+    stocks: [
+      { symbol: 'NVDA', name: INSTRUMENT_LABELS.NVDA, asset: 'us-stock' },
+      { symbol: 'TSM', name: INSTRUMENT_LABELS.TSM, asset: 'us-stock' },
+      { symbol: 'MSFT', name: INSTRUMENT_LABELS.MSFT, asset: 'us-stock' },
+      { symbol: 'AAPL', name: INSTRUMENT_LABELS.AAPL, asset: 'us-stock' },
+      { symbol: '00700.HK', name: INSTRUMENT_LABELS['00700.HK'], asset: 'hk-stock' },
+      { symbol: '9988.HK', name: INSTRUMENT_LABELS['9988.HK'], asset: 'hk-stock' },
+      { symbol: '600519.SH', name: INSTRUMENT_LABELS['600519.SH'], asset: 'stock' }
+    ],
+    etf: [
+      { symbol: '510300.SH', name: INSTRUMENT_LABELS['510300.SH'], asset: 'etf' },
+      { symbol: '510050.SH', name: t3('上證 50 ETF', '上证 50 ETF', 'SSE 50 ETF'), asset: 'etf' },
+      { symbol: '159915.SZ', name: t3('創業板 ETF', '创业板 ETF', 'ChiNext ETF'), asset: 'etf' }
+    ],
+    debt: [
+      { symbol: 'CB', name: t3('中國可轉債市場', '中国可转债市场', 'China Convertible Bond Market'), asset: 'debt', functionId: 'overview' },
+      { symbol: 'YCRV', name: t3('主權收益率曲線', '主权收益率曲线', 'Sovereign Yield Curves'), asset: 'debt', functionId: 'curves' },
+      { symbol: 'NIM', name: t3('新債發行', '新债发行', 'New Debt Issuance'), asset: 'debt', functionId: 'issuance' }
+    ],
+    derivatives: [
+      { symbol: 'IF', name: t3('滬深 300 股指期貨', '沪深 300 股指期货', 'CSI 300 Index Futures'), asset: 'future', functionId: 'overview' },
+      { symbol: 'IH', name: t3('上證 50 股指期貨', '上证 50 股指期货', 'SSE 50 Index Futures'), asset: 'future', functionId: 'futures' },
+      { symbol: 'IC', name: t3('中證 500 股指期貨', '中证 500 股指期货', 'CSI 500 Index Futures'), asset: 'future', functionId: 'open-interest' }
+    ],
+    money: [
+      { symbol: 'USDCNY', name: t3('美元兌人民幣', '美元兑人民币', 'US Dollar / Chinese Yuan'), asset: 'fx', functionId: 'fx' },
+      { symbol: 'SHIBOR', name: t3('上海銀行間同業拆放利率', '上海银行间同业拆放利率', 'Shanghai Interbank Offered Rate'), asset: 'rate', functionId: 'rates' },
+      { symbol: 'M2', name: t3('中國廣義貨幣 M2', '中国广义货币 M2', 'China Broad Money M2'), asset: 'money', functionId: 'money-supply' }
+    ]
+  });
   const defaultYear = String(Math.max(2010, Math.min(2026, new Date().getUTCFullYear() - 1)));
   const state = {
     workspace: null,
@@ -291,6 +372,8 @@
     if (!state.workspace) return 'home';
     if (state.workspace === 'supply') return 'supply';
     if (state.symbol) return 'security';
+    const area = currentWorkspace();
+    if (state.functionId && state.functionId !== area.functions[0].id) return 'function';
     if (state.workspace === 'stocks') return 'equity-dashboard';
     return 'dashboard';
   }
@@ -420,6 +503,20 @@
       permission: typeof permission === 'object' ? JSON.stringify(permission) : String(permission),
       asOf: envelope?.as_of || envelope?.asOf || envelope?.retrieved_at || envelope?.updated_at ||
         meta.as_of || meta.asOf || meta.retrieved_at || meta.updated_at || '',
+      fetchedAt: envelope?.fetched_at || meta.fetched_at || '',
+      rowCount: (envelope?.row_count ?? meta.row_count) != null &&
+        Number.isFinite(Number(envelope?.row_count ?? meta.row_count))
+        ? Number(envelope?.row_count ?? meta.row_count)
+        : null,
+      complete: typeof (envelope?.is_complete ?? meta.is_complete) === 'boolean'
+        ? Boolean(envelope?.is_complete ?? meta.is_complete)
+        : null,
+      nameCoverage: Number.isFinite(Number(envelope?.name_enrichment?.coverage_ratio))
+        ? Number(envelope.name_enrichment.coverage_ratio)
+        : null,
+      warnings: Array.isArray(envelope?.warnings)
+        ? envelope.warnings.map(String)
+        : Array.isArray(meta.warnings) ? meta.warnings.map(String) : [],
       partial: envelope?.partial === true || envelope?.is_complete === false || meta.partial === true ||
         /partial/i.test(String(envelope?.warehouse_status || meta.warehouse_status || ''))
     };
@@ -530,7 +627,20 @@
     );
     fragment.append(source, freshness, permission);
     if (meta?.asOf) fragment.appendChild(create('span', 'terminal-tag', `${localize(COPY.asOf)} · ${formatTimestamp(meta.asOf)}`));
+    if (meta?.fetchedAt) fragment.appendChild(create('span', 'terminal-tag', `FETCH · ${formatTimestamp(meta.fetchedAt)}`));
+    if (meta?.rowCount != null) fragment.appendChild(create('span', 'terminal-tag', `ROWS · ${formatNumber(meta.rowCount, 0)}`));
+    if (meta?.endpoint && meta.endpoint !== 'UNKNOWN') {
+      fragment.appendChild(create('span', 'terminal-tag terminal-meta-endpoint', `EP · ${meta.endpoint}`));
+    }
+    if (meta?.nameCoverage != null) {
+      fragment.appendChild(create(
+        'span',
+        'terminal-tag',
+        `NAMES · ${formatNumber(meta.nameCoverage * 100, 0)}% · CURRENT MASTER`
+      ));
+    }
     if (meta?.partial) fragment.appendChild(create('span', 'terminal-source-badge is-partial', 'PARTIAL COVERAGE'));
+    else if (meta?.complete === true) fragment.appendChild(create('span', 'terminal-source-badge is-eod', 'COMPLETE'));
     return fragment;
   }
 
@@ -605,6 +715,7 @@
 
   function readRoute() {
     const params = new URLSearchParams(window.location.search);
+    const previousSymbol = state.symbol;
     const requestedWorkspace = params.get('workspace');
     state.workspace = requestedWorkspace && workspaceMap.has(requestedWorkspace)
       ? requestedWorkspace
@@ -617,6 +728,7 @@
     const requestedYear = params.get('year');
     if (requestedYear && /^(201\d|202[0-6])$/.test(requestedYear)) state.year = requestedYear;
     state.symbol = String(params.get('symbol') || '').trim().slice(0, 40);
+    if (!state.symbol || state.symbol !== previousSymbol) state.securityName = '';
     state.asset = String(params.get('asset') || '').trim().slice(0, 24);
     state.entityId = String(params.get('entity') || '').trim().slice(0, 80);
   }
@@ -684,6 +796,7 @@
         dataset: assetForSelection() === 'us-stock'
           ? 'us_daily'
           : assetForSelection() === 'hk-stock' ? 'hk_daily' : 'daily',
+        labels: '1',
         ts_code: state.symbol || undefined,
         start: range.start,
         end: range.end,
@@ -698,6 +811,7 @@
       return {
         domain: 'Debt',
         dataset,
+        labels: dataset === 'cb_daily' ? '1' : undefined,
         start: range.start,
         end: range.end,
         limit: 400
@@ -709,6 +823,7 @@
       return {
         domain: 'ETF',
         dataset,
+        labels: ['fund_daily', 'etf_share_size'].includes(dataset) ? '1' : undefined,
         start: dataset === 'etf_basic' ? undefined : range.start,
         end: dataset === 'etf_basic' ? undefined : range.end,
         limit: 400
@@ -721,6 +836,7 @@
       return {
         domain: 'Derivatives',
         dataset,
+        labels: dataset === 'fut_daily' ? '1' : undefined,
         start: range.start,
         end: range.end,
         limit: 400
@@ -764,15 +880,23 @@
     const code = create(
       'span',
       'terminal-context-code',
-      mode === 'security' ? `${area.code}:${activeFunction.code}` : area.code
+      ['security', 'function'].includes(mode) ? `${area.code}:${activeFunction.code}` : area.code
     );
     const title = create(
       'strong',
       '',
-      mode === 'security' ? localize(activeFunction.name) : `${localize(area.name)} · ${localize(COPY.dashboard)}`
+      ['security', 'function'].includes(mode)
+        ? localize(activeFunction.name)
+        : `${localize(area.name)} · ${localize(COPY.dashboard)}`
     );
     const suffixParts = [];
-    if (state.symbol) suffixParts.push(state.securityName || state.symbol);
+    if (state.symbol) {
+      suffixParts.push(
+        state.securityName && state.securityName !== state.symbol
+          ? `${state.securityName} · ${state.symbol}`
+          : state.symbol
+      );
+    }
     if (mode === 'security' && YEAR_FUNCTIONS.has(state.functionId)) {
       suffixParts.push(`${localize(COPY.canonicalYear)} ${state.year}`);
     }
@@ -836,12 +960,13 @@
       'terminal-mode-home',
       'terminal-mode-dashboard',
       'terminal-mode-equity-dashboard',
+      'terminal-mode-function',
       'terminal-mode-security',
       'terminal-mode-supply'
     );
     body.classList.add(`terminal-mode-${mode}`);
     workspaceTabs.hidden = mode === 'home';
-    functionTabs.hidden = mode !== 'security';
+    functionTabs.hidden = !['security', 'function'].includes(mode);
     const yearControl = document.querySelector('.terminal-year-control');
     if (yearControl) {
       yearControl.hidden = !(mode === 'security' && YEAR_FUNCTIONS.has(state.functionId));
@@ -853,6 +978,8 @@
     renderFunctionTabs();
     updateChromeVisibility();
     updateContext();
+    updateSearchPlaceholder();
+    syncSearchInput();
     if (yearSelect) yearSelect.value = state.year;
   }
 
@@ -863,6 +990,7 @@
       state.asset = '';
       state.securityName = '';
       state.entityId = '';
+      searchInput.value = '';
     }
     state.workspace = id;
     state.functionId = workspaceMap.get(id).functions[0].id;
@@ -923,11 +1051,37 @@
     );
   }
 
-  function rowInstrument(row) {
+  function instrumentCode(row) {
     return String(
-      row?.ts_code ?? row?.symbol ?? row?.code ?? row?.name ??
-      row?.index_name ?? row?.curve_type ?? row?.exchange ?? 'SERIES'
-    );
+      row?.ts_code ?? row?.symbol ?? row?.ticker ?? row?.code ??
+      row?.index_code ?? row?.curve_type ?? row?.exchange ?? 'SERIES'
+    ).trim();
+  }
+
+  function instrumentName(row) {
+    const code = instrumentCode(row);
+    const disclosed = row?.display_name ?? row?.localized_name ?? row?.name ??
+      row?.security_name ?? row?.short_name ?? row?.bond_short_name ??
+      row?.csname ?? row?.extname ?? row?.cname ?? row?.index_name ??
+      row?.enname ?? row?.full_name;
+    if (disclosed && String(disclosed).trim() && String(disclosed).trim() !== code) {
+      return String(disclosed).trim();
+    }
+    if (INSTRUMENT_LABELS[code]) return localize(INSTRUMENT_LABELS[code]);
+    if (/^IF\d*/i.test(code)) return localize(t3('滬深 300 股指期貨', '沪深 300 股指期货', 'CSI 300 Index Futures'));
+    if (/^IH\d*/i.test(code)) return localize(t3('上證 50 股指期貨', '上证 50 股指期货', 'SSE 50 Index Futures'));
+    if (/^IC\d*/i.test(code)) return localize(t3('中證 500 股指期貨', '中证 500 股指期货', 'CSI 500 Index Futures'));
+    if (/shibor/i.test(code)) return localize(t3('上海銀行間同業拆放利率', '上海银行间同业拆放利率', 'Shanghai Interbank Offered Rate'));
+    return code;
+  }
+
+  function instrumentIdentity(row) {
+    const code = instrumentCode(row);
+    return { code, name: instrumentName(row) };
+  }
+
+  function rowInstrument(row) {
+    return instrumentName(row);
   }
 
   function rowMarketValue(row) {
@@ -942,10 +1096,31 @@
     return null;
   }
 
+  function rowPercentChange(row) {
+    return finiteNumber(
+      row?.pct_chg ?? row?.pct_change ?? row?.change_pct ?? row?.percent_change
+    );
+  }
+
+  function enrichInstrumentNames(rows, directoryRows) {
+    if (!directoryRows.length) return rows;
+    const names = new Map();
+    directoryRows.forEach((row) => {
+      const code = instrumentCode(row);
+      const name = instrumentName(row);
+      if (code && name && name !== code) names.set(code, name);
+    });
+    return rows.map((row) => {
+      const code = instrumentCode(row);
+      const name = names.get(code);
+      return name ? { ...row, display_name: name } : row;
+    });
+  }
+
   function latestRowsByInstrument(rows) {
     const latest = new Map();
     rows.forEach((row) => {
-      const key = rowInstrument(row);
+      const key = instrumentCode(row);
       const previous = latest.get(key);
       if (!previous || rowDate(row) >= rowDate(previous)) latest.set(key, row);
     });
@@ -958,90 +1133,225 @@
     rows.forEach((row) => {
       const value = rowMarketValue(row);
       const date = rowDate(row);
-      if (value == null || !date) return;
-      const key = rowInstrument(row);
-      if (!groups.has(key)) groups.set(key, new Map());
-      groups.get(key).set(date, value);
+      if (value == null || !date || value === 0) return;
+      const code = instrumentCode(row);
+      if (!groups.has(code)) {
+        groups.set(code, {
+          code,
+          name: instrumentName(row),
+          values: new Map()
+        });
+      }
+      groups.get(code).values.set(date, value);
     });
-    const series = [...groups.entries()]
-      .map(([name, values]) => ({
-        name,
-        points: [...values.entries()].sort(([left], [right]) => left.localeCompare(right))
+    const priority = [
+      'SPX', 'IXIC', 'DJI', 'HSI', 'HKTECH', 'N225', 'FTSE', 'GDAXI',
+      'FCHI', 'RUT', 'TWII', 'KS11', 'SPTSX', 'AS51'
+    ];
+    const series = [...groups.values()]
+      .map((item) => ({
+        ...item,
+        points: [...item.values.entries()].sort(([left], [right]) => left.localeCompare(right))
       }))
       .filter((item) => item.points.length >= 8)
-      .sort((left, right) => right.points.length - left.points.length)
+      .sort((left, right) => {
+        const leftPriority = priority.indexOf(left.code);
+        const rightPriority = priority.indexOf(right.code);
+        if (leftPriority >= 0 || rightPriority >= 0) {
+          if (leftPriority < 0) return 1;
+          if (rightPriority < 0) return -1;
+          return leftPriority - rightPriority;
+        }
+        return right.points.length - left.points.length || left.name.localeCompare(right.name);
+      })
       .slice(0, 5);
     if (!series.length) return unavailableNode('DASHBOARD:SERIES', state.lastMeta, localize(COPY.noRows));
 
-    const width = 820;
-    const height = 270;
-    const padding = { top: 22, right: 18, bottom: 28, left: 36 };
+    const dates = [...new Set(series.flatMap((item) => item.points.map((point) => point[0])))]
+      .sort((left, right) => left.localeCompare(right));
+    if (dates.length < 8) return unavailableNode('DASHBOARD:SERIES', state.lastMeta, localize(COPY.noRows));
+    const dateIndex = new Map(dates.map((date, index) => [date, index]));
+    const width = 920;
+    const height = 330;
+    const padding = { top: 26, right: 34, bottom: 46, left: 52 };
     const normalized = series.map((item) => {
-      const base = item.points[0][1] || 1;
+      const base = item.points[0][1];
       return {
         ...item,
-        points: item.points.map(([date, value]) => [date, (value / base) * 100])
+        points: item.points.map(([date, value]) => [date, (value / base) * 100]),
+        returnValue: ((item.points.at(-1)[1] / base) - 1) * 100
       };
     });
     const allValues = normalized.flatMap((item) => item.points.map((point) => point[1]));
-    const minimum = Math.min(...allValues);
-    const maximum = Math.max(...allValues);
+    const rawMinimum = Math.min(...allValues);
+    const rawMaximum = Math.max(...allValues);
+    const domainPadding = Math.max((rawMaximum - rawMinimum) * .1, .6);
+    const minimum = rawMinimum - domainPadding;
+    const maximum = rawMaximum + domainPadding;
     const spread = maximum - minimum || 1;
     const colors = ['#22d3ee', '#6e9af4', '#b54bfa', '#f3c969', '#36d39a'];
     const svg = createSvg('svg', {
       viewBox: `0 0 ${width} ${height}`,
       role: 'img',
       'aria-label': label,
-      preserveAspectRatio: 'none'
+      preserveAspectRatio: 'xMidYMid meet'
     });
+    const plotWidth = width - padding.left - padding.right;
+    const plotHeight = height - padding.top - padding.bottom;
+    const pointX = (date) => padding.left +
+      (plotWidth * (dateIndex.get(date) || 0)) / Math.max(1, dates.length - 1);
+    const pointY = (value) => height - padding.bottom -
+      ((value - minimum) / spread) * plotHeight;
+
     for (let line = 0; line <= 4; line += 1) {
-      const y = padding.top + ((height - padding.top - padding.bottom) * line) / 4;
-      svg.appendChild(createSvg('line', {
-        x1: padding.left,
-        y1: y,
-        x2: width - padding.right,
-        y2: y,
-        stroke: '#18263a',
-        'stroke-width': 1
-      }));
+      const value = maximum - (spread * line) / 4;
+      const y = pointY(value);
+      svg.append(
+        createSvg('line', {
+          x1: padding.left,
+          y1: y,
+          x2: width - padding.right,
+          y2: y,
+          stroke: Math.abs(value - 100) < spread / 10 ? '#39506d' : '#18263a',
+          'stroke-width': Math.abs(value - 100) < spread / 10 ? 1.25 : 1,
+          'stroke-dasharray': Math.abs(value - 100) < spread / 10 ? '4 4' : '0'
+        }),
+        createSvg('text', {
+          x: padding.left - 9,
+          y: y + 3,
+          fill: '#66788f',
+          'font-size': 9,
+          'text-anchor': 'end',
+          'font-family': 'IBM Plex Mono, monospace'
+        }, formatNumber(value))
+      );
     }
+    [0, Math.floor((dates.length - 1) / 2), dates.length - 1].forEach((index) => {
+      const date = dates[index];
+      svg.appendChild(createSvg('text', {
+        x: pointX(date),
+        y: height - 16,
+        fill: '#66788f',
+        'font-size': 9,
+        'text-anchor': index === 0 ? 'start' : index === dates.length - 1 ? 'end' : 'middle',
+        'font-family': 'IBM Plex Mono, monospace'
+      }, date.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')));
+    });
     normalized.forEach((item, seriesIndex) => {
       const path = item.points.map((point, index) => {
-        const x = padding.left +
-          ((width - padding.left - padding.right) * index) / Math.max(1, item.points.length - 1);
-        const y = height - padding.bottom -
-          ((point[1] - minimum) / spread) * (height - padding.top - padding.bottom);
+        const x = pointX(point[0]);
+        const y = pointY(point[1]);
         return `${index ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`;
       }).join(' ');
       svg.appendChild(createSvg('path', {
         d: path,
         fill: 'none',
         stroke: colors[seriesIndex],
-        'stroke-width': seriesIndex === 0 ? 2.4 : 1.5,
-        opacity: seriesIndex === 0 ? 1 : .82,
-        'vector-effect': 'non-scaling-stroke'
+        'stroke-width': seriesIndex === 0 ? 2.6 : 1.7,
+        opacity: seriesIndex === 0 ? 1 : .84,
+        'vector-effect': 'non-scaling-stroke',
+        'data-terminal-series': String(seriesIndex)
+      }));
+      const last = item.points.at(-1);
+      svg.appendChild(createSvg('circle', {
+        cx: pointX(last[0]),
+        cy: pointY(last[1]),
+        r: seriesIndex === 0 ? 3.4 : 2.6,
+        fill: colors[seriesIndex],
+        stroke: '#02060c',
+        'stroke-width': 1.2,
+        'data-terminal-series': String(seriesIndex)
       }));
     });
+    const hoverLine = createSvg('line', {
+      x1: padding.left,
+      y1: padding.top,
+      x2: padding.left,
+      y2: height - padding.bottom,
+      stroke: '#71849c',
+      'stroke-width': 1,
+      'stroke-dasharray': '3 4',
+      opacity: 0,
+      'pointer-events': 'none'
+    });
+    svg.appendChild(hoverLine);
+    const interaction = createSvg('rect', {
+      x: padding.left,
+      y: padding.top,
+      width: plotWidth,
+      height: plotHeight,
+      fill: 'transparent',
+      tabindex: 0,
+      'aria-label': `${label} · ${localize(COPY.lineBase)}`
+    });
+    svg.appendChild(interaction);
+
+    const tooltip = create('div', 'terminal-chart-tooltip');
+    tooltip.hidden = true;
+    interaction.addEventListener('pointermove', (event) => {
+      const rect = svg.getBoundingClientRect();
+      const localX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * width;
+      const ratio = Math.max(0, Math.min(1, (localX - padding.left) / Math.max(plotWidth, 1)));
+      const index = Math.round(ratio * (dates.length - 1));
+      const date = dates[index];
+      const x = pointX(date);
+      hoverLine.setAttribute('x1', String(x));
+      hoverLine.setAttribute('x2', String(x));
+      hoverLine.setAttribute('opacity', '1');
+      const lines = normalized.map((item) => {
+        const point = item.points.find((candidate) => candidate[0] === date);
+        return point ? `${item.name} · ${item.code}  ${formatNumber(point[1])}` : null;
+      }).filter(Boolean);
+      tooltip.replaceChildren(
+        create('strong', '', date.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')),
+        ...lines.map((line) => create('span', '', line))
+      );
+      tooltip.hidden = false;
+      tooltip.style.left = `${Math.max(8, Math.min(78, ratio * 100))}%`;
+    });
+    interaction.addEventListener('pointerleave', () => {
+      hoverLine.setAttribute('opacity', '0');
+      tooltip.hidden = true;
+    });
+
     const legend = create('div', 'terminal-chart-legend');
     normalized.forEach((item, index) => {
-      const key = create('span');
+      const key = makeButton('', 'terminal-chart-series', () => {
+        const muted = key.getAttribute('aria-pressed') === 'false';
+        key.setAttribute('aria-pressed', muted ? 'true' : 'false');
+        svg.querySelectorAll(`[data-terminal-series="${index}"]`).forEach((mark) => {
+          mark.setAttribute('opacity', muted ? (index === 0 ? '1' : '.84') : '.12');
+        });
+      });
+      key.setAttribute('aria-pressed', 'true');
       key.append(
-        append(create('i'), []),
-        document.createTextNode(item.name)
+        create('i'),
+        append(create('span'), [
+          create('strong', '', item.name),
+          create('small', '', item.code)
+        ]),
+        create('em', item.returnValue >= 0 ? 'is-up' : 'is-down', `${item.returnValue >= 0 ? '+' : ''}${formatNumber(item.returnValue)}%`)
       );
       key.querySelector('i').style.background = colors[index];
       legend.appendChild(key);
     });
-    root.append(svg, legend, create('p', 'terminal-chart-caption', `${localize(COPY.chartSource)} · BASE 100`));
+    root.append(
+      svg,
+      tooltip,
+      legend,
+      create('p', 'terminal-chart-caption', `${localize(COPY.chartSource)} · ${localize(COPY.lineBase)}`)
+    );
     return root;
   }
 
   function rankBars(rows) {
     const candidates = latestRowsByInstrument(rows).map((row) => {
-      const change = finiteNumber(row.pct_chg ?? row.change_pct ?? row.change);
+      const change = rowPercentChange(row);
       const fallback = finiteNumber(row.amount ?? row.vol ?? row.volume ?? row.open_interest ?? row.oi);
+      const identity = instrumentIdentity(row);
       return {
-        name: rowInstrument(row),
+        name: identity.name,
+        code: identity.code,
         value: change == null ? fallback : change,
         measure: change == null ? 'ACTIVITY' : 'CHANGE %',
         signed: change != null
@@ -1054,7 +1364,10 @@
     const root = create('div', 'terminal-rank-bars');
     visible.forEach((item) => {
       const row = create('div', 'terminal-rank-row');
-      const label = create('span', 'terminal-rank-label', item.name);
+      const label = append(create('span', 'terminal-rank-label'), [
+        create('strong', '', item.name),
+        item.code && item.code !== item.name ? create('small', '', item.code) : null
+      ]);
       const track = create('span', 'terminal-rank-track');
       const bar = create('i', item.signed && item.value < 0 ? 'is-negative' : '');
       bar.style.width = `${Math.max(3, Math.abs(item.value) / maximum * 100)}%`;
@@ -1168,26 +1481,35 @@
     return rankBars(rows);
   }
 
-  function renderDomainDashboard(result, secondaryResult) {
+  function dashboardSearchPrompt(area) {
+    const prompt = create('section', 'terminal-dashboard-search');
+    const examples = (COMMON_WATCHLIST[area.id] || []).slice(0, 4)
+      .map((item) => `${localize(item.name)} · ${item.symbol}`)
+      .join('   ');
+    const functionCodes = area.functions.slice(0, 8).map((item) => item.code).join(' · ');
+    prompt.append(
+      create('code', '', area.code),
+      create('strong', '', searchPlaceholderText()),
+      create('span', '', examples || functionCodes)
+    );
+    prompt.addEventListener('click', () => {
+      searchInput.focus();
+      renderContextSearch();
+    });
+    return prompt;
+  }
+
+  function renderDomainDashboard(result, secondaryResult, newsResult) {
     const area = currentWorkspace();
-    const rows = normalizedRows(result.data);
     const secondaryRows = secondaryResult ? normalizedRows(secondaryResult.data) : [];
+    const rows = enrichInstrumentNames(normalizedRows(result.data), secondaryRows);
     const screen = create('div', 'terminal-screen terminal-domain-screen');
     screen.appendChild(screenHeader(
       `${area.code} · ${localize(area.name)}`,
       localize(area.description),
       result.meta
     ));
-    if (area.id === 'stocks') {
-      const prompt = create('section', 'terminal-dashboard-search');
-      prompt.append(
-        create('code', '', 'EQT'),
-        create('strong', '', localize(COPY.securitySearch)),
-        create('span', '', 'DES · CN · RES · FA · MODL · SPLC · Q · GP · HP · VAL · EE · OWN · EVT · VWAP · AVAT')
-      );
-      prompt.addEventListener('click', () => searchInput.focus());
-      screen.appendChild(prompt);
-    }
+    screen.appendChild(dashboardSearchPrompt(area));
     const grid = create('div', 'terminal-grid');
     if (rows.length || secondaryRows.length) {
       const visualBody = create('div', 'terminal-panel-body');
@@ -1201,6 +1523,22 @@
         visualBody,
         8,
         `${rows.length}`
+      ));
+      const newsBody = create('div', 'terminal-panel-body terminal-domain-news');
+      if (newsResult?.meta) {
+        const newsMeta = create('div', 'terminal-panel-meta');
+        newsMeta.appendChild(metaBadges(newsResult.meta));
+        newsBody.appendChild(newsMeta);
+      }
+      newsBody.append(
+        create('p', 'terminal-news-derived-label', localize(COPY.derivedTopic)),
+        deskHeadlines(newsResult, area)
+      );
+      grid.appendChild(panel(
+        localize(COPY.latestHeadlines),
+        newsResult ? newsBody : unavailableNode(ENDPOINTS.news, null, localize(COPY.noRows)),
+        4,
+        newsResult?.meta?.asOf ? formatTimestamp(newsResult.meta.asOf) : ''
       ));
       const rankingBody = create('div', 'terminal-panel-body');
       rankingBody.appendChild(
@@ -1218,7 +1556,7 @@
       ));
       const kpiBody = create('div', 'terminal-panel-body');
       kpiBody.appendChild(dashboardKpis(rows.length ? rows : secondaryRows, result.meta));
-      grid.appendChild(panel(t3('資料覆蓋', '数据覆盖', 'Data coverage')[language], kpiBody, 12));
+      grid.appendChild(panel(t3('資料覆蓋', '数据覆盖', 'Data coverage')[language], kpiBody, 8));
       const tableBody = create('div', 'terminal-panel-body');
       const tableRows = secondaryRows.length ? secondaryRows : rows;
       tableBody.appendChild(tableNode(tableRows.slice(-24).reverse()));
@@ -1233,7 +1571,11 @@
     updateStatusbar();
   }
 
-  function workspaceAvailability(area) {
+  function workspaceAvailability(area, result) {
+    if (result?.meta?.freshness) {
+      const suffix = result.meta.partial ? ' · PARTIAL' : '';
+      return `${String(result.meta.freshness).toUpperCase()}${suffix}`;
+    }
     const service = state.serviceStatus || {};
     if (area.id === 'supply') {
       return service.warehouse_ready === true
@@ -1243,45 +1585,230 @@
     return service.ready === true || service.token_configured === true ? 'TUSHARE READY' : 'SOURCE CHECK';
   }
 
-  function workspaceCards() {
-    const wrapper = create('section', 'terminal-home-workspaces');
-    wrapper.appendChild(create('h2', '', localize(COPY.sevenDesks)));
-    const grid = create('div', 'terminal-workspace-card-grid');
-    WORKSPACES.forEach((area, index) => {
-      const card = makeButton('', `terminal-workspace-card terminal-workspace-card-${area.id}`, () => {
-        selectWorkspace(area.id);
-      });
+  function marketSnapshot(rows) {
+    const priorities = ['SPX', 'IXIC', 'DJI', 'HSI', 'HKTECH', 'N225', 'FTSE', 'GDAXI', 'RUT'];
+    const latest = latestRowsByInstrument(rows)
+      .sort((left, right) => {
+        const leftIndex = priorities.indexOf(instrumentCode(left));
+        const rightIndex = priorities.indexOf(instrumentCode(right));
+        if (leftIndex < 0 && rightIndex < 0) return instrumentName(left).localeCompare(instrumentName(right));
+        if (leftIndex < 0) return 1;
+        if (rightIndex < 0) return -1;
+        return leftIndex - rightIndex;
+      })
+      .slice(0, 8);
+    const grid = create('div', 'terminal-market-snapshot');
+    latest.forEach((row) => {
+      const identity = instrumentIdentity(row);
+      const value = rowMarketValue(row);
+      const change = rowPercentChange(row);
+      const card = create('div', 'terminal-market-snapshot-card');
       card.append(
-        append(create('span', 'terminal-workspace-card-code'), [
-          create('b', '', String(index + 1).padStart(2, '0')),
-          create('code', '', area.code)
-        ]),
-        create('strong', '', localize(area.name)),
-        create('p', '', localize(area.description)),
-        append(create('span', 'terminal-workspace-card-foot'), [
-          create('small', '', workspaceAvailability(area)),
-          create('i', '', '→')
-        ])
+        create('strong', '', identity.name),
+        create('small', '', identity.code),
+        create('b', '', value == null ? '—' : formatNumber(value)),
+        create('em', change == null ? '' : change >= 0 ? 'is-up' : 'is-down',
+          change == null ? '—' : `${change >= 0 ? '+' : ''}${formatNumber(change)}%`)
       );
       grid.appendChild(card);
     });
-    wrapper.appendChild(grid);
-    return wrapper;
+    return grid;
+  }
+
+  function topicClass(value) {
+    return `topic-${String(value || 'other').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'other'}`;
   }
 
   function homeNewsPanel(newsResult) {
     const rows = newsResult
       ? newsRows(newsResult.data, newsResult.meta?.source || 'TUSHARE')
+          .map((row) => ({ ...row, topic: newsTopic(row) }))
       : [];
     if (!rows.length) return unavailableNode(ENDPOINTS.news, newsResult?.meta, localize(COPY.noRows));
+    const routed = rows.map((row) => ({ ...row, topic: newsTopic(row) }));
+    const counts = new Map();
+    routed.forEach((row) => counts.set(row.topic.key, (counts.get(row.topic.key) || 0) + 1));
+    const maximum = Math.max(...counts.values(), 1);
+    const root = create('div', 'terminal-news-pulse');
+    const topicGrid = create('div', 'terminal-news-topic-grid');
+    [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6).forEach(([topic, count]) => {
+      const item = create('div', `terminal-news-topic ${topicClass(topic)}`);
+      const track = create('span');
+      const fill = create('i');
+      fill.style.width = `${Math.max(8, count / maximum * 100)}%`;
+      track.appendChild(fill);
+      item.append(
+        append(create('b'), [
+          create('strong', '', topic),
+          create('small', '', String(count))
+        ]),
+        track
+      );
+      topicGrid.appendChild(item);
+    });
+    const routingLabel = create('div', 'terminal-news-derived-label', localize(COPY.derivedTopic));
     const stream = create('div', 'terminal-home-news');
-    rows.slice(0, 16).forEach((row) => {
-      const item = create('article', 'terminal-home-news-item');
+    routed.slice(0, 24).forEach((row, index) => {
+      const item = makeButton('', 'terminal-home-news-item', () => {
+        state.newsSelection = index;
+        selectWorkspace('market');
+      });
+      item.append(
+        create('span', `terminal-news-topic-dot ${topicClass(row.topic.key)}`, row.topic.key.slice(0, 2)),
+        create('time', '', formatTimestamp(row.time)),
+        append(create('div'), [
+          create('strong', '', row.title),
+          create('small', '', `${row.source || 'UNKNOWN'} · ${row.topic.key}`)
+        ])
+      );
+      stream.appendChild(item);
+    });
+    root.append(topicGrid, routingLabel, stream);
+    return root;
+  }
+
+  function previewSparkline(rows, area) {
+    if (area.id === 'money') return moneyCurve(rows);
+    const priority = area.id === 'market'
+      ? ['SPX', 'IXIC', 'DJI', 'HSI', 'HKTECH', 'N225']
+      : [];
+    const groups = new Map();
+    rows.forEach((row) => {
+      const date = rowDate(row);
+      const value = rowMarketValue(row);
+      if (!date || value == null || value === 0) return;
+      const code = instrumentCode(row);
+      if (!groups.has(code)) groups.set(code, { code, name: instrumentName(row), points: [] });
+      groups.get(code).points.push([date, value]);
+    });
+    const series = [...groups.values()]
+      .map((item) => ({ ...item, points: item.points.sort(([a], [b]) => a.localeCompare(b)) }))
+      .filter((item) => item.points.length >= 8)
+      .sort((left, right) => {
+        const leftPriority = priority.indexOf(left.code);
+        const rightPriority = priority.indexOf(right.code);
+        if (leftPriority >= 0 || rightPriority >= 0) {
+          if (leftPriority < 0) return 1;
+          if (rightPriority < 0) return -1;
+          if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+        }
+        return right.points.length - left.points.length || left.name.localeCompare(right.name);
+      })[0];
+    if (!series) return rankBars(rows);
+    const values = series.points.map((point) => point[1]);
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    const spread = maximum - minimum || 1;
+    const path = series.points.map((point, index) => {
+      const x = 8 + (404 * index) / Math.max(1, series.points.length - 1);
+      const y = 96 - ((point[1] - minimum) / spread) * 78;
+      return `${index ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`;
+    }).join(' ');
+    const svg = createSvg('svg', {
+      viewBox: '0 0 420 108',
+      role: 'img',
+      'aria-label': `${series.name} · ${series.code}`,
+      preserveAspectRatio: 'xMidYMid meet'
+    });
+    svg.append(
+      createSvg('line', { x1: 8, y1: 96, x2: 412, y2: 96, stroke: '#1b2a3d', 'stroke-width': 1 }),
+      createSvg('path', {
+        d: path,
+        fill: 'none',
+        stroke: '#22d3ee',
+        'stroke-width': 2,
+        'vector-effect': 'non-scaling-stroke'
+      })
+    );
+    const root = create('div', 'terminal-desk-sparkline');
+    root.append(
+      append(create('div'), [
+        create('strong', '', series.name),
+        create('small', '', series.code)
+      ]),
+      svg,
+      create('span', '', `${formatNumber(values.at(-1))} · ${series.points.at(-1)[0]}`)
+    );
+    return root;
+  }
+
+  function supplyPreview(result) {
+    const seed = result?.data;
+    if (!seed || !Array.isArray(seed.entities) || !Array.isArray(seed.relationships)) {
+      return unavailableNode(ENDPOINTS.market, result?.meta, localize(COPY.previewUnavailable));
+    }
+    const root = create('div', 'terminal-supply-preview');
+    const orbit = create('div', 'terminal-supply-preview-orbit');
+    (seed.layers || []).slice(0, 7).forEach((layer, index) => {
+      const node = create('span', '', String(layer.name || layer.id || index + 1));
+      node.style.setProperty('--layer-index', String(index));
+      orbit.appendChild(node);
+    });
+    const evidenceGate = window.YCAtlasVisuals?.hasEvidence;
+    const verifiedRelationshipCount = typeof evidenceGate === 'function'
+      ? seed.relationships.filter((relation) => evidenceGate(relation, state.year)).length
+      : null;
+    root.append(
+      orbit,
+      kpiStrip([
+        { label: localize(COPY.company), value: seed.entities.filter((item) => item.kind === 'company').length },
+        {
+          label: t3('已核驗關係', '已核验关系', 'Verified relations')[language],
+          value: verifiedRelationshipCount == null ? '—' : verifiedRelationshipCount
+        },
+        { label: localize(COPY.freshness), value: result.meta?.freshness || 'DISCLOSURE' }
+      ])
+    );
+    return root;
+  }
+
+  function deskLatestRows(rows) {
+    const root = create('div', 'terminal-desk-latest');
+    latestRowsByInstrument(rows).slice(0, 8).forEach((row) => {
+      const identity = instrumentIdentity(row);
+      const value = rowMarketValue(row);
+      const change = rowPercentChange(row);
+      const item = create('div', 'terminal-desk-latest-row');
+      item.append(
+        append(create('span'), [
+          create('strong', '', identity.name),
+          identity.code && identity.code !== identity.name ? create('small', '', identity.code) : null
+        ]),
+        create('b', '', value == null ? '—' : formatNumber(value)),
+        create('em', change == null ? '' : change >= 0 ? 'is-up' : 'is-down',
+          change == null ? '' : `${change >= 0 ? '+' : ''}${formatNumber(change)}%`)
+      );
+      root.appendChild(item);
+    });
+    return root;
+  }
+
+  function deskHeadlines(newsResult, area) {
+    const rows = newsResult
+      ? newsRows(newsResult.data, newsResult.meta?.source || 'TUSHARE')
+      : [];
+    const topicPreference = {
+      market: [],
+      stocks: ['COMPANIES', 'AI / TECH'],
+      debt: ['FX / RATES', 'MACRO'],
+      supply: ['AI / TECH', 'COMPANIES', 'ENERGY'],
+      etf: ['COMPANIES', 'MACRO'],
+      derivatives: ['FX / RATES', 'ENERGY', 'MACRO'],
+      money: ['FX / RATES', 'MACRO']
+    }[area.id] || [];
+    const routed = rows.map((row) => ({ ...row, topic: newsTopic(row) }));
+    const preferred = topicPreference.length
+      ? routed.filter((row) => topicPreference.includes(row.topic.key))
+      : routed;
+    const visible = (preferred.length ? preferred : routed).slice(0, 5);
+    const stream = create('div', 'terminal-desk-headlines');
+    visible.forEach((row) => {
+      const item = create('article');
       item.append(
         create('time', '', formatTimestamp(row.time)),
         append(create('div'), [
           create('strong', '', row.title),
-          create('small', '', `${row.source || 'UNKNOWN'}${row.category ? ` · ${row.category}` : ''}`)
+          create('small', '', `${row.topic.key} · ${row.source || 'UNKNOWN'}`)
         ])
       );
       stream.appendChild(item);
@@ -1289,7 +1816,60 @@
     return stream;
   }
 
-  function renderHome(marketResult, newsResult) {
+  function workspaceCards(previewResults, newsResult) {
+    const wrapper = create('section', 'terminal-home-workspaces');
+    wrapper.append(
+      create('h2', '', localize(COPY.sevenDesks)),
+      create('p', 'terminal-home-workspaces-note', t3(
+        '每個窗口獨立讀取來源；LIVE、EOD、披露與 PARTIAL 不互相替代。',
+        '每个窗口独立读取来源；LIVE、EOD、披露与 PARTIAL 不互相替代。',
+        'Each window reads its own source. LIVE, EOD, disclosure and PARTIAL states are never substituted.'
+      )[language])
+    );
+    const grid = create('div', 'terminal-workspace-window-grid');
+    WORKSPACES.forEach((area, index) => {
+      const result = previewResults?.[area.id] || null;
+      const windowNode = create('section', `terminal-desk-window terminal-desk-window-${area.id}`);
+      windowNode.dataset.workspaceWindow = area.id;
+      const open = makeButton('', 'terminal-desk-window-open', () => selectWorkspace(area.id));
+      open.append(
+        append(create('span'), [
+          create('small', '', `${String(index + 1).padStart(2, '0')} · ${area.code}`),
+          create('strong', '', localize(area.name))
+        ]),
+        append(create('span'), [
+          create('small', '', workspaceAvailability(area, result)),
+          create('b', '', '↗')
+        ])
+      );
+      const bodyNode = create('div', 'terminal-desk-window-body');
+      const visual = create('div', 'terminal-desk-window-visual');
+      const rows = result ? normalizedRows(result.data) : [];
+      if (area.id === 'supply') visual.appendChild(supplyPreview(result));
+      else if (rows.length) visual.appendChild(previewSparkline(rows, area));
+      else visual.appendChild(unavailableNode(ENDPOINTS.market, result?.meta, localize(COPY.previewUnavailable)));
+      const stream = create('div', 'terminal-desk-window-stream');
+      const streamHead = create('div', 'terminal-desk-window-stream-head');
+      streamHead.append(
+        create('strong', '', localize(COPY.latestHeadlines)),
+        create('small', '', localize(COPY.derivedTopic))
+      );
+      stream.append(streamHead, deskHeadlines(newsResult, area));
+      if (rows.length) stream.appendChild(deskLatestRows(rows));
+      bodyNode.append(visual, stream);
+      const foot = create('footer', 'terminal-desk-window-foot');
+      if (result?.meta) foot.appendChild(metaBadges(result.meta));
+      else foot.appendChild(create('span', 'terminal-source-badge is-partial', 'SOURCE UNAVAILABLE'));
+      foot.appendChild(create('span', 'terminal-desk-window-cta', `${localize(COPY.openFullDesk)} →`));
+      foot.addEventListener('click', () => selectWorkspace(area.id));
+      windowNode.append(open, bodyNode, foot);
+      grid.appendChild(windowNode);
+    });
+    wrapper.appendChild(grid);
+    return wrapper;
+  }
+
+  function renderHome(marketResult, newsResult, previewResults) {
     const marketRows = marketResult ? normalizedRows(marketResult.data) : [];
     const meta = newsResult?.meta || marketResult?.meta || {
       source: 'UNKNOWN',
@@ -1303,19 +1883,32 @@
       localize(COPY.dailyDeskBody),
       meta
     ));
-    const hero = create('div', 'terminal-home-hero');
-    const newsBody = create('div', 'terminal-panel-body');
-    newsBody.appendChild(homeNewsPanel(newsResult));
-    hero.appendChild(panel(localize(COPY.news), newsBody, 12, newsResult?.meta?.asOf ? formatTimestamp(newsResult.meta.asOf) : ''));
+    const hero = create('div', 'terminal-grid terminal-home-hero');
     const chartBody = create('div', 'terminal-panel-body');
-    chartBody.appendChild(
-      marketRows.length
-        ? normalizedPerformanceChart(marketRows, localize(COPY.dailyDesk))
-        : unavailableNode(ENDPOINTS.market, marketResult?.meta, localize(COPY.noRows))
-    );
-    hero.appendChild(panel(t3('全球市場走勢', '全球市场走势', 'Global market performance')[language], chartBody, 12, 'BASE 100'));
+    if (marketResult?.meta) {
+      const marketMeta = create('div', 'terminal-panel-meta');
+      marketMeta.appendChild(metaBadges(marketResult.meta));
+      chartBody.appendChild(marketMeta);
+    }
+    if (marketRows.length) {
+      chartBody.append(
+        marketSnapshot(marketRows),
+        normalizedPerformanceChart(marketRows, localize(COPY.marketPulse))
+      );
+    } else {
+      chartBody.appendChild(unavailableNode(ENDPOINTS.market, marketResult?.meta, localize(COPY.noRows)));
+    }
+    hero.appendChild(panel(localize(COPY.marketPulse), chartBody, 8, marketResult?.meta?.asOf || ''));
+    const newsBody = create('div', 'terminal-panel-body');
+    if (newsResult?.meta) {
+      const newsMeta = create('div', 'terminal-panel-meta');
+      newsMeta.appendChild(metaBadges(newsResult.meta));
+      newsBody.appendChild(newsMeta);
+    }
+    newsBody.appendChild(homeNewsPanel(newsResult));
+    hero.appendChild(panel(localize(COPY.newsPulse), newsBody, 4, newsResult?.meta?.asOf ? formatTimestamp(newsResult.meta.asOf) : ''));
     screen.appendChild(hero);
-    if (isTerminalHome) screen.appendChild(workspaceCards());
+    if (isTerminalHome) screen.appendChild(workspaceCards(previewResults, newsResult));
     canvas.replaceChildren(screen);
     state.lastMeta = meta;
     setBusy(false);
@@ -1369,11 +1962,11 @@
     const strip = create('div', 'terminal-kpi-strip');
     items.forEach((item) => {
       const card = create('div', 'terminal-kpi');
-      card.append(
+      append(card, [
         create('span', '', item.label),
         create('strong', '', typeof item.value === 'number' ? formatNumber(item.value) : item.value == null ? '—' : String(item.value)),
         item.detail ? create('small', '', item.detail) : null
-      );
+      ]);
       strip.appendChild(card);
     });
     return strip;
@@ -1426,7 +2019,7 @@
     const definitions = [
       ['last', ['last', 'price', 'close', 'latest_price']],
       ['change', ['change', 'chg']],
-      ['change %', ['pct_chg', 'change_pct', 'percent_change']],
+      ['change %', ['pct_chg', 'pct_change', 'change_pct', 'percent_change']],
       ['open', ['open']],
       ['high', ['high']],
       ['low', ['low']],
@@ -1537,18 +2130,40 @@
   }
 
   function newsRows(value, defaultSource = '') {
-    return normalizedRows(value).map((row, index) => {
+    return normalizedRows(value).map((row) => {
       const disclosedTitle = row.title || row.headline || row.name || row.subject || '';
       const disclosedBody = row.summary || row.description || row.content || row.body || '';
-      return {
+      if (!String(disclosedTitle).trim() && !String(disclosedBody).trim()) return null;
+      const bracketed = !disclosedTitle
+        ? String(disclosedBody).trim().match(/^【([^】]{2,80})】\s*([\s\S]*)$/)
+        : null;
+      const title = disclosedTitle || bracketed?.[1] || disclosedBody;
+      const summary = disclosedTitle ? disclosedBody : bracketed?.[2] || '';
+      const normalized = {
         original: row,
-        title: String(disclosedTitle || disclosedBody || `#${index + 1}`),
-        summary: disclosedTitle ? String(disclosedBody) : '',
+        title: String(title).trim(),
+        summary: String(summary).trim(),
         time: String(row.pub_time || row.datetime || row.published_at || row.time || row.date || ''),
         source: String(row.source || row.src || row.publisher || row.source_name || defaultSource),
         category: String(row.category || row.channel || row.channels || row.topic || '')
       };
-    });
+      return { ...normalized, topic: newsTopic(normalized) };
+    }).filter(Boolean);
+  }
+
+  function newsTopic(row) {
+    if (row.category) return { key: row.category, disclosed: true };
+    const text = `${row.title} ${row.summary}`.toLowerCase();
+    const routes = [
+      ['AI / TECH', /人工智能|\bai\b|芯片|晶片|半導體|半导体|雲計算|云计算|科技|nvidia|openai|模型/],
+      ['COMPANIES', /公司|企業|企业|財報|财报|營收|营收|利潤|利润|董事會|董事会|併購|并购|股份/],
+      ['MACRO', /央行|通脹|通胀|利率|就業|就业|gdp|經濟|经济|財政|财政|政策/],
+      ['FX / RATES', /外匯|外汇|匯率|汇率|美元|人民幣|人民币|日元|歐元|欧元|債券|债券|收益率/],
+      ['ENERGY', /原油|天然氣|天然气|能源|電力|电力|黃金|黄金|商品|礦產|矿产/],
+      ['GEOPOLITICS', /戰爭|战争|制裁|關稅|关税|外交|國際|国际|政府|選舉|选举/]
+    ];
+    const route = routes.find(([, matcher]) => matcher.test(text));
+    return { key: route?.[0] || 'OTHER', disclosed: false };
   }
 
   function renderNewsResult(marketResult, newsResult) {
@@ -1568,17 +2183,35 @@
         const previousDate = String(previous?.trade_date || previous?.date || '');
         if (!previous || rowDate >= previousDate) bySymbol.set(key, row);
       });
-      const rows = [...bySymbol.values()];
+      const marketPriority = ['SPX', 'IXIC', 'DJI', 'HSI', 'HKTECH', 'N225', 'FTSE', 'GDAXI', 'RUT'];
+      const rows = [...bySymbol.values()].sort((left, right) => {
+        const leftIndex = marketPriority.indexOf(instrumentCode(left));
+        const rightIndex = marketPriority.indexOf(instrumentCode(right));
+        if (leftIndex < 0 && rightIndex < 0) return instrumentName(left).localeCompare(instrumentName(right));
+        if (leftIndex < 0) return 1;
+        if (rightIndex < 0) return -1;
+        return leftIndex - rightIndex;
+      });
       const ticks = create('div', 'terminal-market-tape');
       rows.slice(0, 12).forEach((row) => {
-        const name = row.name || row.symbol || row.ts_code || row.code || row.index_name || '—';
+        const identity = instrumentIdentity(row);
         const value = row.last ?? row.price ?? row.close ?? row.value;
-        const change = row.pct_chg ?? row.change_pct ?? row.change;
+        const change = rowPercentChange(row);
         const tick = create('div', 'terminal-market-tick');
-        tick.append(create('span', '', name), create('strong', '', formatNumber(value)));
+        tick.append(
+          append(create('span'), [
+            create('b', '', identity.name),
+            identity.code && identity.code !== identity.name ? create('small', '', identity.code) : null
+          ]),
+          create('strong', '', formatNumber(value))
+        );
         if (change !== undefined && change !== null) {
           const numeric = finiteNumber(change);
-          tick.appendChild(create('em', numeric == null ? '' : numeric >= 0 ? 'is-up' : 'is-down', formatNumber(change)));
+          tick.appendChild(create(
+            'em',
+            numeric == null ? '' : numeric >= 0 ? 'is-up' : 'is-down',
+            numeric == null ? '—' : `${numeric >= 0 ? '+' : ''}${formatNumber(numeric)}%`
+          ));
         }
         ticks.appendChild(tick);
       });
@@ -1598,10 +2231,30 @@
       return;
     }
 
-    const categories = [...new Set(rows.map((row) => row.category).filter(Boolean))].slice(0, 12);
+    const topicCounts = new Map();
+    rows.forEach((row) => topicCounts.set(row.topic.key, (topicCounts.get(row.topic.key) || 0) + 1));
+    const categories = [...topicCounts.keys()].slice(0, 12);
     if (state.newsFilter && !categories.includes(state.newsFilter)) state.newsFilter = '';
-    const visibleRows = state.newsFilter ? rows.filter((row) => row.category === state.newsFilter) : rows;
+    const visibleRows = state.newsFilter ? rows.filter((row) => row.topic.key === state.newsFilter) : rows;
     if (state.newsSelection >= visibleRows.length) state.newsSelection = 0;
+    const pulse = create('div', 'terminal-news-visual-strip');
+    const maximumTopicCount = Math.max(...topicCounts.values(), 1);
+    [...topicCounts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 8).forEach(([topic, count]) => {
+      const item = create('div', `terminal-news-visual-cell ${topicClass(topic)}`);
+      const bar = create('i');
+      bar.style.height = `${Math.max(10, count / maximumTopicCount * 100)}%`;
+      item.append(
+        append(create('span'), [bar]),
+        create('strong', '', topic),
+        create('small', '', String(count))
+      );
+      pulse.appendChild(item);
+    });
+    const pulseWrap = create('section', 'terminal-panel terminal-news-visual-panel');
+    const pulseHead = create('header', 'terminal-panel-head');
+    pulseHead.append(create('h2', '', localize(COPY.newsPulse)), create('small', '', localize(COPY.derivedTopic)));
+    pulseWrap.append(pulseHead, pulse);
+    screen.appendChild(pulseWrap);
     const layout = create('div', 'terminal-news-layout');
     const filters = create('section', 'terminal-panel terminal-news-filters');
     const filterValues = ['', ...categories];
@@ -1622,6 +2275,7 @@
         renderNewsResult(marketResult, newsResult);
       });
       button.append(
+        create('span', `terminal-news-topic-dot ${topicClass(row.topic.key)}`, row.topic.key.slice(0, 2)),
         create('span', 'terminal-news-time', formatTimestamp(row.time)),
         append(create('span', 'terminal-news-copy'), [
           create('strong', '', row.title),
@@ -1636,11 +2290,12 @@
     const storyPanel = create('section', 'terminal-panel terminal-story');
     if (selected) {
       const storyMeta = create('div', 'terminal-story-meta');
-      storyMeta.append(
+      append(storyMeta, [
         create('span', 'terminal-source-badge', selected.source || 'UNKNOWN'),
         create('span', 'terminal-freshness', formatTimestamp(selected.time)),
-        selected.category ? create('span', 'terminal-tag', selected.category) : null
-      );
+        create('span', 'terminal-tag', selected.topic.key),
+        !selected.topic.disclosed ? create('span', 'terminal-tag', 'DERIVED KEYWORD') : null
+      ]);
       storyPanel.append(create('h2', '', selected.title), storyMeta);
       if (selected.summary) storyPanel.appendChild(create('p', '', selected.summary));
     } else {
@@ -2329,45 +2984,99 @@
     renderNewsResult(marketResult, newsResult);
   }
 
-  async function loadHomeDashboard(signal, sequence) {
-    const [marketResponse, newsResponse] = await Promise.allSettled([
+  async function loadHomeDashboard(signal, sequence, includePreviews = true) {
+    const range = recentRange(45);
+    const previewRequests = includePreviews ? [
+      ['stocks', {
+        domain: 'Stocks',
+        dataset: 'us_daily',
+        labels: '1',
+        ts_code: 'NVDA',
+        start: range.start,
+        end: range.end,
+        limit: 120
+      }],
+      ['debt', {
+        domain: 'Debt',
+        dataset: 'cb_daily',
+        labels: '1',
+        start: range.start,
+        end: range.end,
+        limit: 120
+      }],
+      ['supply', { domain: 'Supply', limit: 1000 }],
+      ['etf', {
+        domain: 'ETF',
+        dataset: 'fund_daily',
+        labels: '1',
+        ts_code: '510300.SH',
+        start: range.start,
+        end: range.end,
+        limit: 120
+      }],
+      ['derivatives', {
+        domain: 'Derivatives',
+        dataset: 'fut_daily',
+        labels: '1',
+        start: range.start,
+        end: range.end,
+        limit: 120
+      }],
+      ['money', {
+        domain: 'Money & Currency',
+        dataset: 'shibor',
+        start: range.start,
+        end: range.end,
+        limit: 120
+      }]
+    ] : [];
+    const responses = await Promise.allSettled([
       apiRequest(ENDPOINTS.market, {
         domain: 'Market',
         dataset: 'index_global',
-        ...recentRange(45),
+        ...range,
         limit: 800
       }, signal),
       apiRequest(ENDPOINTS.news, {
         dataset: 'news',
         src: 'sina',
         limit: 100
-      }, signal)
+      }, signal),
+      ...previewRequests.map(([, parameters]) => apiRequest(ENDPOINTS.market, parameters, signal))
     ]);
     if (signal.aborted || sequence !== state.loadSequence) return;
+    const [marketResponse, newsResponse, ...domainResponses] = responses;
     const marketResult = marketResponse.status === 'fulfilled' ? marketResponse.value : null;
     const newsResult = newsResponse.status === 'fulfilled' ? newsResponse.value : null;
-    const failures = [marketResponse, newsResponse].filter((item) => item.status === 'rejected');
+    const previewResults = { market: marketResult };
+    previewRequests.forEach(([id], index) => {
+      const response = domainResponses[index];
+      previewResults[id] = response?.status === 'fulfilled' ? response.value : null;
+    });
+    const failures = responses.filter((item) => item.status === 'rejected');
     showAlert(failures.length
-      ? `${localize(COPY.unavailableTitle)} · ${failures.map((item) => item.reason?.endpoint || 'UNKNOWN').join(', ')}`
+      ? `${localize(COPY.unavailableTitle)} · HOME PARTIAL · ${failures.length}`
       : '');
-    renderHome(marketResult, newsResult);
+    renderHome(marketResult, newsResult, previewResults);
   }
 
   async function loadDomainDashboard(signal, sequence) {
     const area = currentWorkspace();
     if (area.id === 'market') {
-      await loadHomeDashboard(signal, sequence);
+      await loadHomeDashboard(signal, sequence, false);
       return;
     }
     try {
       let result;
       let secondaryResult = null;
+      let newsResult = null;
       if (area.id === 'etf') {
         const range = recentRange(45);
         const responses = await Promise.allSettled([
           apiRequest(ENDPOINTS.market, {
             domain: 'ETF',
             dataset: 'fund_daily',
+            labels: '1',
             ts_code: '510300.SH',
             start: range.start,
             end: range.end,
@@ -2377,6 +3086,11 @@
             domain: 'ETF',
             dataset: 'etf_basic',
             limit: 400
+          }, signal),
+          apiRequest(ENDPOINTS.news, {
+            dataset: 'news',
+            src: 'sina',
+            limit: 60
           }, signal)
         ]);
         result = responses[0].status === 'fulfilled'
@@ -2390,6 +3104,7 @@
               }
             };
         secondaryResult = responses[1].status === 'fulfilled' ? responses[1].value : null;
+        newsResult = responses[2].status === 'fulfilled' ? responses[2].value : null;
         if (!normalizedRows(result.data).length && !secondaryResult) throw responses[0].reason;
         if (secondaryResult) {
           result.meta = {
@@ -2402,15 +3117,27 @@
           showAlert(`${localize(COPY.unavailableTitle)} · ETF PARTIAL`);
         }
       } else {
-        result = await apiRequest(
-          ENDPOINTS.market,
-          marketParameters(area, area.functions[0]),
-          signal
-        );
+        const responses = await Promise.allSettled([
+          apiRequest(
+            ENDPOINTS.market,
+            marketParameters(area, area.functions[0]),
+            signal
+          ),
+          apiRequest(ENDPOINTS.news, {
+            dataset: 'news',
+            src: 'sina',
+            limit: 60
+          }, signal)
+        ]);
+        if (responses[0].status !== 'fulfilled') throw responses[0].reason;
+        result = responses[0].value;
+        newsResult = responses[1].status === 'fulfilled' ? responses[1].value : null;
+        showAlert(responses[1].status === 'rejected'
+          ? `${localize(COPY.unavailableTitle)} · ${ENDPOINTS.news}`
+          : '');
       }
       if (signal.aborted || sequence !== state.loadSequence) return;
-      if (area.id !== 'etf') showAlert('');
-      renderDomainDashboard(result, secondaryResult);
+      renderDomainDashboard(result, secondaryResult, newsResult);
     } catch (error) {
       if (error.name === 'AbortError' || signal.aborted || sequence !== state.loadSequence) return;
       const meta = error.meta || {
@@ -2486,6 +3213,7 @@
           end: range.end
         }, signal);
         if (sequence !== state.loadSequence) return;
+        learnSecurityName(result);
         if (renderWarehouseFa(result)) {
           showAlert('');
           return;
@@ -2552,6 +3280,7 @@
       }
       const result = await apiRequest(endpoint, parameters, signal);
       if (sequence !== state.loadSequence) return;
+      learnSecurityName(result);
       state.lastMeta = result.meta;
       showAlert('');
       if (activeFunction.loader === 'quote') renderQuote(result);
@@ -2585,7 +3314,11 @@
   function normalizeSearchItem(item) {
     if (!item || typeof item !== 'object') return null;
     const symbol = String(item.symbol || item.ts_code || item.ticker || item.code || '').trim();
-    const name = String(item.name || item.security_name || item.short_name || item.title || symbol).trim();
+    const name = String(
+      item.display_name || item.localized_name || item.name || item.enname ||
+      item.security_name || item.short_name || item.full_name || item.title ||
+      (INSTRUMENT_LABELS[symbol] ? localize(INSTRUMENT_LABELS[symbol]) : symbol)
+    ).trim();
     if (!name && !symbol) return null;
     const type = String(item.type || item.kind || item.asset_class || item.assetClass || 'security').toLowerCase();
     let destination = String(item.workspace || item.domain || '').toLowerCase();
@@ -2600,8 +3333,12 @@
       kind: 'security',
       code: symbol || destination.toUpperCase(),
       name: name || symbol,
-      subtitle: String(item.exchange || item.market || item.description || type),
+      subtitle: [
+        symbol && symbol !== name ? symbol : '',
+        item.exchange || item.market || item.description || type
+      ].filter(Boolean).join(' · '),
       type,
+      section: 'SECURITIES',
       workspace: destination,
       functionId: String(
         item.functionId || item.function_id ||
@@ -2613,6 +3350,23 @@
     };
   }
 
+  function learnSecurityName(result) {
+    if (!state.symbol || !result?.data || typeof result.data !== 'object') return;
+    const profile = result.data.profile && typeof result.data.profile === 'object'
+      ? result.data.profile
+      : null;
+    const rows = normalizedRows(result.data);
+    const matchingRow = rows.find((row) => instrumentCode(row) === state.symbol) || rows[0];
+    const candidate = profile
+      ? String(profile.name || profile.enname || profile.fullname || '').trim()
+      : matchingRow ? instrumentName(matchingRow) : '';
+    if (!candidate || candidate === state.symbol || candidate === state.securityName) return;
+    state.securityName = candidate;
+    updateContext();
+    updateSearchPlaceholder();
+    syncSearchInput();
+  }
+
   function localMarketMatches(query) {
     const needle = query.toLocaleLowerCase();
     return MARKET_SHORTCUTS
@@ -2621,9 +3375,10 @@
       .map((item) => ({
         kind: 'market',
         code: item.symbol,
-        name: item.name,
-        subtitle: 'Market · Tushare index',
+        name: INSTRUMENT_LABELS[item.symbol] ? localize(INSTRUMENT_LABELS[item.symbol]) : item.name,
+        subtitle: `${item.symbol} · Market · Tushare index`,
         type: 'market',
+        section: 'MARKETS',
         workspace: 'market',
         functionId: 'indices',
         symbol: item.symbol,
@@ -2631,10 +3386,21 @@
       }));
   }
 
+  function localWatchlistMatches(query) {
+    const needle = query.toLocaleLowerCase();
+    const areas = state.workspace
+      ? [currentWorkspace()]
+      : [workspaceMap.get('stocks'), workspaceMap.get('etf')];
+    return areas.flatMap((area) => watchlistSearchItems(area))
+      .filter((item) => `${item.name} ${item.code} ${item.subtitle}`.toLocaleLowerCase().includes(needle))
+      .slice(0, 10);
+  }
+
   function localFunctionMatches(query) {
     const needle = query.toLowerCase();
     const matches = [];
-    WORKSPACES.forEach((area) => {
+    const areas = state.workspace ? [currentWorkspace()] : WORKSPACES;
+    areas.forEach((area) => {
       area.functions.forEach((item) => {
         const haystack = `${area.code} ${localize(area.name)} ${item.code} ${localize(item.name)} ${localize(item.description)}`.toLowerCase();
         if (haystack.includes(needle)) {
@@ -2642,11 +3408,17 @@
             kind: 'function',
             code: item.code,
             name: localize(item.name),
-            subtitle: `${area.code} · ${localize(area.name)}`,
+            subtitle: state.symbol
+              ? `${state.securityName || state.symbol} · ${state.symbol}`
+              : `${area.code} · ${localize(area.name)}`,
             type: 'function',
+            section: 'FUNCTIONS',
             workspace: area.id,
             functionId: item.id,
-            symbol: ''
+            symbol: state.symbol || '',
+            asset: state.asset || '',
+            entityId: state.entityId || '',
+            securityName: state.securityName || ''
           });
         }
       });
@@ -2661,25 +3433,29 @@
     state.atlas.entities.filter((entity) => entity.kind === 'company').forEach((entity) => {
       if (!`${entity.name} ${entity.ticker || ''}`.toLowerCase().includes(needle)) return;
       const symbol = String(entity.ticker || '').split(/[ /]/)[0];
-      matches.push({
-        kind: 'atlas',
-        code: symbol || 'SPLC',
-        name: entity.name,
-        subtitle: `Supply X-Ray · ${localize(COPY.partial)}`,
-        type: 'atlas sample',
+      if (!state.workspace || state.workspace === 'supply') {
+        matches.push({
+          kind: 'atlas',
+          code: symbol || 'SPLC',
+          name: entity.name,
+          subtitle: `Supply X-Ray · ${localize(COPY.partial)}`,
+          type: 'atlas company',
+          section: 'ATLAS',
           workspace: 'supply',
           functionId: 'xray',
           symbol,
           asset: symbol && !symbol.includes('.') ? 'us-stock' : '',
           entityId: entity.id
-      });
-      if (state.atlas.financials?.[entity.id]) {
+        });
+      }
+      if ((!state.workspace || state.workspace === 'stocks') && state.atlas.financials?.[entity.id]) {
         matches.push({
           kind: 'atlas',
           code: symbol || 'FA',
           name: entity.name,
           subtitle: `FA · ${localize(COPY.partial)}`,
-          type: 'atlas sample',
+          type: 'atlas company',
+          section: 'ATLAS',
           workspace: 'stocks',
           functionId: 'financials',
           symbol,
@@ -2689,6 +3465,163 @@
       }
     });
     return matches.slice(0, 6);
+  }
+
+  function searchPlaceholderText() {
+    const mode = terminalMode();
+    if (mode === 'home') {
+      return localize(t3(
+        '選擇七大工作台，或搜尋公司名稱／代號',
+        '选择七大工作台，或搜索公司名称／代码',
+        'Choose a workspace or search by company name / ticker'
+      ));
+    }
+    const area = currentWorkspace();
+    if (mode === 'security') {
+      return localize(t3(
+        `搜尋 ${state.securityName || state.symbol} 的功能，或切換股票`,
+        `搜索 ${state.securityName || state.symbol} 的功能，或切换股票`,
+        `Search ${state.securityName || state.symbol} functions or switch security`
+      ));
+    }
+    const prompts = {
+      market: t3('搜尋市場名稱、指數或功能', '搜索市场名称、指数或功能', 'Search market name, index or function'),
+      stocks: t3('請輸入股票名稱，例如：英偉達 · NVDA', '请输入股票名称，例如：英伟达 · NVDA', 'Enter a company name, e.g. NVIDIA · NVDA'),
+      debt: t3('搜尋債券、發行人或債券功能', '搜索债券、发行人或债券功能', 'Search a bond, issuer or debt function'),
+      supply: t3('搜尋公司、產業星區或供應關係', '搜索公司、产业星区或供应关系', 'Search a company, industry region or supply relationship'),
+      etf: t3('搜尋 ETF 名稱、代號或功能', '搜索 ETF 名称、代码或功能', 'Search an ETF name, ticker or function'),
+      derivatives: t3('搜尋期貨、期權名稱或功能', '搜索期货、期权名称或功能', 'Search a futures / options name or function'),
+      money: t3('搜尋貨幣對、利率或央行功能', '搜索货币对、利率或央行功能', 'Search a currency pair, rate or central-bank function')
+    };
+    return localize(prompts[area.id] || COPY.searchHint);
+  }
+
+  function updateSearchPlaceholder() {
+    searchInput.placeholder = `${searchPlaceholderText()}  ·  ⌘K`;
+  }
+
+  function syncSearchInput(force = false) {
+    const routeValue = state.symbol
+      ? `${state.securityName || state.symbol}${state.securityName && state.securityName !== state.symbol ? ` · ${state.symbol}` : ''}`
+      : '';
+    const currentValue = searchInput.value.trim();
+    const representsCurrentRoute = !currentValue ||
+      currentValue === state.symbol ||
+      (state.symbol && currentValue.endsWith(`· ${state.symbol}`));
+    if (force || document.activeElement !== searchInput || representsCurrentRoute) {
+      searchInput.value = routeValue;
+    }
+  }
+
+  function workspaceSearchItems() {
+    return WORKSPACES.map((area, index) => ({
+      kind: 'workspace',
+      code: `${index + 1} ${area.code}`,
+      name: localize(area.name),
+      subtitle: localize(area.description),
+      type: 'workspace',
+      section: 'WORKSPACES',
+      workspace: area.id,
+      functionId: area.functions[0].id,
+      symbol: '',
+      asset: ''
+    }));
+  }
+
+  function watchlistSearchItems(area) {
+    if (area.id === 'market') {
+      return MARKET_SHORTCUTS.slice(0, 8).map((item) => ({
+        kind: 'market',
+        code: item.symbol,
+        name: INSTRUMENT_LABELS[item.symbol] ? localize(INSTRUMENT_LABELS[item.symbol]) : item.name,
+        subtitle: `${item.symbol} · ${localize(COPY.curatedWatchlist)}`,
+        type: 'curated',
+        section: 'COMMON WATCHLIST',
+        workspace: 'market',
+        functionId: 'indices',
+        symbol: item.symbol,
+        asset: item.asset
+      }));
+    }
+    return (COMMON_WATCHLIST[area.id] || []).map((item) => {
+      const isSecurity = ['stocks', 'etf'].includes(area.id);
+      return {
+        kind: isSecurity ? 'security' : 'function',
+        code: item.symbol,
+        name: localize(item.name),
+        subtitle: `${item.symbol} · ${localize(COPY.curatedWatchlist)}`,
+        type: 'curated',
+        section: 'COMMON WATCHLIST',
+        workspace: area.id,
+        functionId: item.functionId || (area.id === 'stocks' ? 'overview' : area.id === 'etf' ? 'quote' : area.functions[0].id),
+        symbol: isSecurity ? item.symbol : '',
+        asset: isSecurity ? item.asset : ''
+      };
+    });
+  }
+
+  function contextFunctionItems(area) {
+    const preserveSecurity = terminalMode() === 'security';
+    return area.functions
+      .filter((item) => preserveSecurity || !item.requiresSecurity)
+      .map((item) => ({
+        kind: 'function',
+        code: item.code,
+        name: localize(item.name),
+        subtitle: preserveSecurity
+          ? `${state.securityName || state.symbol} · ${state.symbol}`
+          : `${area.code} · ${localize(item.description)}`,
+        type: 'function',
+        section: preserveSecurity ? 'SECURITY FUNCTIONS' : 'WORKSPACE FUNCTIONS',
+        workspace: area.id,
+        functionId: item.id,
+        symbol: preserveSecurity ? state.symbol : '',
+        asset: preserveSecurity ? state.asset : '',
+        entityId: preserveSecurity ? state.entityId : '',
+        securityName: preserveSecurity ? state.securityName : ''
+      }));
+  }
+
+  function contextSearchItems() {
+    const mode = terminalMode();
+    if (mode === 'home') return workspaceSearchItems();
+    const area = currentWorkspace();
+    if (mode === 'security') return contextFunctionItems(area);
+    const items = [
+      ...watchlistSearchItems(area),
+      ...contextFunctionItems(area)
+    ];
+    if (area.id === 'supply' && state.atlas) {
+      state.atlas.entities.filter((entity) => entity.kind === 'company').slice(0, 8).forEach((entity) => {
+        const symbol = String(entity.ticker || '').split(/[ /]/)[0];
+        items.push({
+          kind: 'atlas',
+          code: symbol || 'SPLC',
+          name: entity.name,
+          subtitle: `${symbol ? `${symbol} · ` : ''}Supply X-Ray · ${localize(COPY.partial)}`,
+          type: 'atlas company',
+          section: 'ATLAS COMPANIES',
+          workspace: 'supply',
+          functionId: 'xray',
+          symbol,
+          asset: symbol && !symbol.includes('.') ? 'us-stock' : '',
+          entityId: entity.id
+        });
+      });
+    }
+    return items;
+  }
+
+  function renderContextSearch(force = false) {
+    if (searchInput.value.trim() && !force) return;
+    renderSearchItems(contextSearchItems(), false);
+  }
+
+  function remoteSearchDomains() {
+    if (!state.workspace) return ['Stocks', 'Supply'];
+    if (state.workspace === 'stocks') return ['Stocks'];
+    if (state.workspace === 'supply') return ['Supply'];
+    return [];
   }
 
   function setActiveSearch(index) {
@@ -2703,7 +3636,16 @@
     active.scrollIntoView({ block: 'nearest' });
   }
 
+  function cancelPendingSearch() {
+    window.clearTimeout(state.searchTimer);
+    state.searchTimer = 0;
+    state.searchSequence += 1;
+    if (state.searchController) state.searchController.abort();
+    state.searchController = null;
+  }
+
   function closeSearch() {
+    cancelPendingSearch();
     state.activeSearchIndex = -1;
     state.searchItems = [];
     searchResults.hidden = true;
@@ -2714,16 +3656,29 @@
 
   function chooseSearchItem(item) {
     if (!item || !workspaceMap.has(item.workspace)) return;
+    const previousSecurity = {
+      symbol: state.symbol,
+      asset: state.asset,
+      securityName: state.securityName,
+      entityId: state.entityId
+    };
+    const preserveSecurity = item.kind === 'function' &&
+      item.workspace === state.workspace &&
+      Boolean(previousSecurity.symbol);
     state.workspace = item.workspace;
     const area = currentWorkspace();
     state.functionId = area.functions.some((candidate) => candidate.id === item.functionId)
       ? item.functionId
       : area.functions[0].id;
-    state.symbol = item.symbol || '';
-    state.asset = item.asset || '';
-    state.securityName = item.name || item.symbol || '';
-    state.entityId = item.entityId || '';
-    searchInput.value = item.symbol ? `${item.name} · ${item.symbol}` : item.name;
+    state.symbol = preserveSecurity ? previousSecurity.symbol : item.symbol || '';
+    state.asset = preserveSecurity ? previousSecurity.asset : item.asset || '';
+    state.securityName = preserveSecurity
+      ? previousSecurity.securityName
+      : item.securityName || item.name || item.symbol || '';
+    state.entityId = preserveSecurity ? previousSecurity.entityId : item.entityId || '';
+    searchInput.value = state.symbol
+      ? `${state.securityName || state.symbol} · ${state.symbol}`
+      : '';
     closeSearch();
     syncShell();
     writeRoute('push');
@@ -2760,18 +3715,30 @@
       );
       searchResults.appendChild(empty);
     }
+    let currentSection = '';
     items.forEach((item, index) => {
+      const section = String(item.section || item.kind || 'RESULTS').toUpperCase();
+      if (section !== currentSection) {
+        currentSection = section;
+        const sectionLabel = create('div', 'terminal-search-section');
+        sectionLabel.setAttribute('role', 'presentation');
+        append(sectionLabel, [
+          create('strong', '', section),
+          section === 'COMMON WATCHLIST' ? create('small', '', localize(COPY.curatedWatchlist)) : null
+        ]);
+        searchResults.appendChild(sectionLabel);
+      }
       const option = makeButton('', 'terminal-search-result', () => chooseSearchItem(item));
       option.id = `terminal-search-result-${index}`;
       option.setAttribute('role', 'option');
       option.setAttribute('aria-selected', 'false');
       option.tabIndex = -1;
       option.append(
-        create('code', 'terminal-search-result-code', item.code || '—'),
-        append(create('span'), [
+        append(create('span', 'terminal-search-result-main'), [
           create('strong', '', item.name),
           create('small', '', item.subtitle)
         ]),
+        create('code', 'terminal-search-result-code', item.code || '—'),
         create('span', 'terminal-search-result-type', item.type)
       );
       option.addEventListener('pointerenter', () => setActiveSearch(index));
@@ -2785,43 +3752,57 @@
     if (state.composing) return;
     const query = searchInput.value.trim();
     if (!query) {
-      closeSearch();
+      cancelPendingSearch();
+      renderContextSearch();
       return;
     }
-    const sequence = ++state.searchSequence;
     if (state.searchController) state.searchController.abort();
-    state.searchController = new AbortController();
+    const sequence = ++state.searchSequence;
+    const controller = new AbortController();
+    state.searchController = controller;
     const localItems = [
-      ...localMarketMatches(query),
+      ...(!state.workspace || state.workspace === 'market' ? localMarketMatches(query) : []),
+      ...localWatchlistMatches(query),
       ...localFunctionMatches(query),
-      ...localAtlasMatches(query)
+      ...(!state.workspace || ['supply', 'stocks'].includes(state.workspace) ? localAtlasMatches(query) : [])
     ];
     try {
-      const remoteResults = await Promise.allSettled([
-        apiRequest(ENDPOINTS.search, {
+      const domains = remoteSearchDomains();
+      if (!domains.length) {
+        if (sequence === state.searchSequence && !state.composing) {
+          renderSearchItems(localItems, false);
+          if (state.searchController === controller) state.searchController = null;
+        }
+        return;
+      }
+      const remoteResults = await Promise.allSettled(
+        domains.map((domain) => apiRequest(ENDPOINTS.search, {
           q: query,
-          domain: 'Stocks',
-          limit: 15
-        }, state.searchController.signal),
-        apiRequest(ENDPOINTS.search, {
-          q: query,
-          domain: 'Supply',
-          limit: 8
-        }, state.searchController.signal)
-      ]);
+          domain,
+          limit: domain === 'Supply' ? 8 : 15
+        }, controller.signal))
+      );
       if (sequence !== state.searchSequence || state.composing) return;
       const fulfilled = remoteResults
-        .filter((result) => result.status === 'fulfilled')
-        .map((result) => result.value);
+        .filter((result) => result.status === 'fulfilled');
       if (!fulfilled.length) throw remoteResults[0].reason;
-      const serverItems = fulfilled
-        .flatMap((result) => normalizedRows(result.data))
-        .map(normalizeSearchItem)
-        .filter(Boolean);
+      const serverItems = remoteResults.flatMap((result, index) => {
+        if (result.status !== 'fulfilled') return [];
+        const destination = Object.entries(WORKSPACE_DOMAINS)
+          .find(([, domain]) => domain === domains[index])?.[0] || '';
+        return normalizedRows(result.value.data)
+          .map((item) => normalizeSearchItem({
+            ...item,
+            workspace: item.workspace || item.domain || destination
+          }))
+          .filter(Boolean);
+      });
       const combined = [];
       const seen = new Set();
       [...serverItems, ...localItems].forEach((item) => {
-        const key = `${item.workspace}:${item.functionId}:${item.symbol}:${item.entityId || ''}:${item.name}`;
+        const key = item.symbol
+          ? `${item.workspace}:${item.functionId}:${item.symbol.toUpperCase()}`
+          : `${item.workspace}:${item.functionId}:${item.entityId || ''}:${item.name}`;
         if (!seen.has(key) && combined.length < 20) {
           seen.add(key);
           combined.push(item);
@@ -2831,9 +3812,11 @@
         combined,
         remoteResults.some((result) => result.status === 'rejected')
       );
+      if (state.searchController === controller) state.searchController = null;
     } catch (error) {
-      if (error.name === 'AbortError' || state.searchController.signal.aborted || sequence !== state.searchSequence) return;
+      if (error.name === 'AbortError' || controller.signal.aborted || sequence !== state.searchSequence) return;
       renderSearchItems(localItems, true);
+      if (state.searchController === controller) state.searchController = null;
     }
   }
 
@@ -2843,6 +3826,10 @@
   }
 
   function bindSearch() {
+    searchInput.addEventListener('focus', () => {
+      if (terminalMode() === 'security') cancelPendingSearch();
+      renderContextSearch(terminalMode() === 'security');
+    });
     searchInput.addEventListener('compositionstart', () => {
       state.composing = true;
       window.clearTimeout(state.searchTimer);
@@ -2853,6 +3840,11 @@
     });
     searchInput.addEventListener('input', (event) => {
       if (state.composing || event.isComposing) return;
+      if (!searchInput.value.trim()) {
+        cancelPendingSearch();
+        renderContextSearch();
+        return;
+      }
       scheduleSearch();
     });
     searchInput.addEventListener('keydown', (event) => {
@@ -2980,6 +3972,8 @@
     window.addEventListener('popstate', () => {
       readRoute();
       syncShell();
+      syncSearchInput(true);
+      closeSearch();
       loadCurrentFunction();
     });
   }

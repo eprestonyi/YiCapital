@@ -181,7 +181,12 @@ test('the three localized Terminal pages have the correct shell and asset paths'
       );
       assert.equal(homeMarks.length, 1, `${page.file} must contain one compact Terminal home mark`);
       assert.equal(attribute(homeMarks[0], 'href'), 'terminal');
-      assert.equal(textContent(homeMarks[0]), 'YC');
+      assert.equal(textContent(homeMarks[0]), 'YiCapital');
+      assert.match(
+        homeMarks[0],
+        /<span\b[^>]*class=["'][^"']*\blogo\b[^"']*["'][^>]*>Yi<b>Capital<\/b><\/span>/,
+        `${page.file} must use the locked YiCapital wordmark`,
+      );
       assert.doesNotMatch(
         html,
         /class=(["'])[^"']*\bterminal-site-header\b[^"']*\1/i,
@@ -336,7 +341,8 @@ test('Terminal v2 uses the production API contract and fails closed without synt
   assert.match(source, /is_complete\s*===\s*false/);
   assert.match(source, /activeFunction\.loader\s*===\s*['"]unavailable['"]/);
   assert.match(source, /return records\[state\.year\]\s*\|\|\s*null/);
-  assert.match(source, /disclosedTitle\s*\|\|\s*disclosedBody/);
+  assert.match(source, /const\s+title\s*=\s*disclosedTitle\s*\|\|\s*bracketed\?\.\[1\]\s*\|\|\s*disclosedBody/);
+  assert.match(source, /topic:\s*newsTopic\(normalized\)/);
   assert.match(source, /newsRows\(newsResult\.data,\s*newsResult\.meta\?\.source/);
   assert.match(source, /TUSHARE \+ YICAPITAL WAREHOUSE/);
   assert.match(source, /endpoint:\s*'warehouse\.stockDetail'/);
@@ -344,13 +350,56 @@ test('Terminal v2 uses the production API contract and fails closed without synt
   assert.doesNotMatch(source, /TUSHARE \/ WAREHOUSE/);
   assert.match(source, /replaceChildren\(/);
   assert.match(source, /setAttribute\('role',\s*'tab'\)/);
-  for (const code of ['DES', 'RES', 'FA', 'MODL', 'SPLC', 'GP', 'HP', 'VAL', 'VWAP', 'AVAT']) {
+  for (const code of ['DES', 'CN', 'RES', 'FA', 'MODL', 'SPLC', 'Q', 'GP', 'HP', 'VAL', 'EE', 'OWN', 'EVT', 'VWAP', 'AVAT']) {
     assert.match(source, new RegExp(`['\"]${code}['\"]`), `missing stock function ${code}`);
   }
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
   assert.doesNotMatch(source, /synthetic|sampleQuote|fallbackPrice/i);
   assert.doesNotMatch(source, /return match \|\| state\.entityMap\.get\(['"]nvda['"]\)/);
   assert.doesNotMatch(source, /28 家候選|28 家候选|processing 28 candidate/);
+});
+
+test('Terminal v4 has contextual name-first search and seven source-backed desk windows', async () => {
+  const source = await readText('assets/yc-terminal-v2.js');
+  const css = await readText('assets/terminal-v2.css');
+
+  assert.match(source, /function\s+workspaceSearchItems\(\)/);
+  assert.match(source, /return\s+WORKSPACES\.map\(/);
+  assert.match(source, /function\s+contextSearchItems\(\)/);
+  assert.match(source, /renderContextSearch\(terminalMode\(\)\s*===\s*['"]security['"]\)/);
+  assert.match(source, /searchInput\.addEventListener\(['"]focus['"]/);
+  assert.match(source, /function\s+remoteSearchDomains\(\)/);
+  assert.match(source, /state\.workspace\s*===\s*['"]stocks['"]\)\s*return\s*\[['"]Stocks['"]\]/);
+  assert.match(source, /state\.workspace\s*===\s*['"]supply['"]\)\s*return\s*\[['"]Supply['"]\]/);
+  assert.match(source, /function\s+cancelPendingSearch\(\)/);
+  assert.match(source, /if\s*\(!query\)\s*\{\s*cancelPendingSearch\(\)/);
+  assert.match(source, /controller\.signal\.aborted/);
+  assert.match(source, /function\s+syncSearchInput\(/);
+  assert.match(source, /syncSearchInput\(true\)/);
+  assert.match(source, /symbol:\s*['"]IH['"][\s\S]{0,180}functionId:\s*['"]futures['"]/);
+  assert.doesNotMatch(source, /functionId:\s*['"]contracts['"]/);
+  assert.match(source, /item\.display_name\s*\|\|\s*item\.localized_name\s*\|\|\s*item\.name\s*\|\|\s*item\.enname/);
+  assert.match(source, /function\s+instrumentName\(row\)/);
+  assert.match(source, /create\(['"]span['"],\s*['"]terminal-search-result-main['"]/);
+  assert.match(source, /create\(['"]code['"],\s*['"]terminal-search-result-code['"]/);
+  assert.match(source, /dataset\.workspaceWindow\s*=\s*area\.id/);
+  assert.match(source, /function\s+workspaceCards\(previewResults,\s*newsResult\)/);
+  assert.match(source, /YCAtlasVisuals\?\.hasEvidence/);
+  assert.match(source, /verifiedRelationshipCount/);
+  assert.match(source, /WORKSPACES\.forEach\(\(area,\s*index\)\s*=>/);
+  assert.match(source, /Promise\.allSettled\(/);
+  assert.match(source, /domain:\s*['"]Supply['"]/);
+  assert.match(source, /domain:\s*['"]Money & Currency['"]/);
+  assert.match(source, /localize\(COPY\.curatedWatchlist\)/);
+  assert.match(source, /非即時熱門排名/);
+  assert.doesNotMatch(source, /['"]HOT['"]|['"]最火['"]/);
+
+  assert.match(css, /\.terminal-workspace-window-grid/);
+  assert.match(css, /\.terminal-desk-window-stream\{[^}]*overflow-y:auto/);
+  assert.match(css, /\.terminal-market-snapshot/);
+  assert.match(css, /\.terminal-news-visual-strip/);
+  assert.match(css, /\.terminal-search-section/);
+  assert.match(css, /\.terminal-mode-function\s+\.terminal-canvas/);
 });
 
 test('atlas seed parses and every sourceId resolves to a declared source', async () => {

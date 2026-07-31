@@ -73,6 +73,17 @@ function upstreamResponse(apiName, params = {}) {
         [params.ts_code || '00700.HK', '20260730', 550, 558, 548, 556, 1.1],
       ],
     },
+    us_daily: {
+      fields: ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pct_change'],
+      items: [
+        [params.ts_code || 'NVDA', '20260729', 190, 195, 188, 194, 1.2],
+        [params.ts_code || 'NVDA', '20260730', 194, 198, 192, 197, 1.55],
+      ],
+    },
+    us_basic: {
+      fields: ['ts_code', 'name', 'enname'],
+      items: [[params.ts_code || 'NVDA', '英伟达', 'NVIDIA']],
+    },
     daily_basic: {
       fields: ['ts_code', 'trade_date', 'close', 'turnover_rate', 'pe_ttm', 'pb', 'total_mv', 'circ_mv'],
       items: [[params.ts_code || '000001.SZ', '20260730', 10.4, 0.8, 6.5, 0.7, 20000000, 18000000]],
@@ -93,13 +104,25 @@ function upstreamResponse(apiName, params = {}) {
       fields: ['ts_code', 'trade_date', 'close', 'pct_chg'],
       items: [[params.ts_code || '110030.SH', '20260730', 120.5, 0.2]],
     },
+    cb_basic: {
+      fields: ['ts_code', 'bond_short_name', 'bond_full_name'],
+      items: [['110030.SH', '格力转债', '珠海格力电器股份有限公司可转换公司债券']],
+    },
     fund_daily: {
       fields: ['ts_code', 'trade_date', 'close', 'pct_chg'],
       items: [[params.ts_code || '510300.SH', '20260730', 4.1, 0.4]],
     },
+    fund_basic: {
+      fields: ['ts_code', 'name'],
+      items: [['510300.SH', '沪深300ETF']],
+    },
     fut_daily: {
       fields: ['ts_code', 'trade_date', 'close', 'settle', 'vol'],
       items: [[params.ts_code || 'CU2608.SHF', '20260730', 70000, 69900, 120000]],
+    },
+    fut_basic: {
+      fields: ['ts_code', 'name', 'fut_code', 'exchange'],
+      items: [['CU2608.SHF', '沪铜2608', 'CU', params.exchange || 'SHFE']],
     },
     opt_daily: {
       fields: ['ts_code', 'trade_date', 'close', 'settle', 'vol'],
@@ -448,6 +471,7 @@ test('Supply routes exclusively through the warehouse and fail closed without it
   assert.equal(body.domain, 'Supply');
   assert.equal(body.source_endpoint, 'warehouse.market');
   assert.equal(body.freshness_class, 'disclosure');
+  assert.equal(body.entitlement_status, 'available');
   assert.equal(fetchImpl.calls.length, 0);
   assert.equal(warehouse.calls[0].method, 'market');
 
@@ -460,6 +484,33 @@ test('Supply routes exclusively through the warehouse and fail closed without it
   assert.equal(unavailable.status, 503);
   assert.equal(unavailableBody.error.code, 'WAREHOUSE_UNAVAILABLE');
   assert.equal(unavailableBody.data, undefined);
+});
+
+test('Supply warehouse without an explicit complete gate remains partial', async () => {
+  const warehouse = createWarehouse();
+  warehouse.market = async () => ({
+    ok: true,
+    data: [{ from: 'tsmc', to: 'nvda', relationship: 'supplier' }],
+    as_of: '2025',
+    freshness_class: 'disclosure',
+    warnings: ['warehouse_snapshot_partial'],
+  });
+  const response = await handleTushareTerminalRequest(
+    new Request('https://terminal.test/api/terminal/market?domain=Supply&limit=1000'),
+    { TUSHARE_TOKEN: TOKEN },
+    {
+      fetchImpl: createFetchMock(),
+      cache: new MockKV(),
+      warehouse,
+      now: fixedNow,
+    },
+  );
+  const body = await json(response);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.entitlement_status, 'partial');
+  assert.equal(body.is_complete, false);
+  assert.deepEqual(body.warnings, ['warehouse_snapshot_partial']);
 });
 
 test('market route enforces the dataset whitelist across all six Tushare domains', async (t) => {
@@ -530,6 +581,84 @@ test('market route enforces the dataset whitelist across all six Tushare domains
   assert.equal(fieldsFetch.calls.length, 0);
 });
 
+test('market name enrichment keeps market facts intact and records current-master provenance', async (t) => {
+  const cases = [
+    ['Stocks', 'daily', 'ts_code=000001.SZ', 'stock_basic', '平安银行'],
+    ['Stocks', 'us_daily', 'ts_code=NVDA', 'us_basic', 'NVIDIA'],
+    ['Debt', 'cb_daily', 'ts_code=110030.SH', 'cb_basic', '格力转债'],
+    ['ETF', 'fund_daily', 'ts_code=510300.SH', 'fund_basic', '沪深300ETF'],
+    ['Derivatives', 'fut_daily', 'ts_code=CU2608.SHF', 'fut_basic', '沪铜2608'],
+  ];
+
+  for (const [domain, dataset, filter, profileDataset, expectedName] of cases) {
+    await t.test(dataset, async () => {
+      const fetchImpl = createFetchMock();
+      const response = await handleTushareTerminalRequest(
+        new Request(
+          `https://terminal.test/api/terminal/market?domain=${domain}&dataset=${dataset}&${filter}&labels=1`,
+        ),
+        { TUSHARE_TOKEN: TOKEN },
+        { fetchImpl, cache: new MockKV(), now: fixedNow },
+      );
+      const body = await json(response);
+      assert.equal(response.status, 200, JSON.stringify(body));
+      assert.equal(body.source_endpoint, dataset);
+      assert.equal(body.data[0].name, expectedName);
+      assert.ok(body.fields.includes('name'));
+      assert.equal(body.name_enrichment.temporal_scope, 'current_master');
+      assert.equal(body.name_enrichment.coverage_ratio, 1);
+      assert.deepEqual(
+        fetchImpl.calls.map((call) => call.body.api_name),
+        [dataset, profileDataset],
+      );
+      if (dataset === 'daily') {
+        assert.equal(body.data[0].open, 10);
+        assert.equal(body.data[0].close, 10.2);
+        assert.equal(body.data[0].pct_chg, 2);
+      }
+      if (dataset === 'us_daily') {
+        assert.equal(fetchImpl.calls[1].body.params.ts_code, 'NVDA');
+        assert.equal(body.data[0].pct_change, 1.2);
+      }
+      if (dataset === 'fut_daily') {
+        assert.equal(fetchImpl.calls[1].body.params.exchange, 'SHFE');
+      }
+    });
+  }
+});
+
+test('name enrichment failure returns market rows as partial without leaking credentials', async () => {
+  const fetchImpl = createFetchMock(({ body }) => {
+    if (body.api_name === 'stock_basic') {
+      return {
+        code: 2002,
+        msg: `没有权限 token=${TOKEN}`,
+        data: null,
+      };
+    }
+    return { code: 0, msg: null, data: upstreamResponse(body.api_name, body.params) };
+  });
+  const response = await handleTushareTerminalRequest(
+    new Request(
+      'https://terminal.test/api/terminal/market?domain=Stocks&dataset=daily&ts_code=000001.SZ&labels=1',
+    ),
+    { TUSHARE_TOKEN: TOKEN },
+    { fetchImpl, cache: new MockKV(), now: fixedNow },
+  );
+  const body = await json(response);
+  const serialized = JSON.stringify(body);
+  assert.equal(response.status, 200);
+  assert.equal(body.entitlement_status, 'partial');
+  assert.equal(body.is_complete, false);
+  assert.equal(body.data[0].name, null);
+  assert.equal(body.data[0].close, 10.2);
+  assert.ok(body.warnings.includes(
+    'name_enrichment_unavailable:stock_basic:TUSHARE_PERMISSION_DENIED',
+  ));
+  assert.equal(serialized.includes(TOKEN), false);
+  assert.equal(serialized.includes('没有权限'), false);
+});
+
 test('all eight Terminal route handlers return source-backed envelopes', async (t) => {
   const routes = [
     ['/api/terminal/bootstrap', 'bootstrap'],
@@ -556,6 +685,9 @@ test('all eight Terminal route handlers return source-backed envelopes', async (
       assert.equal(body.ok, true);
       assert.equal(body.route, expectedRoute);
       assert.ok(FRESHNESS_CLASSES.includes(body.freshness_class));
+      assert.ok(['available', 'partial', 'unavailable', 'denied'].includes(
+        body.entitlement_status,
+      ));
       assert.ok('data' in body);
       assert.equal(response.headers.get('Access-Control-Allow-Origin'), 'https://www.yicapital.co');
       assert.equal(JSON.stringify(body).includes(TOKEN), false);

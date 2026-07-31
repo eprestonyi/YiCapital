@@ -120,7 +120,7 @@ const ENDPOINT_DEFINITIONS = {
   ], 254),
 
   // Debt
-  cb_basic: endpoint('Debt', 'static', DAY, 3000, [
+  cb_basic: endpoint('Debt', 'static', DAY, 2000, [
     'ts_code', 'list_date', 'exchange',
   ], 185),
   cb_issue: endpoint('Debt', 'disclosure', 6 * HOUR, 3000, [
@@ -164,7 +164,7 @@ const ENDPOINT_DEFINITIONS = {
 
   // Derivatives
   fut_basic: endpoint('Derivatives', 'static', DAY, 10000, [
-    'exchange', 'fut_type', 'ts_code',
+    'exchange', 'fut_type', 'fut_code', 'list_date',
   ], 135),
   fut_daily: endpoint('Derivatives', 'eod', 30 * MINUTE, 2000, [
     'trade_date', 'ts_code', 'exchange', 'start_date', 'end_date',
@@ -640,6 +640,12 @@ function warehouseFreshness(result, fallback) {
   return value;
 }
 
+function warehouseEntitlement(result) {
+  const disclosed = String(result?.entitlement_status || '').toLowerCase();
+  if (['available', 'partial', 'unavailable', 'denied'].includes(disclosed)) return disclosed;
+  return result?.is_complete === true ? 'available' : 'partial';
+}
+
 function limitedEnvelope(result, limit) {
   const rows = Array.isArray(result.data) ? result.data : [];
   const truncated = rows.length > limit;
@@ -651,6 +657,178 @@ function limitedEnvelope(result, limit) {
     warnings: truncated
       ? [...(result.warnings || []), 'route_limit_applied']
       : (result.warnings || []),
+  };
+}
+
+const MARKET_NAME_PROFILES = Object.freeze({
+  daily: {
+    dataset: 'stock_basic',
+    params: { list_status: 'L' },
+    fields: 'ts_code,name',
+    names: ['name'],
+  },
+  hk_daily: {
+    dataset: 'hk_basic',
+    params: { list_status: 'L' },
+    fields: 'ts_code,name,enname,fullname',
+    names: ['name', 'enname', 'fullname'],
+  },
+  cb_daily: {
+    dataset: 'cb_basic',
+    params: {},
+    fields: 'ts_code,bond_short_name,bond_full_name',
+    names: ['bond_short_name', 'bond_full_name'],
+  },
+  fund_daily: {
+    dataset: 'fund_basic',
+    params: { market: 'E', status: 'L' },
+    fields: 'ts_code,name',
+    names: ['name'],
+  },
+  etf_share_size: {
+    dataset: 'fund_basic',
+    params: { market: 'E', status: 'L' },
+    fields: 'ts_code,name',
+    names: ['name'],
+  },
+});
+
+const FUTURES_EXCHANGE_BY_SUFFIX = Object.freeze({
+  CFX: 'CFFEX',
+  SHF: 'SHFE',
+  DCE: 'DCE',
+  ZCE: 'CZCE',
+  INE: 'INE',
+  GFE: 'GFEX',
+});
+
+function publicErrorCode(error) {
+  return /^[A-Z][A-Z0-9_]{2,63}$/.test(String(error?.code || ''))
+    ? String(error.code)
+    : 'UPSTREAM_UNAVAILABLE';
+}
+
+function disclosedProfileName(row, fields) {
+  for (const field of fields) {
+    const value = String(row?.[field] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function futuresNameQueries(rows) {
+  const exchanges = new Set();
+  rows.forEach((row) => {
+    const suffix = String(row?.ts_code || '').split('.').at(-1).toUpperCase();
+    const exchange = FUTURES_EXCHANGE_BY_SUFFIX[suffix];
+    if (exchange) exchanges.add(exchange);
+  });
+  return [...exchanges].sort().map((exchange) => ({
+    dataset: 'fut_basic',
+    params: { exchange, fut_type: '1' },
+    fields: 'ts_code,name,fut_code,exchange',
+    names: ['name'],
+  }));
+}
+
+function usNameQueries(codes) {
+  const profile = {
+    dataset: 'us_basic',
+    fields: 'ts_code,name,enname',
+    names: ['enname', 'name'],
+  };
+  if (codes.length <= 12) {
+    return codes.map((tsCode) => ({
+      ...profile,
+      params: { ts_code: tsCode },
+    }));
+  }
+  return [0, 6000, 12000].map((offset) => ({
+    ...profile,
+    params: { offset, limit: 6000 },
+  }));
+}
+
+async function enrichMarketNames(adapter, apiName, envelope) {
+  const rows = Array.isArray(envelope.data) ? envelope.data : [];
+  const codes = [...new Set(rows.map((row) => String(row?.ts_code || '').trim()).filter(Boolean))];
+  const queries = apiName === 'fut_daily'
+    ? futuresNameQueries(rows)
+    : apiName === 'us_daily'
+      ? usNameQueries(codes)
+    : MARKET_NAME_PROFILES[apiName] ? [MARKET_NAME_PROFILES[apiName]] : [];
+  if (!rows.length || !codes.length || !queries.length) return envelope;
+
+  const settled = await Promise.allSettled(queries.map((query) =>
+    adapter.query(query.dataset, {
+      params: query.params,
+      fields: query.fields,
+    })));
+  const names = new Map();
+  const warnings = [];
+  const sourceEndpoints = [];
+  const fetchedAt = [];
+  let directoryComplete = true;
+  settled.forEach((result, index) => {
+    const query = queries[index];
+    if (result.status === 'rejected') {
+      directoryComplete = false;
+      warnings.push(
+        `name_enrichment_unavailable:${query.dataset}:${publicErrorCode(result.reason)}`,
+      );
+      return;
+    }
+    sourceEndpoints.push(query.dataset);
+    if (result.value.fetched_at) fetchedAt.push(result.value.fetched_at);
+    if (result.value.is_complete !== true) directoryComplete = false;
+    (result.value.warnings || []).forEach((warning) => {
+      warnings.push(`name_enrichment_warning:${query.dataset}:${warning}`);
+    });
+    result.value.data.forEach((row) => {
+      const code = String(row?.ts_code || '').trim();
+      const name = disclosedProfileName(row, query.names);
+      if (code && name && name !== code) names.set(code, name);
+    });
+  });
+
+  let matchedCount = 0;
+  const data = rows.map((row) => {
+    const code = String(row?.ts_code || '').trim();
+    const existingName = String(row?.name || '').trim();
+    const name = existingName || names.get(code) || null;
+    if (name) matchedCount += 1;
+    return { ...row, name };
+  });
+  const uniqueMatched = new Set(
+    data.filter((row) => row.name).map((row) => String(row.ts_code || '').trim()),
+  ).size;
+  const missingCount = Math.max(0, codes.length - uniqueMatched);
+  if (missingCount) warnings.push(`name_enrichment_missing:${missingCount}`);
+  const enrichmentComplete = directoryComplete && missingCount === 0 &&
+    settled.every((result) => result.status === 'fulfilled');
+
+  return {
+    ...envelope,
+    data,
+    fields: Array.isArray(envelope.fields) && !envelope.fields.includes('name')
+      ? [...envelope.fields, 'name']
+      : envelope.fields,
+    entitlement_status: enrichmentComplete
+      ? envelope.entitlement_status
+      : 'partial',
+    is_complete: envelope.is_complete === true && enrichmentComplete,
+    warnings: [...(envelope.warnings || []), ...warnings],
+    name_enrichment: {
+      source_endpoint: sourceEndpoints,
+      requested_codes: codes.length,
+      matched_codes: uniqueMatched,
+      matched_rows: matchedCount,
+      coverage_ratio: codes.length ? uniqueMatched / codes.length : null,
+      fetched_at: fetchedAt.sort().at(-1) || null,
+      is_complete: enrichmentComplete,
+      warnings,
+      temporal_scope: 'current_master',
+    },
   };
 }
 
@@ -952,6 +1130,7 @@ async function routeBootstrap(adapter, request, now) {
     fetched_at: supply.fetched_at || supply.as_of || null,
     retrieved_at: nowIso(now),
     as_of: supply.as_of || null,
+    entitlement_status: warehouseEntitlement(supply),
     is_complete: supply.is_complete === true,
     warnings: supply.warnings || [],
     cache_status: 'metadata',
@@ -986,7 +1165,8 @@ async function routeSearch(adapter, request, url, now) {
       fetched_at: result.fetched_at || null,
       retrieved_at: result.retrieved_at || nowIso(now),
       as_of: result.as_of || null,
-      is_complete: result.is_complete !== false && !truncated,
+      entitlement_status: warehouseEntitlement(result),
+      is_complete: result.is_complete === true && !truncated,
       warnings: truncated
         ? [...(result.warnings || []), 'route_limit_applied']
         : (result.warnings || []),
@@ -1121,7 +1301,8 @@ async function routeMarket(adapter, request, url, now) {
       fetched_at: result.fetched_at || null,
       retrieved_at: result.retrieved_at || nowIso(now),
       as_of: result.as_of || null,
-      is_complete: result.is_complete !== false,
+      entitlement_status: warehouseEntitlement(result),
+      is_complete: result.is_complete === true,
       warnings: result.warnings || [],
       cache_status: result.cache_status || 'warehouse',
     };
@@ -1136,9 +1317,18 @@ async function routeMarket(adapter, request, url, now) {
     throw adapterError('ENDPOINT_NOT_ALLOWED', 'Dataset is not allowed for this domain', 400);
   }
   assertAllowedQueryKeys(url, [
-    'domain', 'dataset', 'limit', 'start', 'end',
+    'domain', 'dataset', 'limit', 'start', 'end', 'labels',
     ...config.params,
   ], config.freshness_class);
+  const labels = String(url.searchParams.get('labels') || '0');
+  if (!['0', '1'].includes(labels)) {
+    throw adapterError(
+      'INVALID_LABELS',
+      'labels must be 0 or 1',
+      400,
+      config.freshness_class,
+    );
+  }
   const params = routeParams(url, apiName, { start: 'start_date', end: 'end_date' });
   if (params.start_date) params.start_date = cleanDate(params.start_date, 'start');
   if (params.end_date) params.end_date = cleanDate(params.end_date, 'end');
@@ -1156,7 +1346,10 @@ async function routeMarket(adapter, request, url, now) {
     fields: '',
   }), config.freshness_class);
   const limit = cleanLimit(url.searchParams.get('limit'), 200, 1000);
-  return limitedEnvelope({ ...result, route: 'market' }, limit);
+  const envelope = limitedEnvelope({ ...result, route: 'market' }, limit);
+  return labels === '1'
+    ? enrichMarketNames(adapter, apiName, envelope)
+    : envelope;
 }
 
 async function routeNews(adapter, url, now) {
@@ -1375,9 +1568,10 @@ async function routeStockDetail(adapter, request, url, now) {
     as_of: [profile.as_of, market.as_of, supply.as_of]
       .filter(Boolean).map(String).sort().at(-1) || null,
     freshness_class: 'disclosure',
-    entitlement_status: 'available',
-    is_complete: profile.is_complete && market.is_complete &&
-      supply.is_complete !== false,
+    entitlement_status: profile.is_complete === true && market.is_complete === true &&
+      supply.is_complete === true ? 'available' : 'partial',
+    is_complete: profile.is_complete === true && market.is_complete === true &&
+      supply.is_complete === true,
     warnings: [
       ...profile.warnings,
       ...market.warnings,
@@ -1421,6 +1615,7 @@ async function routeStatus(adapter, request, now) {
     fetched_at: null,
     retrieved_at: nowIso(now),
     as_of: warehouseStatus?.as_of || null,
+    entitlement_status: complete ? 'available' : ready ? 'partial' : 'unavailable',
     is_complete: complete,
     warnings: ready
       ? (warehouseStatus?.warnings || [])

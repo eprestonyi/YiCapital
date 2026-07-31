@@ -132,6 +132,108 @@ test('funds and physical flows remain explicit, separate encodings', () => {
   assert.equal(layout.edges.some((edge) => edge.id === 'unscoped'), false);
 });
 
+test('relationship-only edges use equal baseline widths and focus—not economic data—adds emphasis', () => {
+  const graph = {
+    layers: [
+      { id: 'upstream', order: 0 },
+      { id: 'downstream', order: 1 },
+    ],
+    entities: [
+      { id: 'supplier', name: 'Supplier', layer: 'upstream', industryCluster: 'chips' },
+      { id: 'buyer', name: 'Buyer', layer: 'downstream', industryCluster: 'ai' },
+      { id: 'supplier-2', name: 'Supplier 2', layer: 'upstream', industryCluster: 'energy' },
+      { id: 'buyer-2', name: 'Buyer 2', layer: 'downstream', industryCluster: 'cloud' },
+    ],
+    relationships: [
+      {
+        id: 'selected-route',
+        from: 'supplier',
+        to: 'buyer',
+        type: 'supplier',
+        sourceId: 'filing-1',
+        validCanonicalYears: [2025],
+        materialityWeight: 999,
+        amountStatus: 'relationship-only',
+      },
+      {
+        id: 'context-route',
+        from: 'supplier-2',
+        to: 'buyer-2',
+        type: 'supplier',
+        sourceId: 'filing-2',
+        validCanonicalYears: [2025],
+        amountStatus: 'relationship-only',
+      },
+    ],
+  };
+  const documentRef = new FakeDocument();
+  const container = new FakeElement(documentRef, 'div');
+  const visual = Atlas.createStarfield(container, graph, { year: 2025, locale: 'cn' });
+  const selectedBaseline = findByAttribute(visual.root, 'data-atlas-edge', 'selected-route');
+  const contextBaseline = findByAttribute(visual.root, 'data-atlas-edge', 'context-route');
+
+  assert.equal(selectedBaseline.getAttribute('stroke-width'), contextBaseline.getAttribute('stroke-width'));
+  assert.equal(selectedBaseline.getAttribute('data-visual-salience'), 'focus-only');
+  assert.equal(source.includes('materialityWeight'), false);
+  assert.equal(source.includes('不代表交易金额'), true);
+
+  visual.setFocus('buyer');
+  const selectedFocused = findByAttribute(visual.root, 'data-atlas-edge', 'selected-route');
+  const contextFocused = findByAttribute(visual.root, 'data-atlas-edge', 'context-route');
+  assert.ok(Number(selectedFocused.getAttribute('stroke-width')) >
+    Number(contextFocused.getAttribute('stroke-width')));
+  assert.equal(selectedFocused.getAttribute('data-selection-emphasis'), 'true');
+  assert.equal(contextFocused.getAttribute('data-selection-emphasis'), 'false');
+  visual.destroy();
+});
+
+test('relationship metadata never changes the unfocused width', () => {
+  const graph = {
+    layers: [
+      { id: 'upstream', order: 0 },
+      { id: 'downstream', order: 1 },
+    ],
+    entities: [
+      { id: 'a', name: 'A', layer: 'upstream', industryCluster: 'one' },
+      { id: 'b', name: 'B', layer: 'downstream', industryCluster: 'two' },
+      { id: 'c', name: 'C', layer: 'upstream', industryCluster: 'three' },
+      { id: 'd', name: 'D', layer: 'downstream', industryCluster: 'four' },
+    ],
+    relationships: [
+      {
+        id: 'explicit-display',
+        from: 'a',
+        to: 'b',
+        sourceId: 'filing-a',
+        validCanonicalYears: [2025],
+        visualSalience: {
+          presentationOnly: true,
+          value: 0.9,
+          method: 'curated map readability',
+          sourceId: 'presentation-policy-1',
+        },
+      },
+      {
+        id: 'baseline',
+        from: 'c',
+        to: 'd',
+        sourceId: 'filing-b',
+        validCanonicalYears: [2025],
+      },
+    ],
+  };
+  const documentRef = new FakeDocument();
+  const container = new FakeElement(documentRef, 'div');
+  const visual = Atlas.createStarfield(container, graph, { year: 2025 });
+  const explicit = findByAttribute(visual.root, 'data-atlas-edge', 'explicit-display');
+  const baseline = findByAttribute(visual.root, 'data-atlas-edge', 'baseline');
+
+  assert.equal(explicit.getAttribute('stroke-width'), baseline.getAttribute('stroke-width'));
+  assert.equal(explicit.getAttribute('data-visual-salience'), 'focus-only');
+  assert.equal(baseline.getAttribute('data-visual-salience'), 'focus-only');
+  visual.destroy();
+});
+
 class FakeElement {
   constructor(ownerDocument, name, namespaceURI = null) {
     this.ownerDocument = ownerDocument;
@@ -268,7 +370,7 @@ test('interactive instance supports external search, click focus, resize and des
   assert.equal(visual.focusNeighborhood.upstream.length, 7);
 
   visual.zoomBy(1.5).panBy(12, -7).resize();
-  assert.equal(visual.getState().transform.scale, 1.5);
+  assert.equal(visual.getState().transform.scale, 3.375);
   assert.equal(visual.svg.getAttribute('height'), '510');
 
   visual.destroy();

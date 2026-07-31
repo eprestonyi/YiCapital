@@ -1,4 +1,4 @@
-Cloudflare Worker v8.10 部署步驟（Terminal Atlas + 全歷史入口 + Google 一鍵註冊 + 用戶意見 D1）
+Cloudflare Worker v8.11 部署步驟（Terminal Visuals + Atlas + 全歷史入口 + Google 一鍵註冊 + 用戶意見 D1）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
@@ -97,7 +97,7 @@ Cloudflare Worker v8.10 部署步驟（Terminal Atlas + 全歷史入口 + Google
      30 10 * * *   北京 18:30 以官方 EOD 對賬 HK/A + 三隻港股 ETF/滬深300
 
 ⑧ 首次啟用
-   部署 v8.10 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
+   部署 v8.11 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
    再點「立即刷新後台緩存」預熱三市場行情與基準。
    以後只有交易、出入金、股息、公司行動或負債改變時才需重新發布。
 

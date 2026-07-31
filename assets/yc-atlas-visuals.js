@@ -14,18 +14,18 @@
     maxScale: 4,
     locale: 'en',
     palette: Object.freeze({
-      background: '#020810',
-      surface: '#071421',
-      surfaceSoft: '#0b1b2a',
-      text: '#dce8f4',
-      muted: '#7890a8',
-      line: '#29415f',
-      focus: '#22d3ee',
+      background: '#01040b',
+      surface: '#071321',
+      surfaceSoft: '#0b1a2b',
+      text: '#e8f3ff',
+      muted: '#7895b5',
+      line: '#284463',
+      focus: '#49e3ff',
       material: '#6e9af4',
       funds: '#b54bfa',
       evidence: '#71839a',
       warning: '#f3c969',
-      cluster: Object.freeze(['#335f9d', '#593b88', '#225f70', '#6b4b75', '#3c596f'])
+      cluster: Object.freeze(['#3578f6', '#9d5cf5', '#20b9bd', '#e05ac7', '#4f6fff', '#1f93d1'])
     })
   });
 
@@ -44,6 +44,9 @@
       fundsFlow: 'funds flow (only when explicitly recorded)',
       graph: 'Atlas network graph',
       highway: 'Supply-chain highway',
+      region: 'industry region',
+      regionSelected: 'selected region',
+      focusWidth: 'line width highlights the current focus; it is not transaction value',
       searchMatch: 'search match',
       focused: 'focused',
       stage: 'stage'
@@ -62,6 +65,9 @@
       fundsFlow: '资金流（仅明确记录时显示）',
       graph: 'Atlas 星云关系图',
       highway: '供应链高速公路',
+      region: '产业区域',
+      regionSelected: '已选择区域',
+      focusWidth: '线宽仅强调当前焦点，不代表交易金额',
       searchMatch: '搜索匹配',
       focused: '当前焦点',
       stage: '阶段'
@@ -80,6 +86,9 @@
       fundsFlow: '資金流（僅明確記錄時顯示）',
       graph: 'Atlas 星雲關係圖',
       highway: '供應鏈高速公路',
+      region: '產業區域',
+      regionSelected: '已選擇區域',
+      focusWidth: '線寬僅強調目前焦點，不代表交易金額',
       searchMatch: '搜尋匹配',
       focused: '目前焦點',
       stage: '階段'
@@ -245,6 +254,25 @@
     );
   }
 
+  function regionLabel(value) {
+    return String(value || 'unclassified')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function annotateEdgeSalience(edges) {
+    return edges.map((edge) => ({
+      ...edge,
+      visualSalience: {
+      status: 'focus-only',
+      value: null,
+      method: null,
+      sourceId: null
+      }
+    }));
+  }
+
   function candidatePoint(key, attempt, width, height, paddingX, paddingY) {
     const first = stableHash(`${key}:x:${attempt}`) / 4294967295;
     const second = stableHash(`${key}:y:${attempt}`) / 4294967295;
@@ -256,22 +284,33 @@
 
   function clusterCenters(clusters, width, height) {
     const centers = [];
-    const minDistance = Math.max(112, Math.min(width, height) / Math.max(3.2, Math.sqrt(clusters.length)));
     clusters.forEach((cluster) => {
       let best = null;
-      let bestDistance = -1;
-      for (let attempt = 0; attempt < 48; attempt += 1) {
-        const point = candidatePoint(cluster.key, attempt, width, height, 105, 82);
-        const distance = centers.length
-          ? Math.min(...centers.map((center) => Math.hypot(point.x - center.x, point.y - center.y)))
+      let bestClearance = -Infinity;
+      const paddingX = Math.min(width * 0.23, Math.max(92, cluster.rx * 0.7));
+      const paddingY = Math.min(height * 0.28, Math.max(68, cluster.ry * 0.7));
+      for (let attempt = 0; attempt < 72; attempt += 1) {
+        const point = candidatePoint(cluster.key, attempt, width, height, paddingX, paddingY);
+        const clearance = centers.length
+          ? Math.min(...centers.map((center) => {
+            const dx = (point.x - center.x) / Math.max(1, cluster.rx + center.rx);
+            const dy = (point.y - center.y) / Math.max(1, cluster.ry + center.ry);
+            return Math.hypot(dx, dy);
+          }))
           : Infinity;
-        if (distance > bestDistance) {
-          bestDistance = distance;
+        if (clearance > bestClearance) {
+          bestClearance = clearance;
           best = point;
         }
-        if (distance >= minDistance) break;
+        if (clearance >= 1.12) break;
       }
-      centers.push({ ...best, key: cluster.key, count: cluster.entities.length });
+      centers.push({
+        ...best,
+        key: cluster.key,
+        count: cluster.entities.length,
+        rx: cluster.rx,
+        ry: cluster.ry
+      });
     });
     return centers;
   }
@@ -287,10 +326,16 @@
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key).push(entity);
     });
-    const clusters = [...grouped.entries()].map(([key, entities]) => ({
-      key,
-      entities: entities.slice().sort((left, right) => stableCompare(left.id, right.id))
-    })).sort((left, right) => stableCompare(left.key, right.key));
+    const clusters = [...grouped.entries()].map(([key, entities]) => {
+      const count = entities.length;
+      const radius = 34 + Math.sqrt(count) * 24;
+      return {
+        key,
+        entities: entities.slice().sort((left, right) => stableCompare(left.id, right.id)),
+        rx: radius * 1.5,
+        ry: radius
+      };
+    }).sort((left, right) => stableCompare(left.key, right.key));
     const centers = clusterCenters(clusters, width, height);
     const nodes = [];
     const clusterLayout = [];
@@ -298,37 +343,44 @@
     clusters.forEach((cluster, clusterIndex) => {
       const center = centers[clusterIndex];
       const count = cluster.entities.length;
-      const radius = 28 + Math.sqrt(count) * 22;
       clusterLayout.push({
         key: cluster.key,
+        label: regionLabel(cluster.key),
         x: center.x,
         y: center.y,
-        rx: radius * 1.36,
-        ry: radius,
+        rx: cluster.rx,
+        ry: cluster.ry,
         count
       });
       cluster.entities.forEach((entity, entityIndex) => {
-        const hashOffset = (stableHash(entity.id) % 360) * Math.PI / 180;
-        const angle = hashOffset + entityIndex * GOLDEN_ANGLE;
-        const distance = count === 1 ? 0 : 18 + Math.sqrt(entityIndex + 0.3) * 17;
+        const baseAngle = (stableHash(`${cluster.key}:orbit`) % 360) * Math.PI / 180;
+        const angle = count <= 6
+          ? baseAngle + entityIndex * Math.PI * 2 / Math.max(1, count)
+          : baseAngle + entityIndex * GOLDEN_ANGLE;
+        const distance = count === 1
+          ? 0
+          : count <= 6
+            ? Math.min(cluster.ry * 0.58, 30 + count * 5)
+            : 22 + Math.sqrt(entityIndex + 0.4) * 22;
         nodes.push({
           ...entity,
           clusterKey: cluster.key,
           x: clamp(center.x + Math.cos(angle) * distance, 28, width - 28),
           y: clamp(center.y + Math.sin(angle) * distance * 0.72, 34, height - 34),
-          radius: entity.kind === 'company' ? 6 : 4.5
+          radius: entity.kind === 'company' ? 6 : 4.5,
+          labelSide: Math.cos(angle) < -0.16 ? 'left' : 'right'
         });
       });
     });
 
     const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-    const edges = graph.relationships
+    const edges = annotateEdgeSalience(graph.relationships
       .filter((relation) => hasEvidence(relation, settings.year))
       .map((relation) => ({
       ...relation,
       source: nodeMap.get(relation.from),
       target: nodeMap.get(relation.to)
-    })).filter((edge) => edge.source && edge.target);
+    })).filter((edge) => edge.source && edge.target));
 
     return {
       width,
@@ -432,7 +484,7 @@
         return rightEntry[1] - leftEntry[1] || stableCompare(leftEntry[0], rightEntry[0]);
       })[0]?.[0] || null;
 
-    const edges = relationships.map((relation) => {
+    const edges = annotateEdgeSalience(relationships.map((relation) => {
       const source = nodeMap.get(relation.from);
       const target = nodeMap.get(relation.to);
       if (!source || !target) return null;
@@ -453,7 +505,7 @@
         isTrunk: relation.from === rootId || relation.to === rootId,
         path: `M ${visualSource.x} ${visualSource.y} C ${firstX} ${visualSource.y}, ${secondX} ${visualTarget.y}, ${visualTarget.x} ${visualTarget.y}`
       };
-    }).filter(Boolean);
+    }).filter(Boolean));
 
     return {
       width,
@@ -635,6 +687,14 @@
     return instance.palette.evidence;
   }
 
+  function edgeStrokeWidth(_edge, base, selectedBoost) {
+    return finiteNumber(base, 1.35) + (selectedBoost ? 1.8 : 0);
+  }
+
+  function edgeSalienceLabel(instance) {
+    return copyFor(instance.options.locale).focusWidth;
+  }
+
   function nodeAria(instance, node) {
     const copy = copyFor(instance.options.locale);
     const flags = [];
@@ -648,19 +708,27 @@
     const isFocus = instance.state.focusId === node.id;
     const isSearch = instance.state.searchIds.has(node.id);
     const nearby = instance.focusNeighborhood.neighborIds;
-    const dimmed = instance.state.focusId && !nearby.has(node.id);
+    const outsideRegion = instance.state.regionKey && node.clusterKey !== instance.state.regionKey;
+    const dimmed = (instance.state.focusId && !nearby.has(node.id)) ||
+      (!instance.state.focusId && outsideRegion);
     const group = svgElement(documentRef, 'g', {
       transform: `translate(${node.x} ${node.y})`,
       role: 'button',
       tabindex: '0',
       'aria-label': nodeAria(instance, node),
       'data-atlas-node': node.id,
+      'data-atlas-node-name': node.name || node.id,
+      'data-atlas-node-ticker': node.ticker || null,
       opacity: dimmed ? 0.1 : 1
     });
     group.style.cursor = 'pointer';
     const radius = layoutMode === 'starfield'
       ? (isFocus ? 10 : isSearch ? 8.5 : node.radius || 6)
       : (isFocus ? 9 : isSearch ? 8 : 6);
+    const labelOnLeft = layoutMode === 'starfield' && node.labelSide === 'left';
+    const labelX = layoutMode === 'starfield'
+      ? (labelOnLeft ? -radius - 7 : radius + 7)
+      : 10;
     const halo = svgElement(documentRef, 'circle', {
       r: radius + (isFocus ? 12 : isSearch ? 7 : 3),
       fill: isFocus ? instance.palette.focus : isSearch ? instance.palette.warning : instance.palette.material,
@@ -677,15 +745,29 @@
       'stroke-width': isFocus || isSearch ? 1.6 : 0.55
     });
     const label = svgElement(documentRef, 'text', {
-      x: layoutMode === 'starfield' ? radius + 7 : 10,
-      y: 3,
+      x: labelX,
+      y: node.ticker ? -1 : 3,
       fill: instance.palette.text,
-      'font-size': layoutMode === 'starfield' ? 10 : 10.5,
+      'font-size': layoutMode === 'starfield' ? 10.5 : 10.5,
       'font-family': 'ui-monospace, SFMono-Regular, Menlo, monospace',
-      'font-weight': isFocus ? 700 : 500
+      'font-weight': isFocus ? 700 : 500,
+      'text-anchor': labelOnLeft ? 'end' : 'start'
     }, node.name || node.id);
+    const ticker = node.ticker
+      ? svgElement(documentRef, 'text', {
+        x: labelX,
+        y: 11,
+        fill: instance.palette.muted,
+        'font-size': 7.5,
+        'font-family': 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        'font-weight': 500,
+        'letter-spacing': 0.45,
+        'text-anchor': labelOnLeft ? 'end' : 'start',
+        'data-atlas-ticker-label': node.id
+      }, node.ticker)
+      : null;
     const title = svgElement(documentRef, 'title', {}, nodeAria(instance, node));
-    group.append(title, halo, core, label);
+    append(group, [title, halo, core, label, ticker]);
 
     const select = (event) => {
       if (event?.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
@@ -694,6 +776,129 @@
     };
     instance.listen(group, 'click', select, true);
     instance.listen(group, 'keydown', select, true);
+    instance.listen(group, 'dblclick', (event) => {
+      if (event?.preventDefault) event.preventDefault();
+      instance.zoomToNode(node.id, 2.65);
+    }, true);
+    return group;
+  }
+
+  function createRegionGroup(instance, cluster, index, documentRef) {
+    const copy = copyFor(instance.options.locale);
+    const selected = instance.state.regionKey === cluster.key;
+    const dimmed = instance.state.regionKey && !selected && !instance.state.focusId;
+    const color = instance.palette.cluster[index % instance.palette.cluster.length];
+    const group = svgElement(documentRef, 'g', {
+      'data-atlas-region-visual': cluster.key,
+      opacity: dimmed ? 0.18 : 1
+    });
+    group.style.pointerEvents = 'none';
+    const rotation = (stableHash(`${cluster.key}:rotation`) % 29) - 14;
+    group.append(
+      svgElement(documentRef, 'ellipse', {
+        cx: cluster.x,
+        cy: cluster.y,
+        rx: cluster.rx * 1.14,
+        ry: cluster.ry * 1.14,
+        fill: `url(#${instance.id}-nebula-${index})`,
+        opacity: selected ? 0.96 : 0.76,
+        filter: `url(#${instance.id}-nebula-soft)`,
+        transform: `rotate(${rotation} ${cluster.x} ${cluster.y})`
+      }),
+      svgElement(documentRef, 'ellipse', {
+        cx: cluster.x,
+        cy: cluster.y,
+        rx: cluster.rx * 0.82,
+        ry: cluster.ry * 0.58,
+        fill: `url(#${instance.id}-nebula-${index})`,
+        opacity: selected ? 0.94 : 0.62,
+        transform: `rotate(${-rotation * 1.7} ${cluster.x} ${cluster.y})`
+      }),
+      svgElement(documentRef, 'ellipse', {
+        cx: cluster.x,
+        cy: cluster.y,
+        rx: cluster.rx,
+        ry: cluster.ry,
+        fill: 'none',
+        stroke: selected ? instance.palette.focus : color,
+        'stroke-width': selected ? 1.8 : 0.65,
+        'stroke-dasharray': selected ? '0' : '2 7',
+        opacity: selected ? 0.78 : 0.34,
+        transform: `rotate(${rotation} ${cluster.x} ${cluster.y})`
+      })
+    );
+    for (let dustIndex = 0; dustIndex < 22; dustIndex += 1) {
+      const angle = (stableHash(`${cluster.key}:dust-a:${dustIndex}`) % 360) * Math.PI / 180;
+      const radiusFactor = Math.sqrt(
+        stableHash(`${cluster.key}:dust-r:${dustIndex}`) / 4294967295
+      ) * 0.82;
+      const x = cluster.x + Math.cos(angle) * cluster.rx * radiusFactor;
+      const y = cluster.y + Math.sin(angle) * cluster.ry * radiusFactor;
+      group.appendChild(svgElement(documentRef, 'circle', {
+        cx: x.toFixed(2),
+        cy: y.toFixed(2),
+        r: dustIndex % 9 === 0 ? 1.4 : dustIndex % 4 === 0 ? 0.85 : 0.48,
+        fill: dustIndex % 5 === 0 ? instance.palette.text : color,
+        opacity: 0.18 + (stableHash(`${cluster.key}:dust-o:${dustIndex}`) % 48) / 100
+      }));
+    }
+    const labelY = Math.max(18, cluster.y - cluster.ry - 11);
+    const labelWidth = clamp(cluster.label.length * 6.5 + 24, 68, 210);
+    const hitTarget = svgElement(documentRef, 'g', {
+      role: 'button',
+      tabindex: '0',
+      'aria-label': `${cluster.label} · ${copy.region}${selected ? ` · ${copy.regionSelected}` : ''}`,
+      'data-atlas-region': cluster.key,
+      'data-atlas-region-selected': selected ? 'true' : 'false'
+    });
+    hitTarget.style.pointerEvents = 'all';
+    hitTarget.style.cursor = 'zoom-in';
+    const centerHit = svgElement(documentRef, 'circle', {
+      cx: cluster.x,
+      cy: cluster.y,
+      r: Math.min(22, Math.max(13, cluster.ry * 0.22)),
+      fill: color,
+      'fill-opacity': 0.001,
+      stroke: 'none',
+      'pointer-events': 'all',
+      'aria-hidden': 'true'
+    });
+    centerHit.style.cursor = 'zoom-in';
+    hitTarget.append(
+      svgElement(documentRef, 'rect', {
+        x: cluster.x - labelWidth / 2,
+        y: labelY - 12,
+        width: labelWidth,
+        height: 18,
+        rx: 5,
+        fill: instance.palette.background,
+        'fill-opacity': selected ? 0.58 : 0.22,
+        stroke: selected ? instance.palette.focus : 'none',
+        'stroke-width': selected ? 0.7 : 0,
+        'pointer-events': 'all'
+      }),
+      svgElement(documentRef, 'text', {
+        x: cluster.x,
+        y: labelY,
+        fill: selected ? instance.palette.text : instance.palette.muted,
+        'text-anchor': 'middle',
+        'font-size': selected ? 10 : 9,
+        'font-family': 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        'font-weight': selected ? 700 : 600,
+        'letter-spacing': 1.15,
+        'pointer-events': 'none'
+      }, cluster.label.toUpperCase()),
+      svgElement(documentRef, 'title', {}, `${cluster.label} · ${copy.region}`)
+    );
+    group.append(centerHit, hitTarget);
+    const select = (event) => {
+      if (event?.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+      if (event?.preventDefault) event.preventDefault();
+      instance.setRegion(selected ? null : cluster.key, true);
+    };
+    instance.listen(centerHit, 'click', select, true);
+    instance.listen(hitTarget, 'click', select, true);
+    instance.listen(hitTarget, 'keydown', select, true);
     return group;
   }
 
@@ -728,6 +933,24 @@
         }, item[1])
       );
     });
+    group.append(
+      svgElement(documentRef, 'line', {
+        x1: 750,
+        x2: 778,
+        y1: 0,
+        y2: 0,
+        stroke: instance.palette.focus,
+        'stroke-width': 4.2,
+        'stroke-linecap': 'round'
+      }),
+      svgElement(documentRef, 'text', {
+        x: 786,
+        y: 4,
+        fill: instance.palette.muted,
+        'font-size': 8.5,
+        'font-family': 'ui-monospace, SFMono-Regular, Menlo, monospace'
+      }, copy.focusWidth)
+    );
     return group;
   }
 
@@ -755,6 +978,34 @@
       borderRadius: '4px'
     });
     const defs = svgElement(documentRef, 'defs');
+    const spaceGradient = svgElement(documentRef, 'radialGradient', {
+      id: `${instance.id}-space`,
+      cx: '48%',
+      cy: '44%',
+      r: '78%'
+    });
+    spaceGradient.append(
+      svgElement(documentRef, 'stop', {
+        offset: '0%',
+        'stop-color': '#102744',
+        'stop-opacity': 0.92
+      }),
+      svgElement(documentRef, 'stop', {
+        offset: '38%',
+        'stop-color': '#071324',
+        'stop-opacity': 0.98
+      }),
+      svgElement(documentRef, 'stop', {
+        offset: '72%',
+        'stop-color': '#020812',
+        'stop-opacity': 1
+      }),
+      svgElement(documentRef, 'stop', {
+        offset: '100%',
+        'stop-color': instance.palette.background,
+        'stop-opacity': 1
+      })
+    );
     const glow = svgElement(documentRef, 'filter', {
       id: `${instance.id}-glow`,
       x: '-80%',
@@ -763,8 +1014,55 @@
       height: '260%'
     });
     glow.appendChild(svgElement(documentRef, 'feGaussianBlur', { stdDeviation: 12 }));
+    const nebulaSoft = svgElement(documentRef, 'filter', {
+      id: `${instance.id}-nebula-soft`,
+      x: '-35%',
+      y: '-45%',
+      width: '170%',
+      height: '190%'
+    });
+    nebulaSoft.appendChild(svgElement(documentRef, 'feGaussianBlur', { stdDeviation: 7.5 }));
+    layout.clusters.forEach((cluster, index) => {
+      const color = instance.palette.cluster[index % instance.palette.cluster.length];
+      const gradient = svgElement(documentRef, 'radialGradient', {
+        id: `${instance.id}-nebula-${index}`,
+        cx: `${43 + (stableHash(`${cluster.key}:cx`) % 15)}%`,
+        cy: `${39 + (stableHash(`${cluster.key}:cy`) % 17)}%`,
+        r: '64%'
+      });
+      gradient.append(
+        svgElement(documentRef, 'stop', {
+          offset: '0%',
+          'stop-color': instance.palette.text,
+          'stop-opacity': 0.54
+        }),
+        svgElement(documentRef, 'stop', {
+          offset: '17%',
+          'stop-color': color,
+          'stop-opacity': 0.5
+        }),
+        svgElement(documentRef, 'stop', {
+          offset: '48%',
+          'stop-color': color,
+          'stop-opacity': 0.24
+        }),
+        svgElement(documentRef, 'stop', {
+          offset: '78%',
+          'stop-color': color,
+          'stop-opacity': 0.07
+        }),
+        svgElement(documentRef, 'stop', {
+          offset: '100%',
+          'stop-color': instance.palette.background,
+          'stop-opacity': 0
+        })
+      );
+      defs.appendChild(gradient);
+    });
     defs.append(
+      spaceGradient,
       glow,
+      nebulaSoft,
       marker(documentRef, `${instance.id}-material`, instance.palette.material),
       marker(documentRef, `${instance.id}-funds`, instance.palette.funds),
       marker(documentRef, `${instance.id}-evidence`, instance.palette.evidence)
@@ -776,78 +1074,84 @@
       y: 0,
       width: layout.width,
       height: layout.height,
-      fill: instance.palette.background,
+      fill: `url(#${instance.id}-space)`,
       'data-atlas-pan-surface': 'true'
     });
     viewport.appendChild(background);
 
-    for (let index = 0; index < 150; index += 1) {
+    for (let index = 0; index < 360; index += 1) {
       const x = 16 + (stableHash(`star-x:${index}`) / 4294967295) * (layout.width - 32);
       const y = 16 + (stableHash(`star-y:${index}`) / 4294967295) * (layout.height - 32);
       viewport.appendChild(svgElement(documentRef, 'circle', {
         cx: x.toFixed(2),
         cy: y.toFixed(2),
-        r: index % 17 === 0 ? 1.35 : index % 5 === 0 ? 0.9 : 0.55,
-        fill: instance.palette.text,
-        opacity: 0.12 + (stableHash(`star-o:${index}`) % 42) / 100
+        r: index % 43 === 0 ? 1.65 : index % 17 === 0 ? 1.15 : index % 5 === 0 ? 0.75 : 0.4,
+        fill: index % 31 === 0
+          ? instance.palette.focus
+          : index % 23 === 0
+            ? instance.palette.funds
+            : instance.palette.text,
+        opacity: 0.12 + (stableHash(`star-o:${index}`) % 58) / 100,
+        'pointer-events': 'none'
       }));
     }
 
     layout.clusters.forEach((cluster, index) => {
-      const color = instance.palette.cluster[index % instance.palette.cluster.length];
-      viewport.append(
-        svgElement(documentRef, 'ellipse', {
-          cx: cluster.x,
-          cy: cluster.y,
-          rx: cluster.rx,
-          ry: cluster.ry,
-          fill: color,
-          opacity: 0.14,
-          filter: `url(#${instance.id}-glow)`
-        }),
-        svgElement(documentRef, 'ellipse', {
-          cx: cluster.x,
-          cy: cluster.y,
-          rx: cluster.rx,
-          ry: cluster.ry,
-          fill: color,
-          opacity: 0.055,
-          stroke: color,
-          'stroke-width': 0.8
-        }),
-        svgElement(documentRef, 'text', {
-          x: cluster.x,
-          y: Math.max(18, cluster.y - cluster.ry - 8),
-          fill: instance.palette.muted,
-          'text-anchor': 'middle',
-          'font-size': 9,
-          'font-family': 'ui-monospace, SFMono-Regular, Menlo, monospace',
-          'letter-spacing': 1.1
-        }, cluster.key.toUpperCase())
-      );
+      viewport.appendChild(createRegionGroup(instance, cluster, index, documentRef));
     });
 
     const nearby = instance.focusNeighborhood.neighborIds;
     layout.edges.forEach((edge) => {
-      const isConnected = !instance.state.focusId ||
-        edge.from === instance.state.focusId || edge.to === instance.state.focusId;
+      const touchesFocus = instance.state.focusId &&
+        (edge.from === instance.state.focusId || edge.to === instance.state.focusId);
+      const touchesRegion = instance.state.regionKey &&
+        (edge.source.clusterKey === instance.state.regionKey ||
+          edge.target.clusterKey === instance.state.regionKey);
+      const isConnected = instance.state.focusId
+        ? touchesFocus
+        : instance.state.regionKey
+          ? touchesRegion
+          : true;
       const dx = edge.target.x - edge.source.x;
       const dy = edge.target.y - edge.source.y;
       const curve = ((stableHash(edge.id) % 31) - 15) / 100;
       const controlX = (edge.source.x + edge.target.x) / 2 - dy * curve;
       const controlY = (edge.source.y + edge.target.y) / 2 + dx * curve;
       const color = edgeColor(instance, edge.flowKind);
+      const pathData = `M ${edge.source.x} ${edge.source.y} Q ${controlX} ${controlY} ${edge.target.x} ${edge.target.y}`;
+      const selectionEmphasis = Boolean(touchesFocus || (!instance.state.focusId && touchesRegion));
+      const strokeWidth = edgeStrokeWidth(edge, 1.2, selectionEmphasis);
+      if (selectionEmphasis) {
+        viewport.appendChild(svgElement(documentRef, 'path', {
+          d: pathData,
+          fill: 'none',
+          stroke: color,
+          'stroke-width': strokeWidth + 5,
+          'stroke-linecap': 'round',
+          opacity: instance.state.focusId && !isConnected ? 0.02 : 0.1,
+          filter: `url(#${instance.id}-glow)`,
+          'aria-hidden': 'true'
+        }));
+      }
       const path = svgElement(documentRef, 'path', {
-        d: `M ${edge.source.x} ${edge.source.y} Q ${controlX} ${controlY} ${edge.target.x} ${edge.target.y}`,
+        d: pathData,
         fill: 'none',
         stroke: color,
-        'stroke-width': isConnected ? 1.7 : 0.8,
+        'stroke-width': strokeWidth,
+        'stroke-linecap': 'round',
         'stroke-dasharray': edge.flowKind === 'funds' ? '7 5' : edge.flowKind === 'evidence' ? '3 5' : '0',
-        opacity: instance.state.focusId && !isConnected ? 0.05 : edge.evidenceStatus?.startsWith('disclosed') ? 0.72 : 0.36,
+        opacity: !isConnected ? 0.05 : edge.evidenceStatus?.startsWith('disclosed') ? 0.78 : 0.42,
         'marker-end': `url(#${instance.id}-${edge.flowKind})`,
-        'data-atlas-edge': edge.id
+        'data-atlas-edge': edge.id,
+        'data-visual-salience': edge.visualSalience?.status || 'focus-only',
+        'data-selection-emphasis': selectionEmphasis ? 'true' : 'false'
       });
-      path.appendChild(svgElement(documentRef, 'title', {}, `${edge.source.name} → ${edge.target.name}`));
+      path.appendChild(svgElement(
+        documentRef,
+        'title',
+        {},
+        `${edge.source.name} → ${edge.target.name} · ${edgeSalienceLabel(instance, edge)}`
+      ));
       viewport.appendChild(path);
     });
     layout.nodes.forEach((node) => {
@@ -938,18 +1242,25 @@
       const connected = !instance.state.focusId ||
         edge.from === instance.state.focusId || edge.to === instance.state.focusId;
       const color = edgeColor(instance, edge.flowKind);
+      const strokeWidth = edgeStrokeWidth(
+        edge,
+        1.75,
+        Boolean(instance.state.focusId && connected)
+      );
       const path = svgElement(documentRef, 'path', {
         d: edge.path,
         fill: 'none',
         stroke: color,
-        'stroke-width': edge.isTrunk ? 4.2 : 2.2,
+        'stroke-width': strokeWidth,
         'stroke-linecap': 'round',
         'stroke-linejoin': 'round',
         'stroke-dasharray': edge.flowKind === 'funds' ? '9 6' : edge.flowKind === 'evidence' ? '3 5' : '0',
         opacity: connected ? 0.88 : 0.18,
         'marker-end': `url(#${instance.id}-${edge.flowKind})`,
         'data-atlas-edge': edge.id,
-        'data-flow-kind': edge.flowKind
+        'data-flow-kind': edge.flowKind,
+        'data-visual-salience': edge.visualSalience?.status || 'focus-only',
+        'data-selection-emphasis': instance.state.focusId && connected ? 'true' : 'false'
       });
       const amount = edge.amount != null || edge.value != null
         ? String(edge.amount ?? edge.value)
@@ -958,7 +1269,7 @@
         documentRef,
         'title',
         {},
-        `${edge.source.name} → ${edge.target.name} · ${edge.type || copy.evidenceLink} · ${amount}`
+        `${edge.source.name} → ${edge.target.name} · ${edge.type || copy.evidenceLink} · ${amount} · ${edgeSalienceLabel(instance, edge)}`
       ));
       viewport.appendChild(path);
     });
@@ -991,6 +1302,9 @@
     };
     const palette = mergePalette(settings.palette);
     const graph = normalizeGraph(input, settings);
+    const initialFocusEntity = settings.focusId
+      ? graph.entities.find((entity) => entity.id === settings.focusId) || null
+      : null;
     instanceSequence += 1;
     const instanceId = `yc-atlas-${mode}-${stableHash(graph.entities.map((item) => item.id).join('|'))}-${instanceSequence}`;
     const root = setStyles(htmlElement(documentRef, 'div', {
@@ -1018,7 +1332,10 @@
       options: settings,
       palette,
       state: {
-        focusId: settings.focusId || null,
+        focusId: initialFocusEntity?.id || null,
+        regionKey: settings.regionKey || (
+          initialFocusEntity ? entityCluster(initialFocusEntity) : null
+        ),
         searchQuery: String(settings.searchState?.query || ''),
         searchIds: new Set(
           Array.isArray(settings.searchState?.matchedIds) ? settings.searchState.matchedIds : []
@@ -1068,6 +1385,10 @@
         if (this.state.focusId && !this.graph.entities.some((entity) => entity.id === this.state.focusId)) {
           this.state.focusId = null;
         }
+        if (this.state.regionKey &&
+          !this.graph.entities.some((entity) => entityCluster(entity) === this.state.regionKey)) {
+          this.state.regionKey = null;
+        }
         return this.render();
       },
 
@@ -1078,11 +1399,50 @@
           : null;
         this.state.focusId = normalized;
         this.options.focusId = normalized;
+        if (normalized && this.mode === 'starfield') {
+          const entity = this.graph.entities.find((item) => item.id === normalized);
+          this.state.regionKey = entity ? entityCluster(entity) : this.state.regionKey;
+        }
         this.render();
+        if (this.mode === 'starfield') {
+          if (normalized && this.options.autoZoomOnFocus !== false) this.zoomToNode(normalized);
+          else if (this.state.regionKey) this.zoomToRegion(this.state.regionKey);
+          else this.fit();
+        }
         if (notify && typeof this.options.onFocusChange === 'function') {
           this.options.onFocusChange({
             ...this.focusNeighborhood,
             focusId: normalized
+          });
+        }
+        return this;
+      },
+
+      setRegion(regionKey, notify) {
+        if (this.destroyed || this.mode !== 'starfield') return this;
+        const normalized = regionKey &&
+          this.graph.entities.some((entity) => entityCluster(entity) === regionKey)
+          ? String(regionKey)
+          : null;
+        this.state.regionKey = normalized;
+        this.options.regionKey = normalized;
+        if (normalized && this.state.focusId) {
+          const focus = this.graph.entities.find((entity) => entity.id === this.state.focusId);
+          if (!focus || entityCluster(focus) !== normalized) {
+            this.state.focusId = null;
+            this.options.focusId = null;
+          }
+        }
+        this.render();
+        if (normalized) this.zoomToRegion(normalized);
+        else if (this.state.focusId) this.zoomToNode(this.state.focusId);
+        else this.fit();
+        if (notify && typeof this.options.onRegionChange === 'function') {
+          this.options.onRegionChange({
+            regionKey: normalized,
+            entities: normalized
+              ? this.graph.entities.filter((entity) => entityCluster(entity) === normalized)
+              : []
           });
         }
         return this;
@@ -1101,8 +1461,16 @@
             ? next.focusId
             : null;
           this.options.focusId = this.state.focusId;
+          if (this.state.focusId && this.mode === 'starfield') {
+            const focus = this.graph.entities.find((entity) => entity.id === this.state.focusId);
+            this.state.regionKey = focus ? entityCluster(focus) : this.state.regionKey;
+          }
         }
-        return this.render();
+        this.render();
+        if (this.mode === 'starfield' && this.state.focusId && this.options.autoZoomOnFocus !== false) {
+          this.zoomToNode(this.state.focusId);
+        }
+        return this;
       },
 
       applyTransform() {
@@ -1138,6 +1506,40 @@
         if (this.destroyed) return this;
         this.transform.x += finiteNumber(deltaX, 0);
         this.transform.y += finiteNumber(deltaY, 0);
+        this.applyTransform();
+        return this;
+      },
+
+      zoomToNode(nodeId, scale) {
+        if (this.destroyed || this.mode !== 'starfield') return this;
+        const node = this.layout?.nodes?.find((item) => item.id === nodeId);
+        if (!node) return this;
+        const nextScale = clamp(
+          finiteNumber(scale, 2.25),
+          finiteNumber(this.options.minScale, DEFAULTS.minScale),
+          finiteNumber(this.options.maxScale, DEFAULTS.maxScale)
+        );
+        this.transform.scale = nextScale;
+        this.transform.x = this.layout.width / 2 - node.x * nextScale;
+        this.transform.y = this.layout.height / 2 - node.y * nextScale;
+        this.applyTransform();
+        return this;
+      },
+
+      zoomToRegion(regionKey) {
+        if (this.destroyed || this.mode !== 'starfield') return this;
+        const region = this.layout?.clusters?.find((cluster) => cluster.key === regionKey);
+        if (!region) return this;
+        const horizontal = this.layout.width / Math.max(1, region.rx * 2 + 180);
+        const vertical = this.layout.height / Math.max(1, region.ry * 2 + 120);
+        const nextScale = clamp(
+          Math.min(horizontal, vertical),
+          Math.max(1.12, finiteNumber(this.options.minScale, DEFAULTS.minScale)),
+          Math.min(2.75, finiteNumber(this.options.maxScale, DEFAULTS.maxScale))
+        );
+        this.transform.scale = nextScale;
+        this.transform.x = this.layout.width / 2 - region.x * nextScale;
+        this.transform.y = this.layout.height / 2 - region.y * nextScale;
         this.applyTransform();
         return this;
       },
@@ -1195,6 +1597,7 @@
         return {
           mode: this.mode,
           focusId: this.state.focusId,
+          regionKey: this.state.regionKey,
           searchQuery: this.state.searchQuery,
           searchIds: [...this.state.searchIds],
           transform: { ...this.transform },
@@ -1224,6 +1627,12 @@
     root.insertBefore(createControls(instance, documentRef), stage);
     instance.render();
     instance.resize();
+    if (instance.mode === 'starfield' && instance.state.focusId &&
+      instance.options.autoZoomOnFocus !== false) {
+      instance.zoomToNode(instance.state.focusId);
+    } else if (instance.mode === 'starfield' && instance.state.regionKey) {
+      instance.zoomToRegion(instance.state.regionKey);
+    }
 
     const ResizeObserverRef = documentRef.defaultView?.ResizeObserver || scope.ResizeObserver;
     if (typeof ResizeObserverRef === 'function') {
