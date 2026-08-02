@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" role="img" aria-label="YiCapital">
+  <rect width="140" height="140" rx="24" fill="#050912"/>
+  <g transform="translate(4 1)">
+    <path d="M42 114C67 132 101 121 116 94C130 69 124 46 105 31"
+          fill="none" stroke="#75A7FF" stroke-width="7" stroke-linecap="round"/>
+    <path fill="#F5F2EA" d="M16 12h16v16H16z"/>
+    <path fill="#F5F2EA" d="M36 25l4-8 43 22-4 8z"/>
+    <path fill="#F5F2EA" d="M86 40h18v18H86z"/>
+    <path fill="#F5F2EA" d="M83 64l6 8-39 31-6-8z"/>
+    <path fill="#75A7FF" d="M30 102h24v24H30z"/>
+  </g>
+</svg>

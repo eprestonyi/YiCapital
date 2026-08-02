@@ -185,7 +185,7 @@ test('the three localized Terminal pages have the correct shell and asset paths'
       assert.match(
         homeMarks[0],
         /<span\b[^>]*class=["'][^"']*\blogo\b[^"']*["'][^>]*>Yi<b>Capital<\/b><\/span>/,
-        `${page.file} must use the locked YiCapital wordmark`,
+        `${page.file} must retain the accessible YiCapital wordmark`,
       );
       assert.doesNotMatch(
         html,

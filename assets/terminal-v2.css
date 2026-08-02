@@ -46,11 +46,11 @@
 }
 .terminal-brand{display:inline-flex;align-items:center;text-decoration:none}
 .terminal-brand .logo{
-  display:inline-block;white-space:nowrap;color:#fff;font:700 19px/1 var(--terminal-sans);letter-spacing:-.7px;
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap;color:#f5f2ea;font:700 19px/1 var(--terminal-sans);letter-spacing:-.7px;
 }
+.terminal-brand .logo::before{width:22px;height:24px;background-image:url("/assets/brand/yicapital-mark-reverse.svg")}
 .terminal-brand .logo b{
-  color:transparent;background:linear-gradient(90deg,#6e9af4,#b54bfa);
-  background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  color:inherit;background:none;-webkit-text-fill-color:currentColor;
 }
 .terminal-site-links{display:flex;gap:2px;justify-self:center}
 .terminal-v2-page .terminal-site-links a,.terminal-v2-page .terminal-site-tools>a{
@@ -397,8 +397,7 @@
 }
 .terminal-home-mark{
   width:30px;height:30px;display:grid;place-items:center;border:1px solid #284767;border-radius:4px;
-  background:linear-gradient(145deg,rgba(34,211,238,.13),rgba(181,75,250,.13));
-  color:#dff8ff;text-decoration:none;font:700 10px var(--terminal-mono);letter-spacing:.4px;
+  background:#050912;color:#dff8ff;text-decoration:none;font:700 10px var(--terminal-mono);letter-spacing:.4px;
 }
 .terminal-home-mark:hover,.terminal-home-mark:focus{outline:0;border-color:var(--terminal-cyan);color:var(--terminal-cyan)}
 .terminal-exit{
@@ -600,12 +599,15 @@
   background:#07111d;
 }
 .terminal-home-mark .logo{
-  display:inline-block;white-space:nowrap;color:#fff;
+  display:inline-flex;align-items:center;gap:5px;white-space:nowrap;color:#f5f2ea;
   font:700 15px/1 var(--terminal-sans);letter-spacing:-.55px;
 }
+.terminal-home-mark .logo::before{
+  content:"";width:18px;height:20px;flex:0 0 auto;
+  background:url("/assets/brand/yicapital-mark-reverse.svg") center/contain no-repeat;
+}
 .terminal-home-mark .logo b{
-  color:transparent;background:linear-gradient(90deg,#6e9af4,#b54bfa);
-  background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  color:inherit;background:none;-webkit-text-fill-color:currentColor;
 }
 .terminal-search-results{right:auto;width:min(760px,calc(100vw - 28px))}
 .terminal-search-section{
@@ -829,6 +831,7 @@
   .terminal-command{grid-template-columns:64px minmax(0,1fr) auto}
   .terminal-home-mark{min-width:64px;padding:0 4px}
   .terminal-home-mark .logo{font-size:10.5px;letter-spacing:-.4px}
+  .terminal-home-mark .logo::before{width:15px;height:17px}
   .terminal-search-result{grid-template-columns:minmax(0,1fr) auto}
   .terminal-search-result-type{display:none}
   .terminal-market-snapshot{grid-template-columns:1fr 1fr}

@@ -1,7 +1,6 @@
 :root {
-  --yc-entry-yi: #fff;
-  --yc-entry-capital-a: #6e9af4;
-  --yc-entry-capital-b: #b54bfa;
+  --yc-entry-word: #f5f2ea;
+  --yc-entry-accent: #75a7ff;
 }
 
 html.yc-entry-pending,
@@ -53,19 +52,27 @@ body.yc-entry-open {
 
 .yc-entry-fallback-logo {
   display: inline-flex;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 22px;
-  color: #fff;
+  color: var(--yc-entry-word);
   font-size: 28px;
   font-weight: 800;
   letter-spacing: -1px;
   text-decoration: none;
 }
 
+.yc-entry-fallback-logo::before {
+  content: "";
+  width: 35px;
+  height: 38px;
+  flex: 0 0 auto;
+  background: url("/assets/brand/yicapital-mark-reverse.svg") center/contain no-repeat;
+}
+
 .yc-entry-fallback-logo b {
-  color: transparent;
-  background: linear-gradient(90deg, var(--yc-entry-capital-a), var(--yc-entry-capital-b));
-  background-clip: text;
-  -webkit-background-clip: text;
+  color: inherit;
+  background: none;
 }
 
 .yc-entry-fallback p {
@@ -211,9 +218,10 @@ body.yc-entry-open {
 
 .yc-entry-logo {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
+  gap: 9px;
   white-space: nowrap;
-  color: var(--yc-entry-yi);
+  color: var(--yc-entry-word);
   font-size: 25px;
   line-height: 1;
   font-weight: 800;
@@ -221,11 +229,17 @@ body.yc-entry-open {
   text-decoration: none;
 }
 
+.yc-entry-logo::before {
+  content: "";
+  width: 31px;
+  height: 34px;
+  flex: 0 0 auto;
+  background: url("/assets/brand/yicapital-mark-reverse.svg") center/contain no-repeat;
+}
+
 .yc-entry-logo b {
-  color: transparent;
-  background: linear-gradient(90deg, var(--yc-entry-capital-a), var(--yc-entry-capital-b));
-  background-clip: text;
-  -webkit-background-clip: text;
+  color: inherit;
+  background: none;
 }
 
 .yc-entry-languages {
@@ -823,6 +837,11 @@ body.yc-entry-open {
 
   .yc-entry-logo {
     font-size: 22px;
+  }
+
+  .yc-entry-logo::before {
+    width: 28px;
+    height: 31px;
   }
 
   .yc-entry-shell {

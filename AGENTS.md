@@ -2,4 +2,8 @@
 
 Read and follow `BRAND.md` for every user-facing change.
 
-Treat the YiCapital wordmark as a locked asset. Every logo in webpages and every newly generated visual file must show `YiCapital` with no space, on one line, in bold; `Yi` must be `#FFFFFF`, and `Capital` must use the gradient `#6E9AF4` → `#B54BFA`. Do not create alternate logo variants or reinterpret the mark.
+Treat the YiCapital nonlinear-pendulum identity as a locked asset. Every visual
+logo must use the approved square-node pendulum, solid blue terminal mass and
+single open arc described in `BRAND.md`. The wordmark is `YiCapital`, with no
+space or gradient. Do not add loops, extra trajectories, circular nodes or an
+alternate monogram.

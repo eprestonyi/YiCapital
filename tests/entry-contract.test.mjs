@@ -144,11 +144,12 @@ test('minimal entry styling removes card chrome and crossfades overlapping canva
   assert.match(css, /prefers-reduced-motion:\s*reduce[\s\S]*?transition-duration:\s*1ms/);
 });
 
-test('locked YiCapital wordmark stays intact in the entry surface', async () => {
+test('nonlinear-pendulum YiCapital identity stays intact in the entry surface', async () => {
   const entry = await read('assets/yc-entry.js');
   const css = await read('assets/yc-entry.css');
   assert.match(entry, />Yi<b>Capital<\/b>/);
-  assert.match(css, /--yc-entry-yi:\s*#fff/);
-  assert.match(css, /--yc-entry-capital-a:\s*#6e9af4/);
-  assert.match(css, /--yc-entry-capital-b:\s*#b54bfa/);
+  assert.match(css, /--yc-entry-word:\s*#f5f2ea/);
+  assert.match(css, /--yc-entry-accent:\s*#75a7ff/);
+  assert.match(css, /yicapital-mark-reverse\.svg/);
+  assert.doesNotMatch(css, /--yc-entry-capital-(?:a|b)/);
 });
