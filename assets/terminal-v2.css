@@ -814,6 +814,7 @@
   .terminal-command{grid-template-columns:auto minmax(0,1fr) auto}
   .terminal-home-mark{width:auto;min-width:72px;height:38px;padding:0 6px}
   .terminal-home-mark .logo{font-size:12px}
+  .terminal-home-mark .logo::before{display:none}
   .terminal-search-results{
     position:fixed;top:50px;left:6px;right:6px;width:auto;max-height:calc(100dvh - 86px);border-radius:3px;
   }
@@ -831,7 +832,6 @@
   .terminal-command{grid-template-columns:64px minmax(0,1fr) auto}
   .terminal-home-mark{min-width:64px;padding:0 4px}
   .terminal-home-mark .logo{font-size:10.5px;letter-spacing:-.4px}
-  .terminal-home-mark .logo::before{width:15px;height:17px}
   .terminal-search-result{grid-template-columns:minmax(0,1fr) auto}
   .terminal-search-result-type{display:none}
   .terminal-market-snapshot{grid-template-columns:1fr 1fr}

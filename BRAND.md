@@ -10,8 +10,9 @@ The YiCapital logo is the frozen nonlinear-pendulum identity.
 - One continuous open blue arc starts at the terminal mass and rises around the
   right side. It never closes, crosses itself, loops, or becomes a circle.
 - The wordmark is `YiCapital`, with no space and no gradient.
-- The symbol sits to the left of the wordmark. Compact surfaces may use the
-  symbol alone.
+- The symbol sits to the left of the wordmark. If a compact interface cannot
+  fit both without crowding, retain the solid `YiCapital` wordmark and omit the
+  symbol. Standalone symbols are reserved for icon surfaces such as favicons.
 
 ## Color
 

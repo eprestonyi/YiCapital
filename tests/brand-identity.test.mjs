@@ -51,6 +51,7 @@ test('shared webpage lockups use the canonical mark and a solid accessible wordm
   assert.match(site, /\.logo b\{[^}]*color:inherit[^}]*background:none/);
   assert.match(entry, /\.yc-entry-logo b\s*\{[^}]*color:\s*inherit;[^}]*background:\s*none/);
   assert.match(terminal, /\.terminal-home-mark \.logo b\{[^}]*color:inherit[^}]*background:none/);
+  assert.match(terminal, /@media\(max-width:760px\)[\s\S]*?\.terminal-home-mark \.logo::before\{display:none\}/);
   assert.doesNotMatch(site, /--brand-(?:yi|capital)/);
   assert.doesNotMatch(entry, /--yc-entry-(?:yi|capital)/);
 });
@@ -74,7 +75,7 @@ test('entry, terminal and shared styles carry the current cache key', async () =
       assert.match(html, /yc-entry\.css\?v=20260802a/);
     }
     if (html.includes('terminal-v2.css')) {
-      assert.match(html, /terminal-v2\.css\?v=20260802a/);
+      assert.match(html, /terminal-v2\.css\?v=20260802b/);
     }
     if (html.includes('og-entry.png')) {
       assert.doesNotMatch(html, /og-entry\.png["<]/);

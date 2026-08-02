@@ -17,6 +17,7 @@ const terminalPages = [
     titleToken: '易終端',
     navLabel: '易終端',
     assetPrefix: 'assets/',
+    homePath: '/?dashboard=1',
   },
   {
     file: 'cn/terminal.html',
@@ -25,6 +26,7 @@ const terminalPages = [
     titleToken: '易终端',
     navLabel: '易终端',
     assetPrefix: '../assets/',
+    homePath: '/cn/?dashboard=1',
   },
   {
     file: 'en/terminal.html',
@@ -33,6 +35,7 @@ const terminalPages = [
     titleToken: 'Terminal',
     navLabel: 'Terminal',
     assetPrefix: '../assets/',
+    homePath: '/en/?dashboard=1',
   },
 ];
 
@@ -180,7 +183,7 @@ test('the three localized Terminal pages have the correct shell and asset paths'
         classNames(anchor).has('terminal-home-mark'),
       );
       assert.equal(homeMarks.length, 1, `${page.file} must contain one compact Terminal home mark`);
-      assert.equal(attribute(homeMarks[0], 'href'), 'terminal');
+      assert.equal(attribute(homeMarks[0], 'href'), page.homePath);
       assert.equal(textContent(homeMarks[0]), 'YiCapital');
       assert.match(
         homeMarks[0],
