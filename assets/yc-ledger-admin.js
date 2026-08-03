@@ -5,6 +5,17 @@
   const { api, $ } = window.YCAdmin;
   const MAX_FILE_BYTES = 8 * 1024 * 1024;
   const MAX_IMPORT_ROWS = 280;
+  const MAX_LEGACY_JSON_BYTES = 2 * 1024 * 1024;
+  const MAX_LEGACY_EVENTS = 120;
+  const MAX_LEGACY_NAV_ROWS = 800;
+  const MAX_LEGACY_PRICE_ROWS = 500;
+  const LEGACY_ACKS = [
+    { key: 'negativeCash', input: 'legacy-ack-negative-cash', row: 'legacy-ack-negative-cash-row', state: 'legacy-ack-negative-cash-state' },
+    { key: 'duplicates', input: 'legacy-ack-duplicates', row: 'legacy-ack-duplicates-row', state: 'legacy-ack-duplicates-state' },
+    { key: 'unknownTax', input: 'legacy-ack-unknown-tax', row: 'legacy-ack-unknown-tax-row', state: 'legacy-ack-unknown-tax-state' },
+    { key: 'historicalNav', input: 'legacy-ack-historical-nav', row: 'legacy-ack-historical-nav-row', state: 'legacy-ack-historical-nav-state' },
+    { key: 'historicalPrices', input: 'legacy-ack-historical-prices', row: 'legacy-ack-historical-prices-row', state: 'legacy-ack-historical-prices-state' },
+  ];
   const PORTFOLIOS = {
     us: { label: 'Yi Capital US', currency: 'USD', template: 'assets/data/Yi_Capital_US.xlsx', file: 'Yi_Capital_US.xlsx' },
     hk: { label: 'Yi Capital HK', currency: 'HKD', template: 'assets/data/Yi_Capital_HK.xlsx', file: 'Yi_Capital_HK.xlsx' },
@@ -121,6 +132,8 @@
     portfolio: 'us', ledger: null, pending: [], confirmed: [], ledgerRevision: 0,
     importFile: null, importBuffer: null, importHash: null, importParsed: null,
     importPreview: null, importId: null, importExpectedRevision: null,
+    legacyPackage: null, legacyPreview: null, legacyImportId: null,
+    legacyMigrationHash: null, legacyRequirements: null, legacyConfirmed: false,
   };
 
   function field(name, label, type, options) {
@@ -243,6 +256,14 @@
     $('import-file').addEventListener('change', event => prepareImport(event.target.files && event.target.files[0]));
     $('preview-import').addEventListener('click', previewImport);
     $('confirm-import').addEventListener('click', confirmImport);
+    $('legacy-json').addEventListener('input', invalidateLegacyPackage);
+    $('parse-legacy').addEventListener('click', parseLegacyMigrationPackage);
+    $('clear-legacy').addEventListener('click', () => clearLegacyMigration());
+    $('preview-legacy').addEventListener('click', previewLegacyMigration);
+    $('legacy-confirm-phrase').addEventListener('input', updateLegacyConfirmation);
+    LEGACY_ACKS.forEach(item => $(item.input).addEventListener('change', updateLegacyConfirmation));
+    $('confirm-legacy').addEventListener('click', confirmLegacyMigration);
+    $('drain-legacy-outbox').addEventListener('click', drainLegacyOutbox);
     bindDropzone();
     renderEventFields();
     updateTax();
@@ -254,6 +275,7 @@
     document.querySelectorAll('#portfolio-tabs button').forEach(button => button.classList.toggle('on', button.dataset.portfolio === portfolio));
     resetForm();
     clearImport();
+    clearLegacyMigration();
     await loadLedger();
   }
 
@@ -1613,6 +1635,359 @@
     } catch (error) {
       log.textContent = '✗ ' + error.message + '；若 Revision 已變，請重新建立預覽。';
       button.disabled = false;
+    }
+  }
+
+  function legacyExpectedPhrase(portfolio) {
+    return `CONFIRM LEGACY ${String(portfolio || state.portfolio).toUpperCase()}`;
+  }
+
+  function legacyMessageText(value) {
+    if (typeof value === 'string') return value.slice(0, 600);
+    if (!value || typeof value !== 'object') return String(value || '未提供詳情').slice(0, 600);
+    const code = first(value, ['code', 'type', 'kind'], '');
+    const message = first(value, ['message', 'warning', 'error', 'reason', 'detail'], '');
+    const fallback = (() => { try { return JSON.stringify(value); } catch (error) { return '無法顯示詳情'; } })();
+    return [code, message].filter(Boolean).join(' · ').slice(0, 600) || fallback.slice(0, 600);
+  }
+
+  function renderLegacyStats(host, items) {
+    host.replaceChildren();
+    items.forEach(([label, value]) => {
+      const item = el('div');
+      item.append(el('b', '', value), el('span', '', label));
+      host.append(item);
+    });
+  }
+
+  function renderLegacyMessages(host, errors, warnings) {
+    host.replaceChildren();
+    (errors || []).forEach(message => host.append(el('div', 'err', legacyMessageText(message))));
+    (warnings || []).slice(0, 20).forEach(message => host.append(el('div', '', legacyMessageText(message))));
+    if ((warnings || []).length > 20) {
+      host.append(el('div', '', `另有 ${(warnings || []).length - 20} 項 warning，完整內容仍保留在本地 package／後台 Preview。`));
+    }
+    host.hidden = host.childElementCount === 0;
+  }
+
+  function normalizeLegacyPackage(raw, selectedPortfolio) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('migration JSON 頂層必須是 object。');
+    const issues = [];
+    const schemaVersion = String(first(raw, ['schema_version', 'schemaVersion'], '')).trim();
+    if (schemaVersion !== 'legacy-ledger-migration-v1') issues.push('schema_version 必須嚴格等於 legacy-ledger-migration-v1。');
+    const portfolio = String(first(raw, ['portfolio_id', 'portfolioId', 'portfolio'], '')).trim().toLowerCase();
+    if (!PORTFOLIOS[portfolio]) issues.push('portfolio 必須是 us、hk 或 a。');
+    else if (portfolio !== selectedPortfolio) issues.push(`package 屬於 ${portfolio.toUpperCase()}，目前頁面選中 ${selectedPortfolio.toUpperCase()}。`);
+    const currency = String(first(raw, ['currency'], '')).trim().toUpperCase();
+    if (currency && currency !== PORTFOLIOS[selectedPortfolio].currency) {
+      issues.push(`package currency ${currency} 與目前基金 ${PORTFOLIOS[selectedPortfolio].currency} 不一致。`);
+    }
+
+    const sourceWorkbookSha256 = String(first(raw, ['source_workbook_sha256', 'sourceWorkbookSha256'], '')).trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(sourceWorkbookSha256)) issues.push('source_workbook_sha256 必須是 64 位小寫 hex。');
+
+    const events = first(raw, ['events'], null);
+    if (!Array.isArray(events)) throw new Error('events 必須是 array。');
+    if (!events.length) issues.push('events 不可為空。');
+    if (events.length > MAX_LEGACY_EVENTS) issues.push(`events 超過後台單次上限 ${MAX_LEGACY_EVENTS}。`);
+
+    const historicalNavRows = first(raw, ['historical_nav_rows', 'historicalNavRows'], []);
+    const historicalPriceRows = first(raw, ['historical_price_rows', 'historicalPriceRows'], []);
+    if (!Array.isArray(historicalNavRows)) throw new Error('historical_nav_rows 必須是 array。');
+    if (!Array.isArray(historicalPriceRows)) throw new Error('historical_price_rows 必須是 array。');
+    if (historicalNavRows.length > MAX_LEGACY_NAV_ROWS) issues.push(`historical_nav_rows 超過上限 ${MAX_LEGACY_NAV_ROWS}。`);
+    if (historicalPriceRows.length > MAX_LEGACY_PRICE_ROWS) issues.push(`historical_price_rows 超過上限 ${MAX_LEGACY_PRICE_ROWS}。`);
+
+    const warnings = first(raw, ['warnings'], []);
+    const blockingErrors = first(raw, ['blocking_errors', 'blockingErrors'], []);
+    if (!Array.isArray(warnings)) throw new Error('warnings 必須是 array。');
+    if (!Array.isArray(blockingErrors)) throw new Error('blocking_errors 必須是 array。');
+
+    const declaredEventCount = asNumber(first(raw, ['event_count', 'eventCount'], events.length), NaN);
+    const declaredWarningCount = asNumber(first(raw, ['warning_count', 'warningCount'], warnings.length), NaN);
+    const declaredBlockingCount = asNumber(first(raw, ['blocking_error_count', 'blockingErrorCount'], blockingErrors.length), NaN);
+    const declaredNavRowCount = asNumber(first(raw, ['historical_nav_row_count', 'historicalNavRowCount'], historicalNavRows.length), NaN);
+    const declaredPriceRowCount = asNumber(first(raw, ['historical_price_row_count', 'historicalPriceRowCount'], historicalPriceRows.length), NaN);
+    if (!Number.isInteger(declaredEventCount) || declaredEventCount !== events.length) issues.push(`event_count 與 events 長度不一致（${declaredEventCount} / ${events.length}）。`);
+    if (!Number.isInteger(declaredWarningCount) || declaredWarningCount !== warnings.length) issues.push(`warning_count 與 warnings 長度不一致（${declaredWarningCount} / ${warnings.length}）。`);
+    if (!Number.isInteger(declaredBlockingCount) || declaredBlockingCount !== blockingErrors.length) issues.push(`blocking_error_count 與 blocking_errors 長度不一致（${declaredBlockingCount} / ${blockingErrors.length}）。`);
+    if (!Number.isInteger(declaredNavRowCount) || declaredNavRowCount !== historicalNavRows.length) issues.push(`historical_nav_row_count 與 historical_nav_rows 長度不一致（${declaredNavRowCount} / ${historicalNavRows.length}）。`);
+    if (!Number.isInteger(declaredPriceRowCount) || declaredPriceRowCount !== historicalPriceRows.length) issues.push(`historical_price_row_count 與 historical_price_rows 長度不一致（${declaredPriceRowCount} / ${historicalPriceRows.length}）。`);
+
+    const eventIds = new Set();
+    events.forEach((event, index) => {
+      if (!event || typeof event !== 'object' || Array.isArray(event)) {
+        issues.push(`第 ${index + 1} 筆 event 不是 object。`);
+        return;
+      }
+      const eventId = String(first(event, ['event_id', 'eventId'], '')).trim();
+      if (!/^legacy_[a-z]+_[a-f0-9]{16,64}$/.test(eventId)) issues.push(`第 ${index + 1} 筆缺少有效 deterministic legacy event_id。`);
+      else if (eventIds.has(eventId)) issues.push(`package 內重複 event_id：${eventId}`);
+      else eventIds.add(eventId);
+    });
+
+    const readyForConfirm = first(raw, ['ready_for_confirm', 'readyForConfirm'], false) === true;
+    if (!readyForConfirm) issues.push('ready_for_confirm 不是 true。');
+    if (blockingErrors.length || declaredBlockingCount > 0) issues.push('package 仍有 blocking errors，禁止 Preview。');
+
+    return {
+      portfolio,
+      sourceWorkbookSha256,
+      eventCount: events.length,
+      warningCount: warnings.length,
+      readyForConfirm,
+      warnings,
+      blockingErrors,
+      issues,
+      eligible: issues.length === 0,
+      payload: {
+        portfolio_id: portfolio,
+        source_workbook_sha256: sourceWorkbookSha256,
+        events: stableClone(events),
+        historical_nav_rows: stableClone(historicalNavRows),
+        historical_price_rows: stableClone(historicalPriceRows),
+      },
+    };
+  }
+
+  function resetLegacyPreview() {
+    state.legacyPreview = null; state.legacyImportId = null; state.legacyMigrationHash = null;
+    state.legacyRequirements = null; state.legacyConfirmed = false;
+    $('legacy-preview').hidden = true;
+    $('legacy-preview-summary').replaceChildren();
+    $('legacy-import-id').textContent = '—'; $('legacy-migration-hash').textContent = '—';
+    $('legacy-preview-messages').replaceChildren(); $('legacy-preview-messages').hidden = true;
+    $('legacy-confirm-phrase').value = ''; $('legacy-confirm-phrase').disabled = false;
+    $('legacy-confirm-phrase').removeAttribute('aria-invalid');
+    $('legacy-required-phrase').textContent = legacyExpectedPhrase(state.portfolio);
+    LEGACY_ACKS.forEach(item => {
+      $(item.input).checked = false; $(item.input).disabled = true;
+      $(item.row).classList.remove('required'); $(item.state).textContent = '待 Preview';
+    });
+    $('confirm-legacy').disabled = true; $('drain-legacy-outbox').disabled = true;
+    $('legacy-confirm-state').textContent = 'Preview 後才可確認。';
+  }
+
+  function clearLegacyMigration() {
+    state.legacyPackage = null;
+    $('legacy-json').value = '';
+    $('legacy-package').hidden = true;
+    $('legacy-package-summary').replaceChildren();
+    $('legacy-source-sha').textContent = '—';
+    $('legacy-package-messages').replaceChildren(); $('legacy-package-messages').hidden = true;
+    $('preview-legacy').disabled = true;
+    resetLegacyPreview();
+    $('legacy-log').textContent = `尚未解析。選擇上方 ${state.portfolio.toUpperCase()} 基金後再貼入對應 package。`;
+  }
+
+  function invalidateLegacyPackage() {
+    if (!state.legacyPackage && !state.legacyPreview) return;
+    state.legacyPackage = null;
+    $('legacy-package').hidden = true; $('preview-legacy').disabled = true;
+    resetLegacyPreview();
+    $('legacy-log').textContent = 'JSON 內容已改動，請重新解析；先前 Preview 已從此頁面失效。';
+  }
+
+  function parseLegacyMigrationPackage() {
+    const text = $('legacy-json').value;
+    const log = $('legacy-log');
+    state.legacyPackage = null;
+    $('legacy-package').hidden = true; $('preview-legacy').disabled = true;
+    resetLegacyPreview();
+    try {
+      if (!text.trim()) throw new Error('請先貼上 migration JSON。');
+      const byteLength = new TextEncoder().encode(text).byteLength;
+      if (byteLength > MAX_LEGACY_JSON_BYTES) throw new Error('migration JSON 超過 2 MiB，已停止處理。');
+      let raw;
+      try { raw = JSON.parse(text); } catch (error) { throw new Error('JSON 格式無效：' + error.message); }
+      const parsed = normalizeLegacyPackage(raw, state.portfolio);
+      state.legacyPackage = parsed;
+      renderLegacyStats($('legacy-package-summary'), [
+        ['PORTFOLIO', parsed.portfolio ? parsed.portfolio.toUpperCase() : 'INVALID'],
+        ['SOURCE SHA', parsed.sourceWorkbookSha256 ? `${parsed.sourceWorkbookSha256.slice(0, 10)}…` : 'INVALID'],
+        ['EVENTS', parsed.eventCount],
+        ['WARNINGS', parsed.warningCount],
+        ['READY', parsed.eligible ? 'YES' : 'NO'],
+      ]);
+      $('legacy-source-sha').textContent = parsed.sourceWorkbookSha256 || '—';
+      renderLegacyMessages($('legacy-package-messages'), [...parsed.blockingErrors, ...parsed.issues], parsed.warnings);
+      $('legacy-package').hidden = false;
+      $('preview-legacy').disabled = !parsed.eligible;
+      log.textContent = parsed.eligible
+        ? `✓ 本地 package 可 Preview · ${parsed.eventCount} events · ${parsed.warningCount} warnings · 內容仍只在此瀏覽器記憶體。`
+        : `✗ 本地 package 未通過核驗，共 ${parsed.blockingErrors.length + parsed.issues.length} 項阻斷。`;
+    } catch (error) {
+      log.textContent = '✗ ' + error.message;
+    }
+  }
+
+  function validateLegacyPreview(result, parsed) {
+    if (!result || result.migration !== true) throw new Error('後台未返回有效 migration Preview。');
+    const importId = String(first(result, ['importId', 'import_id'], '')).trim();
+    const migrationHash = String(first(result, ['migrationHash', 'migration_hash'], '')).trim().toLowerCase();
+    const portfolio = String(first(result, ['portfolio', 'portfolio_id'], '')).trim().toLowerCase();
+    const sourceSha = String(first(result, ['sourceWorkbookSha256', 'source_workbook_sha256'], '')).trim().toLowerCase();
+    const eventCount = asNumber(first(result, ['eventCount', 'event_count'], NaN), NaN);
+    if (!importId) throw new Error('後台 Preview 缺少 importId。');
+    if (!/^[a-f0-9]{64}$/.test(migrationHash)) throw new Error('後台 Preview 缺少有效 migrationHash。');
+    if (portfolio !== parsed.portfolio || sourceSha !== parsed.sourceWorkbookSha256 || eventCount !== parsed.eventCount) {
+      throw new Error('後台 Preview 與本地 package 身份不一致，已停止確認。');
+    }
+    return { importId, migrationHash };
+  }
+
+  async function previewLegacyMigration() {
+    const parsed = state.legacyPackage;
+    if (!parsed || !parsed.eligible || parsed.portfolio !== state.portfolio) return;
+    const button = $('preview-legacy'); const log = $('legacy-log');
+    button.disabled = true; resetLegacyPreview();
+    log.textContent = '正在由後台重放事件、核驗現金鏈與遷移 hash…';
+    try {
+      const result = await api('/api/admin/ledger/migration/preview', {
+        method: 'POST', body: JSON.stringify(parsed.payload),
+      });
+      const receipt = validateLegacyPreview(result, parsed);
+      state.legacyPreview = result;
+      state.legacyImportId = receipt.importId;
+      state.legacyMigrationHash = receipt.migrationHash;
+      state.legacyConfirmed = String(first(result, ['importStatus', 'import_status'], '')).toUpperCase() === 'CONFIRMED';
+      renderLegacyPreview(result);
+      log.textContent = state.legacyConfirmed
+        ? `✓ 此 source SHA 已完成遷移 · Import ${receipt.importId} · 可 Drain Outbox。`
+        : `✓ 後台 Preview 已建立 · Import ${receipt.importId} · 請逐項確認後簽入。`;
+    } catch (error) {
+      log.textContent = '✗ ' + error.message;
+      button.disabled = !state.legacyPackage || !state.legacyPackage.eligible;
+    }
+  }
+
+  function legacyMinorText(value, currency) {
+    const minor = asNumber(value, NaN);
+    if (!Number.isFinite(minor)) return '—';
+    return `${currency || PORTFOLIOS[state.portfolio].currency} ${new Intl.NumberFormat('zh-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(minor / 100)}`;
+  }
+
+  function renderLegacyPreview(result) {
+    const exactDuplicates = Array.isArray(result.exactDuplicates) ? result.exactDuplicates : [];
+    const eventCount = asNumber(first(result, ['eventCount', 'event_count'], 0), 0);
+    const unknownTaxEvents = asNumber(first(result, ['unknownTaxEvents', 'unknown_tax_events'], 0), 0);
+    const historicalNavRowCount = asNumber(first(result, ['historicalNavRowCount', 'historical_nav_row_count'], 0), 0);
+    const historicalPriceRowCount = asNumber(first(result, ['historicalPriceRowCount', 'historical_price_row_count'], 0), 0);
+    const lowestCashMinor = asNumber(first(result, ['lowestCashMinor', 'lowest_cash_minor'], 0), 0);
+    renderLegacyStats($('legacy-preview-summary'), [
+      ['EVENTS', eventCount],
+      ['LOWEST CASH', legacyMinorText(lowestCashMinor, result.currency)],
+      ['DUPLICATES', exactDuplicates.length],
+      ['UNKNOWN TAX', unknownTaxEvents],
+      ['NAV SEEDS', historicalNavRowCount],
+      ['PRICE SEEDS', historicalPriceRowCount],
+    ]);
+    $('legacy-import-id').textContent = state.legacyImportId;
+    $('legacy-migration-hash').textContent = state.legacyMigrationHash;
+    const previewNotes = [];
+    if (result.duplicateUpload === true) previewNotes.push(`相同 portfolio + source SHA 已 Preview；沿用既有 importId（狀態 ${first(result, ['importStatus', 'import_status'], 'UNKNOWN')}）。`);
+    renderLegacyMessages($('legacy-preview-messages'), [], [...previewNotes, ...(Array.isArray(result.warnings) ? result.warnings : [])]);
+    state.legacyRequirements = {
+      negativeCash: lowestCashMinor < 0,
+      duplicates: exactDuplicates.length > 0,
+      unknownTax: unknownTaxEvents > 0,
+      historicalNav: historicalNavRowCount > 0,
+      historicalPrices: historicalPriceRowCount > 0,
+    };
+    LEGACY_ACKS.forEach(item => {
+      const required = state.legacyRequirements[item.key] === true;
+      $(item.input).checked = state.legacyConfirmed && required;
+      $(item.input).disabled = !required || state.legacyConfirmed;
+      $(item.row).classList.toggle('required', required);
+      $(item.state).textContent = required ? (state.legacyConfirmed ? '已確認' : '必須勾選') : '不適用';
+    });
+    const phrase = legacyExpectedPhrase(result.portfolio);
+    $('legacy-required-phrase').textContent = phrase;
+    $('legacy-confirm-phrase').value = state.legacyConfirmed ? phrase : '';
+    $('legacy-confirm-phrase').disabled = state.legacyConfirmed;
+    $('legacy-preview').hidden = false;
+    updateLegacyConfirmation();
+  }
+
+  function legacyAcknowledgement() {
+    return Object.fromEntries(LEGACY_ACKS.map(item => [item.key, $(item.input).checked === true]));
+  }
+
+  function updateLegacyConfirmation() {
+    const button = $('confirm-legacy'); const drain = $('drain-legacy-outbox');
+    const status = $('legacy-confirm-state'); const phraseInput = $('legacy-confirm-phrase');
+    if (!state.legacyPreview || !state.legacyRequirements) {
+      button.disabled = true; drain.disabled = true; status.textContent = 'Preview 後才可確認。';
+      return;
+    }
+    if (state.legacyConfirmed) {
+      button.disabled = true; drain.disabled = false; phraseInput.removeAttribute('aria-invalid');
+      status.textContent = '✓ 遷移已確認，賬本已刷新；可執行 Drain Outbox。';
+      return;
+    }
+    const missing = LEGACY_ACKS.filter(item => state.legacyRequirements[item.key] && !$(item.input).checked);
+    const expectedPhrase = legacyExpectedPhrase(state.portfolio);
+    const phraseOk = phraseInput.value === expectedPhrase;
+    phraseInput.setAttribute('aria-invalid', String(phraseInput.value.length > 0 && !phraseOk));
+    button.disabled = missing.length > 0 || !phraseOk || !state.legacyImportId || !state.legacyMigrationHash;
+    drain.disabled = true;
+    if (missing.length) status.textContent = `還需勾選 ${missing.length} 項必要確認。`;
+    else if (!phraseOk) status.textContent = `還需逐字輸入 ${expectedPhrase}。`;
+    else status.textContent = '全部條件已滿足，可確認首次遷移。';
+  }
+
+  async function confirmLegacyMigration() {
+    updateLegacyConfirmation();
+    const button = $('confirm-legacy'); const log = $('legacy-log');
+    if (button.disabled || !state.legacyImportId || !state.legacyMigrationHash) return;
+    button.disabled = true; log.textContent = '正在以 migrationHash 原子簽入不可變事件…';
+    try {
+      const result = await api('/api/admin/ledger/migration/confirm', {
+        method: 'POST',
+        body: JSON.stringify({
+          importId: state.legacyImportId,
+          migrationHash: state.legacyMigrationHash,
+          acknowledgement: {
+            phrase: $('legacy-confirm-phrase').value,
+            ...legacyAcknowledgement(),
+          },
+        }),
+      });
+      const portfolio = String(first(result, ['portfolio', 'portfolio_id'], '')).toLowerCase();
+      const migrationHash = String(first(result, ['migrationHash', 'migration_hash'], '')).toLowerCase();
+      if (portfolio !== state.portfolio || migrationHash !== state.legacyMigrationHash) throw new Error('Confirm 收據身份不一致，請立即停止後續操作。');
+      state.legacyConfirmed = true;
+      LEGACY_ACKS.forEach(item => { $(item.input).disabled = true; });
+      $('legacy-confirm-phrase').disabled = true;
+      log.textContent = `✓ 首次遷移已確認 · ${asNumber(first(result, ['eventCount', 'event_count'], 0), 0)} events · Ledger Revision ${asNumber(first(result, ['ledgerRevision', 'ledger_revision'], 0), 0)}。`;
+      updateLegacyConfirmation();
+      await loadLedger();
+    } catch (error) {
+      log.textContent = '✗ ' + error.message;
+      updateLegacyConfirmation();
+    }
+  }
+
+  async function drainLegacyOutbox() {
+    if (!state.legacyConfirmed) return;
+    const button = $('drain-legacy-outbox'); const log = $('legacy-log');
+    button.disabled = true; $('legacy-confirm-state').textContent = '正在處理 REBUILD_KV / RECALC_NAV / REBUILD_EXCEL…';
+    try {
+      const result = await api('/api/admin/ledger/outbox', {
+        method: 'POST', body: JSON.stringify({ portfolio: state.portfolio }),
+      });
+      const rows = Array.isArray(result.results) ? result.results : [];
+      const failed = rows.filter(item => item && item.ok === false);
+      const processed = asNumber(first(result, ['processed'], rows.length), rows.length);
+      log.textContent = failed.length
+        ? `✗ Outbox 已處理 ${processed} 項，其中 ${failed.length} 項失敗；請按錯誤重試。`
+        : `✓ Outbox drain 完成 · processed ${processed}${processed === 0 ? '（目前沒有待處理項）' : ''}。`;
+      await loadLedger();
+    } catch (error) {
+      log.textContent = '✗ Outbox drain 失敗：' + error.message;
+    } finally {
+      button.disabled = !state.legacyConfirmed;
+      $('legacy-confirm-state').textContent = state.legacyConfirmed ? '遷移已確認；可再次 Drain 檢查剩餘項。' : 'Preview 後才可確認。';
     }
   }
 
