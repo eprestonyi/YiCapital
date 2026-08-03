@@ -14,7 +14,14 @@
   async function api(path, opts = {}) {
     const r = await fetch(API + path, { ...opts, headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOK(), ...(opts.headers || {}) } });
     const j = await r.json().catch(() => ({ error: '響應解析失敗' }));
-    if (r.status === 401) { location.href = 'login'; throw new Error('未登入'); }
+    if (r.status === 401) {
+      ['yc-token', 'yc-role', 'yc-user', 'yc-guest'].forEach(k => {
+        localStorage.removeItem(k);
+        sessionStorage.removeItem(k);
+      });
+      location.href = 'login';
+      throw new Error('未登入');
+    }
     if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     return j;
   }

@@ -1,15 +1,20 @@
-Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Terminal Atlas + 用戶意見 D1）
+Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Password-only Admin + Wrangler ES Module + Terminal Atlas + 用戶意見 D1）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
    Cloudflare 儀表盤 → Storage & Databases → KV → Create namespace
    名稱填 YC_KV → Create
 
-② 創建 Worker
-   Workers & Pages → Create → Create Worker → 隨便命名（如 yicapital-portal）
-   → Deploy → 點 Edit code → 刪掉默認代碼，把 worker.js 全文粘貼進去 → Deploy
-   ⚠ 升級現有網站時也必須先完成這一步，再上傳前端文件；v6 不認得 HK/A
-     的獨立 GitHub 路徑。
+② 創建或升級 Worker
+   本 Worker 由 worker.js、tushare.js、warehouse.js 等多個 ES module 組成，必須在
+   倉庫根目錄依照 wrangler.toml 綁定後由 Wrangler 打包，不能只在 Dashboard 貼上
+   worker.js。部署前先執行：
+     npm test
+     npx wrangler@latest deploy --dry-run --keep-vars
+   確認無誤後執行：
+     npx wrangler@latest deploy --keep-vars
+   新環境需先建立下列 KV/D1 並把 wrangler.toml 內的 id 改成該環境資源；現有環境
+   則直接使用已核對的綁定。
 
 ③ 綁定 KV
    該 Worker → Settings → Bindings → Add → KV namespace
@@ -146,10 +151,9 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Ter
         GOOGLE_CLIENT_ID = 那串 client id
      b. GitHub 上編輯 assets/portal-config.js：
         window.YC_GOOGLE_CLIENT_ID = '那串 client id';
-  5. 如需管理員也可使用 Google，另加 Secret：
-       ADMIN_GOOGLE_EMAILS = 允許的管理員 Google 郵箱
-     多個郵箱用逗號分隔。只有白名單郵箱會取得 admin；其餘 Google 帳號一律是 member。
-  6. 完成。入口會出現 Google 官方按鈕；首次授權會直接建號並寄歡迎信，
+  5. 管理員只允許使用 ADMIN_USERNAME + ADMIN_PASSWORD 登入；Google 僅用於普通用戶，
+     不配置 ADMIN_GOOGLE_EMAILS，也不會把任何 Google 郵箱提升為管理員。
+  6. 完成。普通用戶入口會出現 Google 官方按鈕；首次授權會直接建號並寄歡迎信，
      後續點擊直接登入，不需要再設用戶名或密碼。
 
 ■ 帳號模型（v8.5）

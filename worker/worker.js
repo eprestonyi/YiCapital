@@ -15,7 +15,7 @@ import {
 import { replayPortfolioLedger } from './portfolio-ledger.js';
 
 /* ═══════════════════════════════════════════════════════════════
-   Yi Capital Portal Backend v8.11 — Cloudflare Worker（Terminal Visuals + Atlas）
+   Yi Capital Portal Backend v9.0 — Cloudflare Worker（D1 Ledger + Password-only Admin）
    ─────────────────────────────────────────────────────────────
    帳號模型：
      · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則發 6 位驗證碼）
@@ -55,7 +55,7 @@ import { replayPortfolioLedger } from './portfolio-ledger.js';
      navstatus:{us|hk|a} / bmset:{us|hk|a} / bmstatus:{us|hk|a}
    綁定與密鑰：KV=YC_KV；D1=FEEDBACK_DB；Secrets: ADMIN_USERNAME, ADMIN_PASSWORD,
      GH_TOKEN, TUSHARE_TOKEN, FEEDBACK_RATE_SALT, GOOGLE_CLIENT_ID,
-     ADMIN_GOOGLE_EMAILS,（可選）RESEND_API_KEY；Text: GH_OWNER, GH_REPO,
+     （可選）RESEND_API_KEY；Text: GH_OWNER, GH_REPO,
      GH_BRANCH, GH_PATH, ALLOWED_ORIGIN,（可選）MAIL_FROM
    ═══════════════════════════════════════════════════════════════ */
 
@@ -93,7 +93,14 @@ async function getSession(request, env) {
   const m = (request.headers.get('Authorization') || '').match(/^Bearer\s+([a-f0-9]{64})$/i);
   if (!m) return null;
   const raw = await env.YC_KV.get('sess:' + m[1]);
-  return raw ? { token: m[1], ...JSON.parse(raw) } : null;
+  if (!raw) return null;
+  const session = JSON.parse(raw);
+  // Password-only admin: revoke every legacy Google-admin session at first use.
+  if (session.provider === 'google-admin') {
+    try { await env.YC_KV.delete('sess:' + m[1]); } catch (error) {}
+    return null;
+  }
+  return { token: m[1], ...session };
 }
 async function newSession(env, username, role, details = {}) {
   const token = randomHex(32);
@@ -246,8 +253,6 @@ function feedbackItem(row) {
 
 const isUsername = u => /^[a-zA-Z0-9_\-\u4e00-\u9fff]{2,24}$/.test(u || '');
 const isEmail = e => /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(e || '');
-const adminGoogleAllowed = (env, email) => String(env.ADMIN_GOOGLE_EMAILS || env.ADMIN_GOOGLE_EMAIL || '')
-  .split(',').map(value => value.trim().toLowerCase()).filter(Boolean).includes(String(email || '').toLowerCase());
 
 async function nextGoogleUsername(env, profile) {
   const localPart = String(profile.email || '').split('@')[0];
@@ -1909,7 +1914,7 @@ export default {
           tushare: !!env.TUSHARE_TOKEN,
           terminal_warehouse: !!env.YC_KV,
           admin: !!(env.ADMIN_USERNAME && env.ADMIN_PASSWORD),
-          admin_google: !!(env.ADMIN_GOOGLE_EMAILS || env.ADMIN_GOOGLE_EMAIL),
+          admin_google: false,
           github: !!(env.GH_TOKEN && env.GH_OWNER && env.GH_REPO),
           resend: !!env.RESEND_API_KEY,
           mail_from: !!env.MAIL_FROM,
@@ -1994,7 +1999,7 @@ export default {
         return J(env, { ok: true, token, role: 'guest', username });
       }
 
-      /* ════ Google：老用戶直接登入；新用戶可一鍵建號 ════ */
+      /* ════ Google：只解析普通用戶；管理員僅允許用戶名 + 密碼 ════ */
       if (path === '/api/google' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'google', 30, 900)) return J(env, { error: '登入嘗試過多，請稍後再試' }, 429);
         if (!env.GOOGLE_CLIENT_ID) return J(env, { error: '未配置 Google 登入' }, 501);
@@ -2009,15 +2014,6 @@ export default {
         if (!t.sub || !Number.isFinite(Number(t.exp)) || Number(t.exp) * 1000 <= Date.now()) return J(env, { error: 'Google 憑證已過期' }, 401);
         if (String(t.email_verified) !== 'true' || !t.email) return J(env, { error: 'Google 郵箱未驗證' }, 401);
         const email = t.email.toLowerCase();
-        if (adminGoogleAllowed(env, email)) {
-          const username = env.ADMIN_USERNAME || email;
-          const token = await newSession(env, username, 'admin', {
-            provider: 'google-admin',
-            googleEmail: email,
-            googleSub: String(t.sub),
-          });
-          return J(env, { ok: true, token, role: 'admin', username });
-        }
         const mapped = await env.YC_KV.get('email:' + email);
         if (mapped) {
           const u = JSON.parse(await env.YC_KV.get('user:' + mapped) || 'null');
@@ -2300,9 +2296,6 @@ export default {
       const needAdmin = () => {
         if (!sess) return J(env, { error: '未登入' }, 401);
         if (sess.role !== 'admin') return J(env, { error: '需要管理員權限' }, 403);
-        if (sess.provider === 'google-admin' && !adminGoogleAllowed(env, sess.googleEmail)) {
-          return J(env, { error: 'Google 管理員授權已撤銷，請重新登入' }, 403);
-        }
         return null;
       };
 

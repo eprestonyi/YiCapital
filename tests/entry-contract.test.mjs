@@ -70,12 +70,35 @@ test('worker exposes a compact entry snapshot and keeps external data credential
   assert.doesNotMatch(entryBranch, /slice\(-190\)/);
   assert.doesNotMatch(entryBranch, /navRows:/);
   assert.doesNotMatch(entryBranch, /navStatus/);
-  assert.match(worker, /ADMIN_GOOGLE_EMAILS/);
+  assert.doesNotMatch(worker, /ADMIN_GOOGLE_EMAILS|ADMIN_GOOGLE_EMAIL/);
   assert.match(worker, /verificationCode/);
   assert.doesNotMatch(worker, /Math\.random/);
   assert.doesNotMatch(config, /TUSHARE_TOKEN/);
   assert.doesNotMatch(config, /api_name:\s*['"]index_daily/);
   assert.match(config, /YC_GOOGLE_CLIENT_ID\s*=\s*'[^']+\.apps\.googleusercontent\.com'/);
+});
+
+test('administrator entry is username-password only', async () => {
+  const entry = await read('assets/yc-entry.js');
+  assert.match(entry, /\(authMode === 'login' \|\| authMode === 'signup'\) && !setupToken/);
+  assert.doesNotMatch(entry, /provider:\s*['"]google-admin['"]/);
+});
+
+test('an expired admin session clears browser identity before redirecting', async () => {
+  const admin = await read('assets/yc-admin.js');
+  assert.match(admin, /if \(r\.status === 401\)[\s\S]*localStorage\.removeItem\(k\)[\s\S]*sessionStorage\.removeItem\(k\)[\s\S]*location\.href = 'login'/);
+  for (const page of [
+    'admin.html',
+    'admin-publish.html',
+    'admin-reports.html',
+    'admin-insights.html',
+    'admin-users.html',
+    'admin-mail.html',
+    'admin-inbox.html',
+    'admin-feedback.html',
+  ]) {
+    assert.match(await read(page), /assets\/yc-admin\.js\?v=8\.12/);
+  }
 });
 
 test('static motion modes stop the loop and persistent Dashboard state preserves the entry route', async () => {

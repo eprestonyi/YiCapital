@@ -41,6 +41,7 @@ test('health exposes the feedback store without leaking configuration', async ()
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.version, 'v9.0-d1-ledger');
+  assert.equal(body.admin_google, false);
   assert.equal(body.feedback, true);
   assert.equal(body.ledger, true);
   assert.equal(body.ledger_outbox_pending, 0);
@@ -56,6 +57,7 @@ test('live monitor and public release marker fail closed on the v9 ledger contra
   assert.match(monitor, /health\.version !== 'v9\.0-d1-ledger'/);
   assert.match(monitor, /health\.ledger !== true/);
   assert.match(monitor, /Number\(health\.ledger_outbox_pending\) !== 0/);
+  assert.match(monitor, /health\.admin_google !== false/);
   assert.doesNotMatch(monitor, /health\.version !== 'v8\.11-terminal-visuals'/);
   assert.match(config, /window\.YC_RELEASE = 'v9\.0-d1-ledger'/);
 });
