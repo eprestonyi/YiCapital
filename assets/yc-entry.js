@@ -618,7 +618,8 @@
   }
 
   function updateProviders() {
-    const providersVisible = authMode !== 'reset' && !setupToken;
+    // Administrator authentication is intentionally username/password only.
+    const providersVisible = (authMode === 'login' || authMode === 'signup') && !setupToken;
     divider.style.display = providersVisible ? 'flex' : 'none';
     googleBox.style.display = providersVisible && GCID ? 'flex' : 'none';
     googleNote.style.display = providersVisible && !GCID ? 'block' : 'none';
