@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check worker/worker.js && node --check worker/tushare.js && node --check worker/warehouse.js && node --check assets/yc-entry.js && node --check assets/yc-session.js && node --check assets/yc-atlas-visuals.js && node --check assets/yc-terminal-v2.js && node --check assets/yc-i18n.js && node --check assets/yc-feedback.js && node --check assets/yc-admin.js && node --check scripts/live-health.mjs",
+    "check": "node --check worker/worker.js && node --check worker/tushare.js && node --check worker/warehouse.js && node --check worker/portfolio-ledger.js && node --check worker/ledger-store.js && node --check assets/yc-entry.js && node --check assets/yc-session.js && node --check assets/yc-atlas-visuals.js && node --check assets/yc-terminal-v2.js && node --check assets/yc-i18n.js && node --check assets/yc-feedback.js && node --check assets/yc-admin.js && node --check assets/yc-ledger-admin.js && node --check scripts/live-health.mjs && node --check scripts/migrate-legacy-ledgers.mjs",
     "test": "npm run check && node --test tests/*.test.mjs",
     "smoke:live": "node scripts/live-health.mjs"
   }

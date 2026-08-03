@@ -1,4 +1,4 @@
-Cloudflare Worker v8.11 部署步驟（Terminal Visuals + Atlas + 全歷史入口 + Google 一鍵註冊 + 用戶意見 D1）
+Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Terminal Atlas + 用戶意見 D1）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
@@ -15,14 +15,19 @@ Cloudflare Worker v8.11 部署步驟（Terminal Visuals + Atlas + 全歷史入�
    該 Worker → Settings → Bindings → Add → KV namespace
    Variable name 填 YC_KV，Namespace 選剛建的 → Save
 
-③-B 創建及初始化 D1（用戶意見 user log）
+③-B 創建及初始化 D1（用戶意見 + 投資組合事件賬本）
    Cloudflare 儀表盤 → Storage & Databases → D1 → Create database
    名稱填 yicapital-feedback。
    Worker → Settings → Bindings → Add → D1 database
    Variable name 填 FEEDBACK_DB，Database 選 yicapital-feedback。
    使用倉庫的 wrangler.toml 部署時，執行：
      npx wrangler d1 migrations apply FEEDBACK_DB --remote
-   這會套用 migrations/0001_user_feedback.sql；不要把用戶意見存入公開 GitHub 文件。
+   這會依次套用 migrations/0001_user_feedback.sql 與
+   migrations/0002_portfolio_ledger.sql。不要把用戶意見、投資組合事件或稅務
+   資料存入公開 GitHub 文件。
+
+   v9 過渡期可讓事件賬本與 user log 共用 FEEDBACK_DB。若另建專用 D1，綁定名
+   必須是 LEDGER_DB；Worker 會優先使用 LEDGER_DB，未配置時才回退 FEEDBACK_DB。
 
 ④ 配置密鑰與變量（Settings → Variables and Secrets）
    【Secret 類型（加密）】
@@ -68,20 +73,34 @@ Cloudflare Worker v8.11 部署步驟（Terminal Visuals + Atlas + 全歷史入�
 
 ⑥ 驗收
    你的域名/login.html → Admin Login 用 ④ 設的帳密登入 → 進入後台
-   → 在「基金組合」選 US / HK / A → 拖入對應工作簿 → 發布
-   → 約 1 分鐘後首頁、組合頁和完整 US 檔案頁更新
+   → 進入「事件賬本」，依次選 US / HK / A：人工新增只測 BUY / SELL / CAPITAL；
+     股息、公司行動、負債與基金行動必須以自動 source record 進 Pending，再驗證
+     修改/扣稅/Confirm。Excel 可新建的仍只限 BUY / SELL / CAPITAL；已由後台簽名
+     導出的其他既有事件可反向 UPDATE，但也只會重新進 Pending
+   → Confirm 後應自動完成最早受影響日起的全歷史 Cash / Position / Liability /
+     Units / NAV 重算，然後重建 KV 與 Excel；outbox 最終應回到 0
+   → 首頁、組合頁和完整 US/HK/A 檔案頁仍讀取原有 KV 合同
    → Guest Sign up 註冊一個測試號 → 後台「帳號管理」應能看到並可停用/重置/刪除
    → 任一公開頁右下角提交一條測試意見 → admin-feedback 應顯示該條記錄，
      可更新狀態、優先級、處理備註及關聯 Issue / PR / 修復版本
 
 修改管理員密碼：回到 ④ 改 ADMIN_PASSWORD 這個 Secret 即可，即刻生效。
 
-附：v8.2 自動淨值與基準行情（v8.5 完整保留）
-  · POST /api/ledger 保存三個組合的持倉、現金、負債與總份額。
-  · 首次發布亦把 NAV 歷史寫入 KV，後台生成完整分析快照；公開 GET 只讀 KV，
-    不在訪客請求時抓行情、讀 Excel 或即時計算。
-  · 每日 Cron 以實際收盤行情計算市場價值、總資產、淨值與每份 NAV；
-    Excel 的 NAV Statement 只保留歷史曲線，不再要求每日手工上傳。
+附：v9 D1 事件賬本、自動淨值與基準行情
+  · D1 的 ledger_events 是唯一真源；公开 GET 只读 KV，不在访客请求时读 Excel。
+  · POST /api/ledger 默认返回 410，只可在紧急回退时显式设置
+    ALLOW_LEGACY_LEDGER_UPLOAD=true；正常运作绝不可设置。
+  · 人工只可新增 BUY、SELL、CAPITAL；股息、公司行动、负债及基金行动必须由
+    Broker/custodian/后台任务自动写 source record 后进入 Pending。所有 Pending 均可
+    修改，现金事件可补扣税资料，Confirm 后才写 immutable event。
+  · Amount 是现金链与买入成本/卖出收入的唯一真相；Price 只作参考，gross/tax/fee
+    是审计拆分，不得在 Amount 之外再次扣减。负现金只显示 warning，不阻断 Confirm。
+  · 公司行动只记录原股变成哪些新 ticker 及绝对数量；单输出继承全部成本，多输出
+    按行动日起七日内首个收盘价的 `Post Qty × Close` 自动分配，全部无价时成本归第
+    一个输出并 warning。公司行动 Cash 独立进入现金链。
+  · Confirm 立即由 outbox 全历史重算现金、持仓、负债、份额与 NAV；每日 Cron 再以
+    实际收盘行情更新。Excel 四张 derived statements 只展示后台计算结果，不是
+    operational seed，也不要求每日手工上传。
   · GET /api/benchmark?set=us：S&P 500 / NASDAQ / DOW
   · GET /api/benchmark?set=hk：恒生指數 HSI / 恒生科技指數 HKTECH
   · GET /api/benchmark?set=a：滬深 300（只使用 Tushare；失敗時讀取上一份
@@ -97,9 +116,18 @@ Cloudflare Worker v8.11 部署步驟（Terminal Visuals + Atlas + 全歷史入�
      30 10 * * *   北京 18:30 以官方 EOD 對賬 HK/A + 三隻港股 ETF/滬深300
 
 ⑧ 首次啟用
-   部署 v8.11 後，在 admin-publish 依次發布 US、HK、A 三份工作簿各一次，
-   再點「立即刷新後台緩存」預熱三市場行情與基準。
-   以後只有交易、出入金、股息、公司行動或負債改變時才需重新發布。
+   先按 docs/PORTFOLIO_LEDGER.md 的遷移門禁，把三份舊工作簿轉成 canonical JSON，
+   在 preview 环境重放并对账后再导入 production D1。确认三本的事件数、现金、
+   份额、持仓和 NAV 一致，再从「事件账本」确认 outbox 与三市场行情预热。
+   在任何 production migration/import 前先记录 D1 Time Travel bookmark；导入确认
+   必须显式确认 duplicates 与 unknownTax，并输入服务端真实确认短语：
+   CONFIRM LEGACY US / CONFIRM LEGACY HK / CONFIRM LEGACY A。负现金只作 warning；
+   Asset Position、Liability Statement、Cash Flow Statement、NAV Statement 只用于
+   parity 核验，不得作为 operational seed。SPGI → SPGI + MBGL 由七日首价规则自动
+   分配，不要求 Form 8937，也不是 migration blocker。
+   不要再通过 admin-publish 或 GitHub 工作簿更新投资组合；Excel 只从数据库导出，
+   上传可为 BUY / SELL / CAPITAL 新建事实，也可修改带签名元数据的既有事件；两者
+   都必须经过 Preview → Pending → Confirm，四张 derived statements 永不反写。
 
 ════════ 可選登入方式（v6 新增）════════
 

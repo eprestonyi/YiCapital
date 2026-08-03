@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/favicon.svg?v=20260802a" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260802a">
+<title>投資組合賬本 ｜ Admin ｜ YiCapital</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css?v=20260802a">
+<script src="assets/portal-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
+<script src="assets/yc-admin.js"></script>
+<style>
+  .ledger-switch{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+  .ledger-switch button{background:var(--bg);border:1px solid var(--line);border-radius:999px;color:#9aa7ba;
+    cursor:pointer;font-family:var(--mono);font-size:12px;padding:9px 16px}
+  .ledger-switch button.on{background:var(--cyan);border-color:var(--cyan);color:#04070d;font-weight:700}
+  .ledger-summary{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-bottom:22px}
+  .ledger-stat{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:17px 18px}
+  .ledger-stat b{color:#fff;display:block;font-family:var(--sans);font-size:23px;margin-bottom:5px}
+  .ledger-stat span{color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.65px}
+  .ledger-grid{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(340px,.88fr);gap:22px;align-items:start}
+  .ledger-stack{display:grid;gap:16px}
+  .ledger-card{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:18px}
+  .ledger-card[data-kind="CONFLICT"],.import-op.conflict{border-left:3px solid #fbbf24}
+  .ledger-card[data-kind="ERROR"],.import-op.error{border-left:3px solid var(--down)}
+  .ledger-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .ledger-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .ledger-pill{border:1px solid var(--line);border-radius:999px;color:#aeb9c8;font-family:var(--mono);font-size:10px;padding:3px 9px}
+  .ledger-pill.pending{border-color:rgba(34,211,238,.45);color:var(--cyan)}
+  .ledger-pill.create{border-color:rgba(74,222,128,.45);color:var(--up)}
+  .ledger-pill.update{border-color:rgba(96,165,250,.55);color:#93c5fd}
+  .ledger-pill.conflict{border-color:rgba(251,191,36,.55);color:#fbbf24}
+  .ledger-pill.error{border-color:rgba(248,113,113,.55);color:var(--down)}
+  .ledger-meta{color:var(--muted);font-family:var(--mono);font-size:10.5px;line-height:1.75;margin-top:8px}
+  .ledger-payload{display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:8px 12px;margin-top:14px}
+  .ledger-kv{background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.055);border-radius:6px;padding:9px 10px;min-width:0}
+  .ledger-kv small{color:var(--muted);display:block;font-family:var(--mono);font-size:9.5px;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis}
+  .ledger-kv span{color:#e6ebf3;display:block;font-size:12.5px;overflow-wrap:anywhere}
+  .ledger-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:15px;padding-top:14px;border-top:1px solid var(--line)}
+  .ledger-review{display:grid;grid-template-columns:1fr auto;gap:8px;width:100%}
+  .ledger-review input,.ledger-review select,.ledger-form input,.ledger-form select,.ledger-form textarea,
+  .import-controls input,.import-controls select{background:var(--bg);border:1px solid var(--line);border-radius:7px;box-sizing:border-box;color:var(--txt);font-family:var(--zh);font-size:13px;padding:10px 12px;width:100%}
+  .ledger-review .negative{align-items:center;color:var(--muted);display:flex;font-family:var(--mono);font-size:10.5px;gap:7px;white-space:nowrap}
+  .ledger-review .negative input{width:auto}
+  .ledger-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px}
+  .ledger-field{min-width:0}
+  .ledger-field.full{grid-column:1/-1}
+  .ledger-field label{color:var(--muted);display:block;font-family:var(--mono);font-size:10px;letter-spacing:.65px;margin-bottom:6px}
+  .ledger-form textarea{min-height:80px;resize:vertical}
+  .tax-box{background:rgba(34,211,238,.025);border:1px solid rgba(34,211,238,.18);border-radius:8px;grid-column:1/-1;padding:14px}
+  .tax-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}
+  .tax-result{color:var(--cyan);font-family:var(--mono);font-size:11px;margin-top:10px}
+  .form-actions{align-items:center;display:flex;gap:10px;grid-column:1/-1;flex-wrap:wrap}
+  .form-state{color:var(--muted);font-family:var(--mono);font-size:11px}
+  .danger-solid{background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.48);border-radius:6px;color:var(--down);cursor:pointer;font-family:var(--mono);font-size:11px;padding:8px 13px}
+  .sync-row{align-items:center;display:flex;gap:10px;flex-wrap:wrap}
+  .sync-note{color:var(--muted);font-size:12.5px;line-height:1.75;margin:10px 0 16px}
+  .sync-log{margin-top:14px}
+  .drop2 strong{color:#dbe4f0;display:block;font-family:var(--sans);font-size:15px;margin-bottom:7px}
+  .drop2 small{display:block;line-height:1.7}
+  .import-controls{display:grid;grid-template-columns:1fr 170px;gap:10px;margin:14px 0}
+  .import-summary{display:grid;grid-template-columns:repeat(6,minmax(90px,1fr));gap:8px;margin:14px 0}
+  .import-summary div{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:10px;text-align:center}
+  .import-summary b{color:#fff;display:block;font-family:var(--mono);font-size:17px}
+  .import-summary span{color:var(--muted);font-family:var(--mono);font-size:9px}
+  .import-list{display:grid;gap:10px;margin-top:13px}
+  .import-op{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:13px}
+  .import-op label{align-items:flex-start;cursor:pointer;display:flex;gap:10px}
+  .import-op input[type="checkbox"]{margin-top:3px}
+  .import-diff{color:#cbd5e1;font-family:var(--mono);font-size:10px;line-height:1.65;margin:8px 0 0;max-height:130px;overflow:auto;white-space:pre-wrap}
+  .empty-state{color:var(--muted);font-family:var(--mono);font-size:12px;padding:24px;text-align:center}
+  .sr-only{height:1px;margin:-1px;overflow:hidden;padding:0;position:absolute;width:1px;clip:rect(0,0,0,0)}
+  @media(max-width:1050px){.ledger-grid{grid-template-columns:1fr}.ledger-payload{grid-template-columns:repeat(2,minmax(120px,1fr))}}
+  @media(max-width:760px){.ledger-summary{grid-template-columns:1fr 1fr}.tax-grid{grid-template-columns:1fr 1fr}.import-summary{grid-template-columns:repeat(3,1fr)}}
+  @media(max-width:520px){.ledger-summary,.ledger-form,.tax-grid,.import-controls{grid-template-columns:1fr}.ledger-field.full,.tax-box,.form-actions{grid-column:1}.ledger-payload{grid-template-columns:1fr}.ledger-review{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+
+<header><div class="wrap nav">
+  <a class="logo" href="./">Yi<b>Capital</b></a>
+  <nav><ul id="m"><li><a class="link" href="admin">Admin 總覽</a></li></ul></nav>
+</div></header>
+
+<div class="wrap">
+  <div class="page-hero">
+    <div class="crumb">ADMIN / PORTFOLIO LEDGER</div>
+    <div class="topbar">
+      <h1 style="margin:0"><small>Database First · 可逆 Excel</small>投資組合賬本</h1>
+      <div class="who" id="who"></div>
+    </div>
+    <div id="adminnav"></div>
+  </div>
+
+  <div id="gate" class="card" style="text-align:center;padding:60px">
+    <div class="log dim" style="display:inline-block" id="gatemsg">正在驗證會話…</div>
+  </div>
+
+  <div id="panel" style="display:none">
+    <div class="ledger-switch" id="portfolio-tabs" aria-label="投資組合">
+      <button class="on" type="button" data-portfolio="us">US · USD</button>
+      <button type="button" data-portfolio="hk">HK · HKD</button>
+      <button type="button" data-portfolio="a">A · CNY</button>
+    </div>
+
+    <div class="ledger-summary" id="ledger-summary" aria-live="polite"></div>
+
+    <div class="ledger-grid">
+      <section>
+        <div class="card">
+          <div class="topbar">
+            <h3 style="margin:0">Pending · 待確認事件</h3>
+            <button class="btn2" id="refresh-ledger" type="button">刷新</button>
+          </div>
+          <p class="sync-note">自動交易、股息、公司行動和 Excel 反向變更先停在這裡。修改、扣稅及現金檢查完成後才會寫入正式賬本。</p>
+          <div id="pending-list" class="ledger-stack"><div class="empty-state">載入中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="topbar">
+            <h3 id="form-title" style="margin:0">新增 Pending 事件</h3>
+            <span class="form-state" id="form-mode">MANUAL</span>
+          </div>
+          <form id="event-form" class="ledger-form" novalidate>
+            <input id="edit-pending-id" type="hidden">
+            <input id="edit-version" type="hidden">
+            <div class="ledger-field">
+              <label for="event-type">事件類型</label>
+              <select id="event-type" required>
+                <option value="BUY">Buy · 買入</option>
+                <option value="SELL">Sell · 賣出</option>
+                <option value="DIVIDEND" disabled>Dividend · 自動 Pending</option>
+                <option value="CORPORATE_ACTION" disabled>Corporate Action · 自動 Pending</option>
+                <option value="LIABILITY" disabled>Liability · 自動 Pending</option>
+                <option value="CAPITAL">Capital · 申贖</option>
+                <option value="FUND_ACTION" disabled>Fund Action · 自動 Pending</option>
+              </select>
+            </div>
+            <div class="ledger-field">
+              <label for="trade-date">生效／交易日期</label>
+              <input id="trade-date" type="date" required>
+            </div>
+            <div id="event-fields" class="ledger-field full"><div class="ledger-form" id="event-fields-grid"></div></div>
+
+            <div class="tax-box" id="tax-box">
+              <div class="tax-grid">
+                <div class="ledger-field">
+                  <label for="tax-mode">扣稅方式</label>
+                  <select id="tax-mode">
+                    <option value="NONE">None · 不扣稅</option>
+                    <option value="RATE">Rate · 稅率</option>
+                    <option value="FIXED">Fixed · 固定稅額</option>
+                  </select>
+                </div>
+                <div class="ledger-field">
+                  <label for="gross-amount">毛額</label>
+                  <input id="gross-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
+                </div>
+                <div class="ledger-field" id="tax-rate-wrap">
+                  <label for="tax-rate">稅率 %</label>
+                  <input id="tax-rate" type="number" min="0" max="100" step="0.0001" inputmode="decimal" placeholder="0">
+                </div>
+                <div class="ledger-field" id="tax-amount-wrap">
+                  <label for="tax-amount">稅額</label>
+                  <input id="tax-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
+                </div>
+                <div class="ledger-field">
+                  <label for="fee-amount">Fees</label>
+                  <input id="fee-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
+                </div>
+              </div>
+              <div class="tax-result" id="tax-result">淨額將按事件金額處理。</div>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn" id="save-event" type="submit">加入 Pending</button>
+              <button class="btn2" id="reset-event" type="button">清空</button>
+              <span class="form-state" id="form-status" role="status"></span>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <aside>
+        <div class="card">
+          <h3>Excel 輸出 · Database → Excel</h3>
+          <p class="sync-note">下載與目前三份基金工作簿相同的 11-sheet 可見格式。只輸出已確認事件；Pending 不會進入 Excel。事件行的 ID、版本、hash 及完整稅費 payload 放在隱藏欄，供安全反向同步。</p>
+          <div class="sync-row">
+            <button class="btn" id="export-workbook" type="button">下載確認版 Excel</button>
+            <span class="form-state" id="export-revision"></span>
+          </div>
+          <div class="log sync-log" id="export-log">尚未輸出。</div>
+        </div>
+
+        <div class="card">
+          <h3>Excel 反向同步 · Excel → Database</h3>
+          <p class="sync-note">只讀取 7 張事件 sheet。Asset Position、Liability Statement、Cash Flow、NAV 四張派生表的修改會列為忽略，不會反寫。CREATE / UPDATE 確認後只會進入 Pending，需再逐筆核對稅項才能入賬。</p>
+          <label class="drop2" id="import-drop">
+            <strong>點此或拖入 .xlsx</strong>
+            <small>最大 8 MB · 瀏覽器先算 SHA-256 · 上傳前只做本地解析</small>
+            <input class="sr-only" id="import-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+          </label>
+          <div class="import-controls">
+            <input id="import-file-name" type="text" readonly placeholder="尚未選擇文件">
+            <button class="btn" id="preview-import" type="button" disabled>建立差異預覽</button>
+          </div>
+          <div class="log" id="import-log">選擇文件後才會啟用預覽。</div>
+          <div id="import-preview" style="display:none">
+            <div class="import-summary" id="import-summary"></div>
+            <div class="import-list" id="import-operations"></div>
+            <div class="sync-row" style="margin-top:15px">
+              <button class="btn" id="confirm-import" type="button" disabled>確認所選安全變更</button>
+              <span class="form-state" id="import-selection"></span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<footer><div class="wrap"><div class="logo">Yi<b>Capital</b></div><p>© 2026 Yi Capital.</p></div></footer>
+
+<script src="assets/yc-ledger-admin.js?v=20260803h"></script>
+</body>
+</html>

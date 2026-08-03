@@ -1,7 +1,7 @@
 /* Portal 後端地址 —— 部署 Cloudflare Worker 後把地址填到這裡（一行）
    例如: window.YC_API = 'https://yicapital-portal.你的子域.workers.dev';        */
 window.YC_API = 'https://yicapital-portal.eprestonyi.workers.dev';
-window.YC_RELEASE = 'v8.11-terminal-visuals';
+window.YC_RELEASE = 'v9.0-d1-ledger';
 window.YC_FEATURES = Object.assign({ feedback: true }, window.YC_FEATURES || {});
 
 /* Google 登入（可選）：在 console.cloud.google.com 創建 OAuth Client ID 後填入。

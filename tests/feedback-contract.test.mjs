@@ -16,9 +16,16 @@ function testEnv(overrides = {}) {
       delete: async () => {},
     },
     FEEDBACK_DB: {
-      prepare: () => ({
-        first: async () => ({ count: 3 }),
-      }),
+      prepare: sql => {
+        const result = String(sql).includes('FROM ledger_outbox')
+          ? { pending: 0 }
+          : { count: String(sql).includes("'ledger_portfolios'") ? 12 : 3 };
+        const statement = {
+          bind: () => statement,
+          first: async () => result,
+        };
+        return statement;
+      },
     },
     FEEDBACK_RATE_SALT: 'unit-test-only',
     ALLOWED_ORIGIN: 'https://www.yicapital.co',
@@ -33,10 +40,24 @@ test('health exposes the feedback store without leaking configuration', async ()
   );
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.version, 'v8.11-terminal-visuals');
+  assert.equal(body.version, 'v9.0-d1-ledger');
   assert.equal(body.feedback, true);
+  assert.equal(body.ledger, true);
+  assert.equal(body.ledger_outbox_pending, 0);
   assert.equal(body.feedback_rate_limit, true);
   assert.equal('database_id' in body, false);
+});
+
+test('live monitor and public release marker fail closed on the v9 ledger contract', async () => {
+  const [monitor, config] = await Promise.all([
+    read('scripts/live-health.mjs'),
+    read('assets/portal-config.js'),
+  ]);
+  assert.match(monitor, /health\.version !== 'v9\.0-d1-ledger'/);
+  assert.match(monitor, /health\.ledger !== true/);
+  assert.match(monitor, /Number\(health\.ledger_outbox_pending\) !== 0/);
+  assert.doesNotMatch(monitor, /health\.version !== 'v8\.11-terminal-visuals'/);
+  assert.match(config, /window\.YC_RELEASE = 'v9\.0-d1-ledger'/);
 });
 
 test('health fails closed when the D1 schema is incomplete', async () => {
@@ -217,4 +238,18 @@ test('all three terms pages disclose feedback data handling', async () => {
     assert.match(terms, /2026-07-30/);
     assert.match(terms, /information@yicapital\.co/);
   }
+});
+
+test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fallback', async () => {
+  const [page, ledgerAdmin] = await Promise.all([
+    read('admin-ledger.html'),
+    read('assets/yc-ledger-admin.js'),
+  ]);
+  assert.match(page, /xlsx-js-style@1\.2\.0\/dist\/xlsx\.min\.js/);
+  assert.match(ledgerAdmin, /\['trade_no', 'tradeNo', 'sequence_no', 'sequence'\]/);
+  assert.match(ledgerAdmin, /Hidden:\s*2/);
+  assert.match(ledgerAdmin, /'2F5B7C'/);
+  assert.match(ledgerAdmin, /'D9E2EC'/);
+  assert.match(ledgerAdmin, /\['pre_quantity', 'preQuantity', 'quantity', 'qty'\]/);
+  assert.match(ledgerAdmin, /function corporateActionOutput\(event, field\)/);
 });

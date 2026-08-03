@@ -33,7 +33,11 @@ async function checkPortal() {
   try {
     const response = await fetchChecked(url);
     const health = await response.json();
-    if (health.version !== 'v8.11-terminal-visuals') throw new Error(`unexpected version ${health.version}`);
+    if (health.version !== 'v9.0-d1-ledger') throw new Error(`unexpected version ${health.version}`);
+    if (health.ledger !== true) throw new Error('portfolio D1 ledger schema is unavailable');
+    if (Number(health.ledger_outbox_pending) !== 0) {
+      throw new Error(`portfolio D1 ledger outbox has ${health.ledger_outbox_pending} pending item(s)`);
+    }
     if (health.feedback !== true) throw new Error('feedback D1 binding is unavailable');
     if (health.feedback_rate_limit !== true) throw new Error('feedback rate-limit secret is unavailable');
     if (health.kv !== true) throw new Error('KV binding is unavailable');

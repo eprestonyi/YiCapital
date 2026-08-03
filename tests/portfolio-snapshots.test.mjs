@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -31,6 +32,50 @@ class MockKV {
     this.puts.push({ key, value });
     this.values.set(key, value);
   }
+}
+
+class D1Statement {
+  constructor(database, sql, values = []) {
+    this.database = database;
+    this.sql = sql;
+    this.values = values;
+  }
+
+  bind(...values) { return new D1Statement(this.database, this.sql, values); }
+  async all() { return { results: this.database.prepare(this.sql).all(...this.values) }; }
+  async first() { return this.database.prepare(this.sql).get(...this.values) || null; }
+  async run() {
+    const result = this.database.prepare(this.sql).run(...this.values);
+    return { meta: { changes: Number(result.changes || 0) } };
+  }
+  runInBatch() {
+    const result = this.database.prepare(this.sql).run(...this.values);
+    return { meta: { changes: Number(result.changes || 0) } };
+  }
+}
+
+class D1Database {
+  constructor(sql) {
+    this.database = new DatabaseSync(':memory:');
+    this.database.exec(sql);
+  }
+  prepare(sql) { return new D1Statement(this.database, sql); }
+  async batch(statements) {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const results = statements.map(statement => statement.runInBatch());
+      this.database.exec('COMMIT');
+      return results;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+}
+
+async function ledgerDatabase() {
+  const sql = await readFile(path.join(ROOT, 'migrations/0002_portfolio_ledger.sql'), 'utf8');
+  return new D1Database(sql);
 }
 
 function adapterWith(handler) {
@@ -116,6 +161,19 @@ test('A/HK realtime failures fall back only to the matching Tushare EOD dataset'
     assert.equal(quote.realtime_failure, 'TUSHARE_PERMISSION_DENIED');
     assert.deepEqual(adapter.calls.map(call => call.dataset), [spec.live, spec.eod]);
   }
+});
+
+test('legacy A-share .SS symbols are normalized to Tushare .SH', async () => {
+  const adapter = adapterWith(async (dataset, request) => {
+    assert.equal(dataset, 'rt_k');
+    assert.equal(request.params.ts_code, '600000.SH');
+    return {
+      data: [{ ts_code: '600000.SH', close: 12.5, trade_time: '2026-07-30 15:00:00' }],
+      freshness_class: 'intraday_snapshot',
+    };
+  });
+  const quote = await tusharePortfolioQuote(adapter, '600000.SS', 'a', now);
+  assert.equal(quote.close, 12.5);
 });
 
 test('benchmark refresh replaces legacy sources instead of relabeling them as Tushare', async () => {
@@ -225,6 +283,150 @@ test('a failed portfolio refresh leaves the previous navcache byte-for-byte unch
     kv.puts.map(write => write.key),
     ['navstatus:hk'],
   );
+});
+
+test('dirty historical NAV rows are rebuilt from confirmed events and market-day prices', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  const insertEvent = database.database.prepare(`
+    INSERT INTO ledger_events (
+      event_id, lineage_id, event_version, portfolio_id, ledger_revision,
+      event_type, trade_date, sequence_no, currency, payload_json,
+      source, confirmed_by, confirmed_at
+    ) VALUES (?, ?, 1, 'us', ?, ?, ?, ?, 'USD', ?, 'MANUAL', 'test', 1)
+  `);
+  const capital = {
+    event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-20', shareholder: 'LP1',
+    subscription: '1000.00', redemption: '0', unit_price: '1.00', status: 'confirmed',
+  };
+  const buy = {
+    event_id: 'buy-1', type: 'BUY', date: '2026-07-21', ticker: 'AAA', quantity: 10,
+    gross_amount: '100.00', tax_amount: '0', fee_amount: '0', net_cash: '-100.00',
+    status: 'confirmed',
+  };
+  insertEvent.run('capital-1', 'capital-1', 1, 'CAPITAL', '2026-07-20', 1, JSON.stringify(capital));
+  insertEvent.run('buy-1', 'buy-1', 2, 'BUY', '2026-07-21', 1, JSON.stringify(buy));
+  const kv = new MockKV({
+    'ledger:us': JSON.stringify({
+      market: 'us',
+      portfolio: 'us', currency: 'USD',
+      positions: [{ t: 'AAA', n: 'AAA Inc', q: 10, mv: 100, pnl: 0 }],
+      confirmedEvents: [capital, buy],
+      cash: 900,
+      liability: 0,
+      units: 1000,
+      lastDate: '2026-07-21',
+      lastUnitNav: 1,
+      baseNetValue: 1000,
+      ledgerRevision: 2,
+      navRows: [
+        { date: '2026-07-20', cash: 1000, marketValue: 0, totalAssets: 1000,
+          liability: 0, netValue: 1000, units: 1000, unitNav: 1 },
+        { date: '2026-07-21', cash: 900, marketValue: 100, totalAssets: 1000,
+          liability: 0, netValue: 1000, units: 1000, unitNav: 1 },
+      ],
+      navRecalculationRequired: ['2026-07-20'],
+    }),
+  });
+  const adapter = adapterWith(async (dataset, request) => {
+    assert.equal(dataset, 'us_daily');
+    if (request.params.ts_code === 'SPY') {
+      return { data: [
+        { ts_code: 'SPY', trade_date: '20260720', close: 600 },
+        { ts_code: 'SPY', trade_date: '20260721', close: 601 },
+        { ts_code: 'SPY', trade_date: '20260730', close: 610 },
+      ] };
+    }
+    assert.equal(request.params.ts_code, 'AAA');
+    return {
+      data: [
+        { ts_code: 'AAA', trade_date: '20260721', close: 10 },
+        { ts_code: 'AAA', trade_date: '20260730', close: 12 },
+      ],
+      freshness_class: 'eod',
+      fetched_at: '2026-07-30T21:30:00.000Z',
+    };
+  });
+
+  const status = await updatePortfolioNav(
+    { YC_KV: kv, FEEDBACK_DB: database }, 'us', { adapter, now },
+  );
+  assert.equal(status.fallback, false);
+  assert.equal(status.rebuiltFrom, '2026-07-20');
+  assert.equal(status.appended, '2026-07-30');
+  const rows = database.database.prepare(`
+    SELECT nav_date, cash_minor, market_value_minor, units_micros, unit_nav_micros,
+      ledger_revision FROM ledger_nav_snapshots WHERE portfolio_id = 'us' ORDER BY nav_date
+  `).all();
+  assert.deepEqual(rows.map(row => ({ ...row })), [
+    { nav_date: '2026-07-20', cash_minor: 100000, market_value_minor: 0,
+      units_micros: 1_000_000_000, unit_nav_micros: 1_000_000, ledger_revision: 2 },
+    { nav_date: '2026-07-21', cash_minor: 90000, market_value_minor: 10000,
+      units_micros: 1_000_000_000, unit_nav_micros: 1_000_000, ledger_revision: 2 },
+    { nav_date: '2026-07-30', cash_minor: 90000, market_value_minor: 12000,
+      units_micros: 1_000_000_000, unit_nav_micros: 1_020_000, ledger_revision: 2 },
+  ]);
+  const rebuiltLedger = JSON.parse(kv.values.get('ledger:us'));
+  assert.deepEqual(rebuiltLedger.navRecalculationRequired, []);
+});
+
+test('cash-only portfolio uses a market proxy quote to persist daily NAV', async () => {
+  const kv = new MockKV({
+    'ledger:us': JSON.stringify({
+      market: 'us',
+      positions: [],
+      cash: 1000,
+      liability: 0,
+      units: 1000,
+      lastDate: '2026-07-29',
+      lastUnitNav: 1,
+      baseNetValue: 1000,
+      ledgerRevision: 0,
+      navRecalculationRequired: [],
+    }),
+  });
+  const adapter = adapterWith(async (dataset, request) => {
+    assert.equal(dataset, 'us_daily');
+    assert.equal(request.params.ts_code, 'SPY');
+    return {
+      data: [{ ts_code: 'SPY', trade_date: '20260730', close: 650 }],
+      freshness_class: 'eod',
+      fetched_at: '2026-07-30T21:30:00.000Z',
+    };
+  });
+  const database = await ledgerDatabase();
+
+  const status = await updatePortfolioNav(
+    { YC_KV: kv, FEEDBACK_DB: database },
+    'us',
+    { adapter, now },
+  );
+  assert.equal(status.fallback, false, JSON.stringify(status));
+  assert.equal(status.appended, '2026-07-30');
+  assert.equal(status.marketValue, 0);
+  assert.equal(status.netValue, 1000);
+  assert.deepEqual(adapter.calls.map(call => call.dataset), ['us_daily']);
+
+  const stored = database.database.prepare(`
+    SELECT nav_date, cash_minor, market_value_minor, net_value_minor,
+      units_micros, unit_nav_micros, ledger_revision
+    FROM ledger_nav_snapshots WHERE portfolio_id = 'us'
+  `).get();
+  assert.deepEqual({ ...stored }, {
+    nav_date: '2026-07-30',
+    cash_minor: 100000,
+    market_value_minor: 0,
+    net_value_minor: 100000,
+    units_micros: 1_000_000_000,
+    unit_nav_micros: 1_000_000,
+    ledger_revision: 0,
+  });
+  const live = JSON.parse(kv.values.get('live:us'));
+  assert.deepEqual(live.rows, []);
+  const cache = JSON.parse(kv.values.get('navcache:us'));
+  assert.equal(cache.navRows.at(-1).nav, 1);
 });
 
 test('an unchanged EOD fallback marks the served NAV as the last successful snapshot', async () => {

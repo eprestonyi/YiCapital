@@ -65,7 +65,7 @@
   /* ── 後台導航 ── */
   const NAV = [
     ['admin', '總覽'],
-    ['admin-publish', '發布淨值表'],
+    ['admin-ledger', '事件賬本'],
     ['admin-reports', '研報管理'],
     ['admin-insights', '研究觀點管理'],
     ['admin-users', '帳號管理'],
