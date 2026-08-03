@@ -1971,6 +1971,7 @@
   async function drainLegacyOutbox() {
     if (!state.legacyConfirmed) return;
     const button = $('drain-legacy-outbox'); const log = $('legacy-log');
+    let continuationPending = false;
     button.disabled = true; $('legacy-confirm-state').textContent = '正在處理 REBUILD_KV / RECALC_NAV / REBUILD_EXCEL…';
     try {
       const result = await api('/api/admin/ledger/outbox', {
@@ -1978,16 +1979,26 @@
       });
       const rows = Array.isArray(result.results) ? result.results : [];
       const failed = rows.filter(item => item && item.ok === false);
+      const continuation = rows.find(item => item && item.complete === false && item.ok !== false);
+      continuationPending = result.pending === true || Boolean(continuation);
       const processed = asNumber(first(result, ['processed'], rows.length), rows.length);
-      log.textContent = failed.length
-        ? `✗ Outbox 已處理 ${processed} 項，其中 ${failed.length} 項失敗；請按錯誤重試。`
-        : `✓ Outbox drain 完成 · processed ${processed}${processed === 0 ? '（目前沒有待處理項）' : ''}。`;
+      if (failed.length) {
+        log.textContent = `✗ Outbox 已處理 ${processed} 項，其中 ${failed.length} 項失敗；請按錯誤重試。`;
+      } else if (continuationPending) {
+        const nextPhase = String(first(continuation || {}, ['nextPhase', 'phase'], '下一批'));
+        const batchThrough = String(first(continuation || {}, ['batchThrough'], ''));
+        log.textContent = `↻ 本批已完成 · processed ${processed} · 下一階段 ${nextPhase}${batchThrough ? `（已到 ${batchThrough}）` : ''}；請繼續 Drain。`;
+      } else {
+        log.textContent = `✓ Outbox drain 完成 · processed ${processed}${processed === 0 ? '（目前沒有待處理項）' : ''}。`;
+      }
       await loadLedger();
     } catch (error) {
       log.textContent = '✗ Outbox drain 失敗：' + error.message;
     } finally {
       button.disabled = !state.legacyConfirmed;
-      $('legacy-confirm-state').textContent = state.legacyConfirmed ? '遷移已確認；可再次 Drain 檢查剩餘項。' : 'Preview 後才可確認。';
+      $('legacy-confirm-state').textContent = state.legacyConfirmed
+        ? continuationPending ? '本批已完成；請繼續 Drain 直到全部完成。' : '遷移已確認；可再次 Drain 檢查剩餘項。'
+        : 'Preview 後才可確認。';
     }
   }
 

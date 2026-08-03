@@ -5,12 +5,14 @@ import {
 } from './tushare.js';
 import { createTerminalWarehouseAdapter } from './warehouse.js';
 import {
+  assertLedgerRevision,
   drainLedgerOutbox,
   handleLedgerAdminRequest,
   ledgerHealth,
   materializeLedgerKv,
   persistLedgerValuation,
   persistLedgerValuationBatch,
+  portfolioDerivationState,
 } from './ledger-store.js';
 import { replayPortfolioLedger } from './portfolio-ledger.js';
 
@@ -1174,6 +1176,8 @@ function makePortfolioCache(led, live, status) {
 
   return {
     ok: true, enabled: true, portfolio: led.portfolio, currency: led.currency,
+    ledgerRevision: Number(led.ledgerRevision ?? live.ledgerRevision ??
+      (status && status.ledgerRevision) ?? 0),
     snapshot_id: snapshotId,
     source: sourceMeta.source,
     source_endpoint: sourceMeta.source_endpoint,
@@ -1211,12 +1215,31 @@ async function persistPortfolioCache(env, pf, led, live, status) {
   return cache;
 }
 
+async function restorePortfolioCacheWrites(env, pf, previous, published) {
+  const entries = [
+    ['live:' + pf, previous.live, JSON.stringify(published.live)],
+    ['navstatus:' + pf, previous.status, JSON.stringify(published.status)],
+    ['navcache:' + pf, previous.cache, JSON.stringify(published.cache)],
+  ];
+  await Promise.all(entries.map(async ([key, priorValue, publishedValue]) => {
+    const currentValue = await env.YC_KV.get(key);
+    if (currentValue !== publishedValue) return;
+    if (priorValue == null) {
+      if (typeof env.YC_KV.delete === 'function') await env.YC_KV.delete(key);
+      return;
+    }
+    await env.YC_KV.put(key, priorValue);
+  }));
+}
+
 async function writePortfolioAttempt(env, pf, status) {
   await env.YC_KV.put('navstatus:' + pf, JSON.stringify(status));
   return status;
 }
 
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+const HISTORICAL_NAV_DEFAULT_BATCH_SIZE = 20;
+const HISTORICAL_NAV_MAX_BATCH_SIZE = 50;
 const compactIsoDate = value => String(value || '').slice(0, 10).replaceAll('-', '');
 const addIsoDays = (value, days) => {
   const time = Date.parse(`${String(value).slice(0, 10)}T00:00:00.000Z`);
@@ -1363,23 +1386,312 @@ function compactReplayPrices(events, priceMap, currentProjection, throughDate) {
     left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker));
 }
 
+function corporateActionReplayPrices(events, priceMap) {
+  const selected = new Map();
+  const add = row => {
+    if (row) selected.set(`${row.ticker}:${row.date}`, row);
+  };
+  for (const event of events || []) {
+    if (eventKind(event) !== 'CORPORATE_ACTION') continue;
+    const start = eventEffectiveDate(event);
+    const end = addIsoDays(start, 7);
+    const sourceTicker = String(event.ticker || '').toUpperCase();
+    add(priceAsOf(priceMap.get(sourceTicker) || [], addIsoDays(start, -1)));
+    for (const output of Array.isArray(event.outputs) ? event.outputs : []) {
+      const ticker = String(output.ticker || '').toUpperCase();
+      add((priceMap.get(ticker) || []).find(item => item.date >= start && item.date <= end));
+    }
+  }
+  return [...selected.values()].sort((left, right) =>
+    left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker));
+}
+
+function historicalNavBatchSize(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return HISTORICAL_NAV_DEFAULT_BATCH_SIZE;
+  return Math.min(HISTORICAL_NAV_MAX_BATCH_SIZE, parsed);
+}
+
+async function materializedHistoricalReplayTarget(
+  adapter,
+  market,
+  affectedFrom,
+  materializedThrough,
+  navRows,
+  ledgerRevision,
+) {
+  const rows = (Array.isArray(navRows) ? navRows : [])
+    .filter(row => row && isoDatePattern.test(String(row.date || '').slice(0, 10)))
+    .sort((left, right) => String(left.date).localeCompare(String(right.date)));
+  if (!rows.length || rows.some(row => Number(row.ledgerRevision) !== ledgerRevision)) return null;
+  let tradingDays;
+  try {
+    tradingDays = await tusharePortfolioCalendar(adapter, market, affectedFrom, materializedThrough);
+  } catch {
+    return null;
+  }
+  const targetThrough = tradingDays.at(-1) || null;
+  if (!targetThrough || rows.at(-1).date !== targetThrough) return null;
+  const rebuiltDates = rows
+    .map(row => String(row.date).slice(0, 10))
+    .filter(date => date >= affectedFrom && date <= targetThrough);
+  if (rebuiltDates.length !== tradingDays.length ||
+      rebuiltDates.some((date, index) => date !== tradingDays[index])) {
+    return null;
+  }
+  return targetThrough;
+}
+
+function materializedReplayRangeCurrent(navRows, affectedFrom, targetThrough, ledgerRevision) {
+  const rows = (Array.isArray(navRows) ? navRows : []).filter(row => {
+    const date = String(row && row.date || '').slice(0, 10);
+    return date >= affectedFrom && date <= targetThrough;
+  });
+  return rows.some(row => String(row.date).slice(0, 10) === targetThrough) &&
+    rows.every(row => Number(row.ledgerRevision) === ledgerRevision &&
+      row.recalculationRequired !== true);
+}
+
+async function historicalReplayMissingSession(
+  adapter,
+  market,
+  affectedFrom,
+  targetThrough,
+  navRows,
+  ledgerRevision,
+) {
+  const tradingDays = await tusharePortfolioCalendar(
+    adapter,
+    market,
+    affectedFrom,
+    targetThrough,
+  );
+  if (!tradingDays.length || tradingDays.at(-1) !== targetThrough) {
+    throw new Error('historical_nav_coverage_calendar_incomplete');
+  }
+  const currentRows = new Map((Array.isArray(navRows) ? navRows : []).map(row => [row.date, row]));
+  const missingIndex = tradingDays.findIndex(date => {
+    const row = currentRows.get(date);
+    return !row || Number(row.ledgerRevision) !== ledgerRevision ||
+      row.recalculationRequired === true;
+  });
+  if (missingIndex < 0) return null;
+  const missingDate = tradingDays[missingIndex];
+  const priorRows = (Array.isArray(navRows) ? navRows : [])
+    .filter(row => row && row.date < missingDate)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const prior = priorRows.at(-1) || null;
+  const priorUnitNav = prior ? Number(prior.unitNav ?? prior.nav) : 0;
+  return {
+    missingDate,
+    lastNavDate: prior && prior.date || addIsoDays(missingDate, -1),
+    lastUnitNav: Number.isFinite(priorUnitNav) ? priorUnitNav : 0,
+  };
+}
+
 export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
   const market = led.market || pf;
   const nowFn = typeof options.now === 'function' ? options.now : Date.now;
   const adapter = options.adapter || createTushareAdapter(env, options);
   const ledgerRevision = Number(options.ledgerRevision ?? led.ledgerRevision);
+  const phase = String(options.phase || 'replay').toLowerCase();
+  if (!['replay', 'materialize', 'publish'].includes(phase)) {
+    throw new Error('historical_nav_replay_phase_invalid');
+  }
   const events = Array.isArray(led.confirmedEvents) ? led.confirmedEvents : [];
   if (!events.length || !Number.isInteger(ledgerRevision) || ledgerRevision < 0) {
     throw new Error('historical_nav_replay_inputs_missing');
   }
   const eventDates = events.map(eventEffectiveDate).filter(date => isoDatePattern.test(date)).sort();
-  const requestedFrom = String(options.affectedFrom || eventDates[0] || '').slice(0, 10);
-  if (!isoDatePattern.test(requestedFrom)) throw new Error('historical_nav_replay_start_invalid');
+  const affectedFrom = String(options.affectedFrom || eventDates[0] || '').slice(0, 10);
+  if (!isoDatePattern.test(affectedFrom)) throw new Error('historical_nav_replay_start_invalid');
+  const cursor = String(options.cursor || '').slice(0, 10);
+  if (phase === 'replay' && cursor && (!isoDatePattern.test(cursor) || cursor < affectedFrom)) {
+    throw new Error('historical_nav_replay_cursor_invalid');
+  }
+  const requestedFrom = phase === 'replay' ? cursor || affectedFrom : affectedFrom;
   const dirtyDates = Array.isArray(options.dirtyNavDates) ? options.dirtyNavDates : [];
   const marketToday = portfolioMarketDate(nowFn(), market);
   const existingLast = (Array.isArray(led.navRows) ? led.navRows : [])
     .map(row => String(row.date || '').slice(0, 10)).filter(date => isoDatePattern.test(date)).sort().at(-1);
-  const endTarget = [marketToday, existingLast, ...dirtyDates].filter(Boolean).sort().at(-1);
+  const calculatedEndTarget = [marketToday, existingLast, ...dirtyDates].filter(Boolean).sort().at(-1);
+  const frozenTarget = String(options.targetThrough || '').slice(0, 10);
+  if (frozenTarget && !isoDatePattern.test(frozenTarget)) {
+    throw new Error('historical_nav_replay_target_invalid');
+  }
+  const endTarget = frozenTarget || calculatedEndTarget;
+  if (!isoDatePattern.test(endTarget) || (phase === 'replay' && requestedFrom > endTarget)) {
+    throw new Error('historical_nav_replay_range_invalid');
+  }
+  if (phase !== 'replay' && !frozenTarget) {
+    throw new Error('historical_nav_replay_target_required');
+  }
+  const phaseLastNavDate = String(options.lastNavDate || endTarget).slice(0, 10);
+  const phaseLastUnitNav = Number(options.previousUnitNav);
+  if (phase !== 'replay' && (!isoDatePattern.test(phaseLastNavDate) ||
+      !Number.isFinite(phaseLastUnitNav))) {
+    throw new Error('historical_nav_replay_checkpoint_invalid');
+  }
+  if (phase === 'replay' && cursor && (!isoDatePattern.test(phaseLastNavDate) ||
+      phaseLastNavDate >= cursor || !Number.isFinite(phaseLastUnitNav))) {
+    throw new Error('historical_nav_replay_checkpoint_invalid');
+  }
+  if (phase === 'materialize') {
+    const freshLedger = await materializeLedgerKv(env, pf, {
+      expectedLedgerRevision: ledgerRevision,
+    });
+    const freshNavRows = Array.isArray(freshLedger.navRows) ? freshLedger.navRows : [];
+    const freshLast = freshNavRows.length ? freshNavRows.at(-1) : null;
+    const freshTarget = freshNavRows.find(row => row.date === endTarget);
+    const missingSession = await historicalReplayMissingSession(
+      adapter,
+      market,
+      affectedFrom,
+      endTarget,
+      freshNavRows,
+      ledgerRevision,
+    );
+    if (missingSession) {
+      return {
+        pf,
+        ranAt: new Date(nowFn()).toISOString(),
+        source: 'tushare',
+        freshness_class: 'eod',
+        historicalReplay: true,
+        complete: false,
+        phase: 'materialize',
+        nextPhase: 'replay',
+        ledgerRevision,
+        rebuiltFrom: affectedFrom,
+        batchFrom: null,
+        batchThrough: null,
+        appended: freshLast && freshLast.date || null,
+        as_of: freshLast && freshLast.date || null,
+        targetThrough: endTarget,
+        nextCursor: missingSession.missingDate,
+        lastNavDate: missingSession.lastNavDate,
+        lastUnitNav: missingSession.lastUnitNav,
+        navRows: 0,
+        priceRows: 0,
+        unavailable: [],
+        calendarFallback: false,
+        fallback: false,
+        coverageRestartFrom: missingSession.missingDate,
+      };
+    }
+    if (!freshLast || !freshTarget || !materializedReplayRangeCurrent(
+      freshNavRows,
+      affectedFrom,
+      endTarget,
+      ledgerRevision,
+    )) {
+      throw new Error('historical_nav_materialization_incomplete');
+    }
+    return {
+      pf,
+      ranAt: new Date(nowFn()).toISOString(),
+      source: 'tushare',
+      freshness_class: 'eod',
+      historicalReplay: true,
+      complete: false,
+      phase: 'materialize',
+      nextPhase: 'publish',
+      ledgerRevision,
+      rebuiltFrom: affectedFrom,
+      batchFrom: null,
+      batchThrough: null,
+      appended: freshLast.date,
+      as_of: freshLast.date,
+      targetThrough: endTarget,
+      nextCursor: null,
+      lastNavDate: freshTarget.date,
+      lastUnitNav: Number(freshTarget.unitNav ?? freshTarget.nav),
+      navRows: 0,
+      priceRows: 0,
+      unavailable: [],
+      calendarFallback: false,
+      fallback: false,
+    };
+  }
+  if (phase === 'publish') {
+    const materializedRows = Array.isArray(led.navRows) ? led.navRows : [];
+    const materializedLast = materializedRows.length ? materializedRows.at(-1) : null;
+    if (Number(led.ledgerRevision) !== ledgerRevision) {
+      const error = new Error('historical_nav_publish_revision_changed');
+      error.code = 'LEDGER_REVISION_CHANGED';
+      throw error;
+    }
+    if (!materializedLast || !materializedReplayRangeCurrent(
+      materializedRows,
+      affectedFrom,
+      endTarget,
+      ledgerRevision,
+    )) {
+      throw new Error('historical_nav_publish_materialization_missing');
+    }
+    const publishedThrough = materializedLast.date;
+    const live = {
+      rows: [],
+      holdings: led.sourceHoldings || [],
+      updatedAt: new Date(nowFn()).toISOString(),
+      marketDate: publishedThrough,
+      ledgerRevision,
+      sourceMeta: {
+        source: 'tushare',
+        source_endpoint: 'historical-nav-replay',
+        as_of: publishedThrough,
+        fetched_at: new Date(nowFn()).toISOString(),
+        freshness_class: 'eod',
+      },
+    };
+    const status = {
+      pf,
+      ranAt: new Date(nowFn()).toISOString(),
+      source: 'tushare',
+      freshness_class: 'eod',
+      historicalReplay: true,
+      complete: true,
+      phase: 'publish',
+      nextPhase: null,
+      ledgerRevision,
+      rebuiltFrom: affectedFrom,
+      batchFrom: null,
+      batchThrough: null,
+      appended: publishedThrough,
+      as_of: publishedThrough,
+      targetThrough: endTarget,
+      nextCursor: null,
+      lastNavDate: materializedLast.date,
+      lastUnitNav: Number(materializedLast.unitNav ?? materializedLast.nav),
+      navRows: materializedRows.length,
+      priceRows: 0,
+      unavailable: [],
+      calendarFallback: false,
+      fallback: false,
+    };
+    const [previousLive, previousStatus, previousCache] = await Promise.all([
+      env.YC_KV.get('live:' + pf),
+      env.YC_KV.get('navstatus:' + pf),
+      env.YC_KV.get('navcache:' + pf),
+    ]);
+    await assertLedgerRevision(env, pf, ledgerRevision);
+    const publishedCache = await persistPortfolioCache(env, pf, led, live, status);
+    try {
+      await assertLedgerRevision(env, pf, ledgerRevision);
+    } catch (error) {
+      await restorePortfolioCacheWrites(env, pf, {
+        live: previousLive,
+        status: previousStatus,
+        cache: previousCache,
+      }, {
+        live,
+        status,
+        cache: publishedCache,
+      }).catch(() => {});
+      throw error;
+    }
+    return status;
+  }
   const historyStart = eventDates[0];
   const tickers = portfolioHistoricalTickers(events);
   const fetched = await Promise.all(tickers.map(async ticker => {
@@ -1389,34 +1701,65 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       return { ticker, rows: [], error: String(error && (error.code || error.message) || 'unavailable') };
     }
   }));
+  const unavailableHistory = fetched.filter(item => item.error).map(item => item.ticker);
+  if (unavailableHistory.length) {
+    const error = new Error(`historical_nav_price_history_unavailable:${unavailableHistory.join(',')}`);
+    error.code = 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE';
+    throw error;
+  }
   const priceMap = new Map(fetched.map(item => [item.ticker, item.rows]));
   let tradingDays;
   let calendarFallback = false;
+  const calendarFrom = cursor ? phaseLastNavDate : requestedFrom;
   try {
-    tradingDays = await tusharePortfolioCalendar(adapter, market, requestedFrom, endTarget);
+    tradingDays = await tusharePortfolioCalendar(adapter, market, calendarFrom, endTarget);
     if (!tradingDays.length) throw new Error('calendar_empty');
   } catch (error) {
+    if (cursor) throw new Error('historical_nav_resume_calendar_unavailable');
     calendarFallback = true;
-    tradingDays = businessDates(requestedFrom, endTarget);
+    tradingDays = businessDates(calendarFrom, endTarget);
   }
-  const throughDate = tradingDays.at(-1);
-  if (!throughDate) throw new Error('historical_nav_trading_days_empty');
-  const allPrices = [...priceMap.values()].flat();
+  const observedThrough = tradingDays.at(-1);
+  if (!observedThrough || frozenTarget && observedThrough !== frozenTarget) {
+    throw new Error('historical_nav_trading_days_incomplete');
+  }
+  const targetThrough = frozenTarget || observedThrough;
+  const remainingTradingDays = cursor
+    ? tradingDays.filter(date => date > phaseLastNavDate)
+    : tradingDays;
+  if (!remainingTradingDays.length) throw new Error('historical_nav_trading_days_empty');
+  const batchSize = historicalNavBatchSize(options.batchSize);
+  const batchDays = remainingTradingDays.slice(0, batchSize);
+  const batchFrom = batchDays[0];
+  const batchThrough = batchDays.at(-1);
+  const nextCursor = remainingTradingDays[batchSize] || null;
+  const complete = nextCursor == null;
+  const replayPrices = corporateActionReplayPrices(events, priceMap);
   const currency = { us: 'USD', hk: 'HKD', a: 'CNY' }[pf];
   const navRows = [];
-  let previousUnitNav = null;
+  const checkpointUnitNav = Number(options.previousUnitNav);
+  let previousUnitNav = Number.isFinite(checkpointUnitNav) ? checkpointUnitNav : null;
   const priorRows = (Array.isArray(led.navRows) ? led.navRows : [])
-    .filter(row => row && row.date < requestedFrom)
+    .filter(row => row && row.date < batchFrom)
     .sort((left, right) => left.date.localeCompare(right.date));
-  if (priorRows.length) previousUnitNav = Number(priorRows.at(-1).unitNav ?? priorRows.at(-1).nav);
+  if (previousUnitNav == null && priorRows.length) {
+    previousUnitNav = Number(priorRows.at(-1).unitNav ?? priorRows.at(-1).nav);
+  }
+  const orderedEvents = [...events].sort((left, right) =>
+    eventEffectiveDate(left).localeCompare(eventEffectiveDate(right)));
+  const cutoffEvents = [];
+  let eventIndex = 0;
   let latestProjection = null;
-  for (const date of tradingDays) {
-    const cutoffEvents = events.filter(event => eventEffectiveDate(event) <= date);
+  for (const date of batchDays) {
+    while (eventIndex < orderedEvents.length && eventEffectiveDate(orderedEvents[eventIndex]) <= date) {
+      cutoffEvents.push(orderedEvents[eventIndex]);
+      eventIndex += 1;
+    }
     const projection = replayPortfolioLedger(cutoffEvents, {
       portfolio: pf,
       currency,
       include_pending: false,
-      corporate_action_prices: allPrices,
+      corporate_action_prices: replayPrices,
       as_of_date: date,
     });
     latestProjection = projection;
@@ -1470,44 +1813,39 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     });
     previousUnitNav = unitNav;
   }
-  const compactPrices = compactReplayPrices(events, priceMap, latestProjection, throughDate);
+  const compactPrices = compactReplayPrices(events, priceMap, latestProjection, batchThrough);
   await persistLedgerValuationBatch(env, pf, {
-    replaceFrom: requestedFrom,
-    replaceThrough: throughDate,
+    replaceFrom: batchFrom,
+    replaceThrough: batchThrough,
     navRows,
     priceRows: compactPrices,
   }, ledgerRevision);
-  const freshLedger = await materializeLedgerKv(env, pf);
-  const live = {
-    rows: [],
-    holdings: freshLedger.sourceHoldings || [],
-    updatedAt: new Date(nowFn()).toISOString(),
-    marketDate: throughDate,
-    ledgerRevision,
-    sourceMeta: {
-      source: 'tushare',
-      source_endpoint: 'historical-nav-replay',
-      as_of: throughDate,
-      fetched_at: new Date(nowFn()).toISOString(),
-      freshness_class: 'eod',
-    },
-  };
-  const status = {
+  const baseStatus = {
     pf,
     ranAt: new Date(nowFn()).toISOString(),
     source: 'tushare',
     freshness_class: 'eod',
-    rebuiltFrom: requestedFrom,
-    appended: throughDate,
-    as_of: throughDate,
+    historicalReplay: true,
+    complete: false,
+    phase: 'replay',
+    nextPhase: complete ? 'materialize' : 'replay',
+    ledgerRevision,
+    rebuiltFrom: affectedFrom,
+    batchFrom,
+    batchThrough,
+    appended: batchThrough,
+    as_of: batchThrough,
+    targetThrough,
+    nextCursor,
+    lastNavDate: batchThrough,
+    lastUnitNav: previousUnitNav,
     navRows: navRows.length,
     priceRows: compactPrices.length,
     unavailable: fetched.filter(item => item.error).map(item => item.ticker),
     calendarFallback,
     fallback: false,
   };
-  await persistPortfolioCache(env, pf, freshLedger, live, status);
-  return status;
+  return baseStatus;
 }
 
 function publicPortfolioSnapshot(cache, latestStatus) {
@@ -1532,6 +1870,25 @@ function publicPortfolioSnapshot(cache, latestStatus) {
     fallback: latestFailed,
     status: latestStatus || cache.status || null,
   };
+}
+
+async function publicPortfolioLedgerRevision(env, portfolio) {
+  if (!env || !(env.LEDGER_DB || env.FEEDBACK_DB)) return undefined;
+  try {
+    const state = await portfolioDerivationState(env, portfolio);
+    return state.derivedWorkPending ? null : state.ledgerRevision;
+  } catch {
+    return null;
+  }
+}
+
+function portfolioCacheMatchesRevision(cache, ledgerRevision) {
+  if (ledgerRevision === undefined) return true;
+  if (!Number.isInteger(ledgerRevision)) return false;
+  const rawRevision = cache && (cache.ledgerRevision ??
+    (cache.status && cache.status.ledgerRevision));
+  if (rawRevision == null) return ledgerRevision === 0;
+  return Number(rawRevision) === ledgerRevision;
 }
 
 /* 持倉/現金/負債/份額為唯一營運基準；Tushare 日線是唯一自動估值源。 */
@@ -1568,11 +1925,44 @@ async function updatePortfolioNav(env, pf, options = {}) {
     return st;
   }
   const led = JSON.parse(ledRaw), market = led.market || pf;
+  const affectedFrom = String(options.affectedFrom || '').slice(0, 10);
+  const continuationRequested = Boolean(options.phase) || isoDatePattern.test(affectedFrom);
+  if (!continuationRequested && (env.LEDGER_DB || env.FEEDBACK_DB)) {
+    let derivation;
+    try {
+      derivation = await portfolioDerivationState(env, pf);
+    } catch {
+      return writePortfolioAttempt(env, pf, {
+        ...st,
+        skip: 'ledger-derivation-state-unavailable',
+        reason: 'ledger_derivation_state_unavailable',
+        fallback: true,
+      });
+    }
+    st.ledgerRevision = derivation.ledgerRevision;
+    if (derivation.derivedWorkPending) {
+      return writePortfolioAttempt(env, pf, {
+        ...st,
+        skip: 'ledger-derived-work-pending',
+        reason: 'drain_ledger_outbox_to_resume',
+        pendingCount: derivation.pendingCount,
+        fallback: true,
+      });
+    }
+    if (Number(led.ledgerRevision) !== derivation.ledgerRevision) {
+      return writePortfolioAttempt(env, pf, {
+        ...st,
+        skip: 'ledger-kv-revision-mismatch',
+        reason: 'rebuild_ledger_kv_before_nav_refresh',
+        fallback: true,
+      });
+    }
+  }
   const liveRaw = await env.YC_KV.get('live:' + pf), live = liveRaw ? JSON.parse(liveRaw) : { rows: [] };
   const lastPxRaw = await env.YC_KV.get('lastpx:' + pf), lastPx = lastPxRaw ? JSON.parse(lastPxRaw) : {};
   const adapter = options.adapter || createTushareAdapter(env, options);
   const ledgerRevision = Number(options.ledgerRevision ?? led.ledgerRevision);
-  const affectedFrom = String(options.affectedFrom || '').slice(0, 10);
+  st.ledgerRevision = ledgerRevision;
   const dirtyNavDates = Array.isArray(led.navRecalculationRequired)
     ? led.navRecalculationRequired
     : [];
@@ -1583,14 +1973,42 @@ async function updatePortfolioNav(env, pf, options = {}) {
     ? led.corporateActionPricePending : []).filter(date =>
     isoDatePattern.test(date) && date <= marketToday && marketToday <= addIsoDays(date, 7));
   if (dirtyNavDates.length || historicalReplayRequested || recentCorporateActionDates.length) {
+    if (!isoDatePattern.test(affectedFrom) && !options.phase) {
+      return writePortfolioAttempt(env, pf, {
+        ...st,
+        skip: 'historical-replay-requires-outbox-continuation',
+        reason: 'drain_ledger_outbox_to_resume',
+        fallback: true,
+      });
+    }
     const replayFrom = [affectedFrom, dirtyNavDates[0], recentCorporateActionDates[0]]
       .filter(date => isoDatePattern.test(date)).sort()[0];
+    const materializedRows = Array.isArray(led.navRows) ? led.navRows : [];
+    const materializedLast = materializedRows.length ? materializedRows.at(-1) : null;
+    const recoverPublishedTarget = !options.phase && historicalReplayRequested &&
+      dirtyNavDates.length === 0 && recentCorporateActionDates.length === 0 &&
+      Number(led.ledgerRevision) === ledgerRevision && materializedLast
+      ? await materializedHistoricalReplayTarget(
+        adapter,
+        market,
+        replayFrom,
+        materializedLast.date,
+        materializedRows,
+        ledgerRevision,
+      )
+      : null;
     return rebuildPortfolioNavHistory(env, pf, led, {
       ...options,
       adapter,
       ledgerRevision,
       affectedFrom: replayFrom,
       dirtyNavDates,
+      ...(recoverPublishedTarget ? {
+        phase: 'publish',
+        targetThrough: recoverPublishedTarget,
+        lastNavDate: materializedLast.date,
+        previousUnitNav: Number(materializedLast.unitNav ?? materializedLast.nav),
+      } : {}),
     });
   }
   const fetched = await Promise.all(led.positions.map(async p => ({
@@ -1650,6 +2068,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
       marketDate,
       as_of: marketDate,
       fallback: false,
+      complete: true,
     });
   }
   if (!Number.isInteger(ledgerRevision) || ledgerRevision < 0) {
@@ -1765,6 +2184,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
     stale,
     unavailable,
     fallback: false,
+    complete: true,
   });
   await persistLedgerValuation(env, pf, {
     ...navRow,
@@ -1789,7 +2209,9 @@ async function updatePortfolioNav(env, pf, options = {}) {
     source: 'TUSHARE',
     source_endpoint: item.q.source_endpoint,
   })), ledgerRevision);
-  const freshLedger = await materializeLedgerKv(env, pf);
+  const freshLedger = await materializeLedgerKv(env, pf, {
+    expectedLedgerRevision: ledgerRevision,
+  });
   // D1 snapshots are the complete derived history. Keep KV live rows empty so
   // the same NAV date is never maintained in two independent stores.
   live.rows = [];
@@ -2112,9 +2534,10 @@ export default {
         };
         const markets = {};
         await Promise.all(Object.entries(specs).map(async ([market, spec]) => {
-          const [navRaw, benchmarkRaw] = await Promise.all([
+          const [navRaw, benchmarkRaw, ledgerRevision] = await Promise.all([
             env.YC_KV.get('navcache:' + market),
             env.YC_KV.get('bmset:' + market),
+            publicPortfolioLedgerRevision(env, market),
           ]);
           if (!navRaw || !benchmarkRaw) {
             markets[market] = null;
@@ -2124,6 +2547,7 @@ export default {
           const benchmark = JSON.parse(benchmarkRaw);
           const benchmarkRows = benchmark.data && benchmark.data[spec.benchmark];
           if (!nav.ok || !nav.enabled || !Array.isArray(nav.navRows)
+              || !portfolioCacheMatchesRevision(nav, ledgerRevision)
               || !benchmarkSnapshotIsTushare(benchmark, market)
               || !Array.isArray(benchmarkRows)) {
             markets[market] = null;
@@ -2802,13 +3226,17 @@ export default {
       if (path.startsWith('/api/nav/') && request.method === 'GET') {
         const pf = path.split('/')[3];
         if (!/^(us|hk|a)$/.test(pf)) return J(env, { error: 'not found' }, 404);
-        const [cached, statusRaw] = await Promise.all([
+        const [cached, statusRaw, ledgerRevision] = await Promise.all([
           env.YC_KV.get('navcache:' + pf),
           env.YC_KV.get('navstatus:' + pf),
+          publicPortfolioLedgerRevision(env, pf),
         ]);
         if (cached) {
           const status = statusRaw ? JSON.parse(statusRaw) : null;
-          return J(env, publicPortfolioSnapshot(JSON.parse(cached), status));
+          const cache = JSON.parse(cached);
+          if (portfolioCacheMatchesRevision(cache, ledgerRevision)) {
+            return J(env, publicPortfolioSnapshot(cache, status));
+          }
         }
         return J(env, {
           ok: false, enabled: false, portfolio: pf, pending: true,
@@ -2909,7 +3337,10 @@ export default {
      "30 10 * * *"  北京時間 18:30 → HK / A 官方 EOD 對賬與回退刷新 */
   async scheduled(event, env, ctx) {
     const cron = event.cron || '';
-    if (cron === '30 21 * * *') {
+    if (cron === '* * * * *') {
+      ctx.waitUntil(drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
+        .catch(e => console.error('ledger_outbox_continuation_failed', e)));
+    } else if (cron === '30 21 * * *') {
       ctx.waitUntil((async () => {
         await drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
           .catch(e => console.error('ledger_outbox_failed', e));

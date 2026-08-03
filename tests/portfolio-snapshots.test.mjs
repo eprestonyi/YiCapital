@@ -10,6 +10,7 @@ import worker, {
   portfolioDataset,
   portfolioRealtimeDataset,
   prewarmBenchmark,
+  rebuildPortfolioNavHistory,
   tusharePortfolioQuote,
   updatePortfolioNav,
 } from '../worker/worker.js';
@@ -285,6 +286,74 @@ test('a failed portfolio refresh leaves the previous navcache byte-for-byte unch
   );
 });
 
+test('ordinary NAV refresh and public cache fail closed while derived ledger work is pending', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  database.database.prepare(`
+    INSERT INTO ledger_outbox (
+      outbox_id, portfolio_id, ledger_revision, kind, payload_json,
+      status, attempts, available_at, created_at
+    ) VALUES ('nav-1', 'us', 1, 'RECALC_NAV', '{"affectedFrom":"2026-07-20"}',
+      'PENDING', 0, 0, 1)
+  `).run();
+  const kv = new MockKV({
+    'ledger:us': JSON.stringify({
+      market: 'us', portfolio: 'us', currency: 'USD', positions: [],
+      cash: 1000, liability: 0, units: 1000, lastDate: '2026-07-29',
+      lastUnitNav: 1, baseNetValue: 1000, ledgerRevision: 1,
+      navRecalculationRequired: [],
+    }),
+    'navcache:us': JSON.stringify({
+      ok: true, enabled: true, portfolio: 'us', ledgerRevision: 1,
+      navRows: [{ date: '2026-07-29', nav: 1 }], history: [],
+      cacheVersion: 3,
+    }),
+  });
+  const adapter = adapterWith(async () => {
+    throw new Error('ordinary price refresh must not run while outbox is pending');
+  });
+  const env = { YC_KV: kv, FEEDBACK_DB: database };
+
+  const status = await updatePortfolioNav(env, 'us', { adapter, now });
+  assert.equal(status.skip, 'ledger-derived-work-pending');
+  assert.equal(status.fallback, true);
+  assert.equal(status.pendingCount, 1);
+  assert.equal(adapter.calls.length, 0);
+  assert.equal(database.database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_nav_snapshots WHERE portfolio_id = 'us'
+  `).get().count, 0);
+
+  const response = await worker.fetch(new Request('https://portal.test/api/nav/us'), env);
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).pending, true);
+});
+
+test('historical NAV replay fails closed when any ticker history request fails', async () => {
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 2, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-20',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+      { event_id: 'buy-1', type: 'BUY', date: '2026-07-21', ticker: 'AAA',
+        quantity: 10, gross_amount: '100', net_cash: '-100' },
+    ],
+  };
+  const adapter = adapterWith(async (_dataset, request) => {
+    if (request.params.ts_code === 'AAA') throw new Error('temporary upstream failure');
+    return { data: [] };
+  });
+
+  await assert.rejects(
+    rebuildPortfolioNavHistory({}, 'us', led, {
+      adapter, now, affectedFrom: '2026-07-20', ledgerRevision: 2,
+    }),
+    error => error && error.code === 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE' &&
+      /AAA/.test(error.message),
+  );
+});
+
 test('dirty historical NAV rows are rebuilt from confirmed events and market-day prices', async () => {
   const database = await ledgerDatabase();
   database.database.prepare(`
@@ -350,10 +419,42 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
     };
   });
 
-  const status = await updatePortfolioNav(
-    { YC_KV: kv, FEEDBACK_DB: database }, 'us', { adapter, now },
-  );
+  const env = { YC_KV: kv, FEEDBACK_DB: database };
+  const replay = await updatePortfolioNav(env, 'us', {
+    adapter,
+    now,
+    affectedFrom: '2026-07-20',
+    batchSize: 50,
+  });
+  assert.equal(replay.complete, false);
+  assert.equal(replay.phase, 'replay');
+  assert.equal(replay.nextPhase, 'materialize');
+  assert.equal(kv.values.has('navcache:us'), false);
+  const materialized = await updatePortfolioNav(env, 'us', {
+    adapter,
+    now,
+    affectedFrom: '2026-07-20',
+    phase: replay.nextPhase,
+    targetThrough: replay.targetThrough,
+    lastNavDate: replay.lastNavDate,
+    previousUnitNav: replay.lastUnitNav,
+  });
+  assert.equal(materialized.complete, false);
+  assert.equal(materialized.phase, 'materialize');
+  assert.equal(materialized.nextPhase, 'publish');
+  assert.equal(kv.values.has('navcache:us'), false);
+  const status = await updatePortfolioNav(env, 'us', {
+    adapter,
+    now,
+    affectedFrom: '2026-07-20',
+    phase: materialized.nextPhase,
+    targetThrough: materialized.targetThrough,
+    lastNavDate: materialized.lastNavDate,
+    previousUnitNav: materialized.lastUnitNav,
+  });
   assert.equal(status.fallback, false);
+  assert.equal(status.complete, true);
+  assert.equal(status.phase, 'publish');
   assert.equal(status.rebuiltFrom, '2026-07-20');
   assert.equal(status.appended, '2026-07-30');
   const rows = database.database.prepare(`
@@ -484,5 +585,7 @@ test('public portfolio boot is snapshot-only; local workbooks remain explicit pr
     readFile(path.join(ROOT, 'worker/worker.js'), 'utf8'),
   ]);
   assert.match(wrangler, /"30 10 \* \* \*"/);
+  assert.match(wrangler, /"\* \* \* \* \*"/);
   assert.match(workerSource, /cron:asia-eod/);
+  assert.match(workerSource, /cron === ['"]\* \* \* \* \*['"]/);
 });

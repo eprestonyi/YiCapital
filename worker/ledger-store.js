@@ -235,6 +235,45 @@ async function portfolioRow(db, portfolio) {
   return row;
 }
 
+export async function currentLedgerRevision(env, requestedPortfolio) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const row = await portfolioRow(ledgerDb(env), portfolio);
+  return Number(row.ledger_revision);
+}
+
+export async function portfolioDerivationState(env, requestedPortfolio) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const state = await portfolioRow(db, portfolio);
+  const ledgerRevision = Number(state.ledger_revision);
+  const pending = await dbFirst(db, `
+    SELECT COUNT(*) AS count
+    FROM ledger_outbox
+    WHERE portfolio_id = ? AND ledger_revision = ?
+      AND kind IN ('REBUILD_KV', 'RECALC_NAV')
+      AND status IN ('PENDING', 'FAILED', 'PROCESSING')
+  `, [portfolio, ledgerRevision]);
+  const pendingCount = Number(pending && pending.count || 0);
+  return {
+    ledgerRevision,
+    derivedWorkPending: pendingCount > 0,
+    pendingCount,
+  };
+}
+
+export async function assertLedgerRevision(env, requestedPortfolio, expectedLedgerRevision) {
+  const expected = Number(expectedLedgerRevision);
+  const current = await currentLedgerRevision(env, requestedPortfolio);
+  if (!Number.isInteger(expected) || current !== expected) {
+    throw new LedgerHttpError(
+      409,
+      '賬本 revision 已變更',
+      { code: 'LEDGER_REVISION_CHANGED' },
+    );
+  }
+  return current;
+}
+
 const ACTIVE_EVENT_SQL = `
   SELECT e.*
   FROM ledger_events e
@@ -1077,7 +1116,17 @@ export async function persistLedgerValuationBatch(
   try {
     await db.batch(statements);
   } catch (error) {
-    throw new LedgerHttpError(409, '歷史 NAV 重建寫入時賬本 revision 已變更');
+    const currentRevision = await portfolioRow(db, portfolio)
+      .then(row => Number(row.ledger_revision))
+      .catch(() => null);
+    if (currentRevision !== null && currentRevision !== revision) {
+      throw new LedgerHttpError(
+        409,
+        '歷史 NAV 重建寫入時賬本 revision 已變更',
+        { code: 'LEDGER_REVISION_CHANGED' },
+      );
+    }
+    throw error;
   }
   return {
     ok: true,
@@ -2071,6 +2120,16 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
   const db = ledgerDb(env);
   const state = await portfolioRow(db, portfolio);
   const capturedRevision = Number(state.ledger_revision);
+  const expectedRevision = options.expectedLedgerRevision == null
+    ? null
+    : Number(options.expectedLedgerRevision);
+  if (expectedRevision != null && capturedRevision !== expectedRevision) {
+    throw new LedgerHttpError(
+      409,
+      'KV materialization ledger revision 已變更',
+      { code: 'LEDGER_REVISION_CHANGED' },
+    );
+  }
   const [events, navRows, priceRows, priceHistory] = await Promise.all([
     activeEvents(db, portfolio, capturedRevision),
     loadNavSnapshots(db, portfolio, capturedRevision),
@@ -2143,9 +2202,19 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
   const beforeWrite = await portfolioRow(db, portfolio);
   if (Number(beforeWrite.ledger_revision) !== capturedRevision) {
     const latestRevision = Number(beforeWrite.ledger_revision);
+    if (expectedRevision != null) {
+      throw new LedgerHttpError(
+        409,
+        'KV materialization ledger revision 已變更',
+        { code: 'LEDGER_REVISION_CHANGED' },
+      );
+    }
     await requeueLatestKv(db, portfolio, latestRevision, 'revision changed before KV write');
     if (Number(options.raceRetry || 0) < 2) {
-      return materializeLedgerKv(env, portfolio, { raceRetry: Number(options.raceRetry || 0) + 1 });
+      return materializeLedgerKv(env, portfolio, {
+        ...options,
+        raceRetry: Number(options.raceRetry || 0) + 1,
+      });
     }
     throw new Error('ledger revision kept changing before KV publication');
   }
@@ -2160,95 +2229,500 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
     `).bind(now(), portfolio, capturedRevision).run();
   } else {
     const latestRevision = Number(afterWrite.ledger_revision);
+    if (expectedRevision != null) {
+      throw new LedgerHttpError(
+        409,
+        'KV materialization ledger revision 已變更',
+        { code: 'LEDGER_REVISION_CHANGED' },
+      );
+    }
     await requeueLatestKv(db, portfolio, latestRevision, 'revision changed during KV write');
     if (Number(options.raceRetry || 0) < 2) {
-      return materializeLedgerKv(env, portfolio, { raceRetry: Number(options.raceRetry || 0) + 1 });
+      return materializeLedgerKv(env, portfolio, {
+        ...options,
+        raceRetry: Number(options.raceRetry || 0) + 1,
+      });
     }
     throw new Error('ledger revision kept changing during KV publication');
   }
   return ledger;
 }
 
-export async function drainLedgerOutbox(env, options = {}) {
-  const db = ledgerDb(env);
-  const portfolio = options.portfolio ? portfolioId(options.portfolio) : null;
-  const readyAt = now();
-  const rows = await dbAll(db, `
-    SELECT o.*,
+const NAV_REPLAY_DEFAULT_BATCH_SIZE = 20;
+const NAV_REPLAY_MAX_BATCH_SIZE = 50;
+
+function navReplayBatchSize(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return NAV_REPLAY_DEFAULT_BATCH_SIZE;
+  return Math.min(NAV_REPLAY_MAX_BATCH_SIZE, parsed);
+}
+
+function revisionChangedError() {
+  const error = new Error('ledger revision changed during outbox continuation');
+  error.code = 'LEDGER_REVISION_CHANGED';
+  return error;
+}
+
+function isRevisionChangedError(error) {
+  return error && (
+    error.code === 'LEDGER_REVISION_CHANGED' ||
+    error.details && error.details.code === 'LEDGER_REVISION_CHANGED'
+  );
+}
+
+function validNavReplayCheckpoint(value, portfolio, ledgerRevision, affectedFrom) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const phase = String(value.phase || 'replay').toLowerCase();
+  const cursor = String(value.cursor || '').slice(0, 10);
+  const targetThrough = String(value.targetThrough || '').slice(0, 10);
+  const lastNavDate = String(value.lastNavDate || '').slice(0, 10);
+  const lastUnitNav = Number(value.lastUnitNav);
+  if (value.portfolio !== portfolio || Number(value.ledgerRevision) !== ledgerRevision ||
+      value.affectedFrom !== affectedFrom || !['replay', 'materialize', 'publish'].includes(phase) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(targetThrough) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(lastNavDate) || !Number.isFinite(lastUnitNav) ||
+      lastNavDate > targetThrough ||
+      (phase === 'replay' && (!/^\d{4}-\d{2}-\d{2}$/.test(cursor) ||
+        cursor <= lastNavDate || cursor > targetThrough)) ||
+      (phase !== 'replay' && cursor)) {
+    return null;
+  }
+  return { phase, cursor: cursor || null, targetThrough, lastNavDate, lastUnitNav };
+}
+
+const OUTBOX_LEASE_MS = 5 * 60_000;
+const OUTBOX_DRAIN_LIMIT = 5;
+const OUTBOX_CLAIM_PREFIX = 'OUTBOX_CLAIM:';
+
+function outboxClaimLostError() {
+  const error = new Error('outbox claim lease was lost');
+  error.code = 'OUTBOX_CLAIM_LOST';
+  return error;
+}
+
+function isOutboxClaimLostError(error) {
+  return error && error.code === 'OUTBOX_CLAIM_LOST';
+}
+
+function changedRows(result) {
+  return Number(result && result.meta && result.meta.changes || 0);
+}
+
+async function propagateAffectedFromAndSupersede(db, portfolio, timestamp) {
+  const latest = await dbAll(db, `
+    SELECT o.outbox_id, o.payload_json,
       (SELECT MIN(json_extract(p.payload_json, '$.affectedFrom'))
        FROM ledger_outbox p
        WHERE p.portfolio_id = o.portfolio_id AND p.kind = o.kind
-         AND p.status IN ('PENDING', 'FAILED')) AS affected_from_min
+         AND p.ledger_revision <= o.ledger_revision AND p.status != 'DONE') AS affected_from_min
     FROM ledger_outbox o
-    WHERE o.status IN ('PENDING', 'FAILED') AND o.available_at <= ?
+    WHERE o.status IN ('PENDING', 'FAILED')
       ${portfolio ? 'AND o.portfolio_id = ?' : ''}
       AND NOT EXISTS (
         SELECT 1 FROM ledger_outbox newer
         WHERE newer.portfolio_id = o.portfolio_id AND newer.kind = o.kind
-          AND newer.status IN ('PENDING', 'FAILED') AND newer.available_at <= ?
-          AND newer.ledger_revision > o.ledger_revision
+          AND newer.ledger_revision > o.ledger_revision AND newer.status != 'DONE'
       )
-    ORDER BY o.created_at,
-      CASE o.kind WHEN 'REBUILD_KV' THEN 0 WHEN 'RECALC_NAV' THEN 1 ELSE 2 END
-    LIMIT 5
-  `, portfolio ? [readyAt, portfolio, readyAt] : [readyAt, readyAt]);
+  `, portfolio ? [portfolio] : []);
+  for (const row of latest) {
+    const affectedFrom = String(row.affected_from_min || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(affectedFrom)) continue;
+    const payload = parseJson(row.payload_json, {});
+    if (payload.affectedFrom === affectedFrom) continue;
+    await db.prepare(`
+      UPDATE ledger_outbox SET payload_json = ?
+      WHERE outbox_id = ? AND status IN ('PENDING', 'FAILED')
+    `).bind(stableJson({ ...payload, affectedFrom }), row.outbox_id).run();
+  }
+
+  await db.prepare(`
+    UPDATE ledger_outbox
+    SET status = 'DONE', available_at = ?, processed_at = ?,
+      last_error = 'superseded by newer outbox revision'
+    WHERE ${portfolio ? 'portfolio_id = ? AND' : ''}
+      (status IN ('PENDING', 'FAILED') OR (status = 'PROCESSING' AND available_at <= ?))
+      AND EXISTS (
+        SELECT 1 FROM ledger_outbox newer
+        WHERE newer.portfolio_id = ledger_outbox.portfolio_id
+          AND newer.kind = ledger_outbox.kind
+          AND newer.ledger_revision > ledger_outbox.ledger_revision
+      )
+  `).bind(...(portfolio
+    ? [timestamp, timestamp, portfolio, timestamp]
+    : [timestamp, timestamp, timestamp])).run();
+}
+
+async function claimNextOutbox(db, portfolio, allowNav) {
+  const claimedAt = now();
+  const candidates = await dbAll(db, `
+    SELECT o.*
+    FROM ledger_outbox o
+    JOIN ledger_portfolios lp ON lp.portfolio_id = o.portfolio_id
+      AND lp.ledger_revision = o.ledger_revision
+    WHERE (
+        (o.status IN ('PENDING', 'FAILED') AND o.available_at <= ?)
+        OR (o.status = 'PROCESSING' AND o.available_at <= ?)
+      )
+      ${portfolio ? 'AND o.portfolio_id = ?' : ''}
+      ${allowNav ? '' : "AND o.kind != 'RECALC_NAV'"}
+      AND NOT EXISTS (
+        SELECT 1 FROM ledger_outbox newer
+        WHERE newer.portfolio_id = o.portfolio_id AND newer.kind = o.kind
+          AND newer.ledger_revision > o.ledger_revision AND newer.status != 'DONE'
+      )
+      AND (
+        o.kind = 'REBUILD_KV'
+        OR (o.kind = 'RECALC_NAV' AND NOT EXISTS (
+          SELECT 1 FROM ledger_outbox dependency
+          WHERE dependency.portfolio_id = o.portfolio_id
+            AND dependency.ledger_revision = o.ledger_revision
+            AND dependency.kind = 'REBUILD_KV' AND dependency.status != 'DONE'
+        ))
+        OR (o.kind = 'REBUILD_EXCEL' AND NOT EXISTS (
+          SELECT 1 FROM ledger_outbox dependency
+          WHERE dependency.portfolio_id = o.portfolio_id
+            AND dependency.ledger_revision = o.ledger_revision
+            AND dependency.kind IN ('REBUILD_KV', 'RECALC_NAV')
+            AND dependency.status != 'DONE'
+        ))
+      )
+    ORDER BY CASE o.kind WHEN 'REBUILD_KV' THEN 0 WHEN 'RECALC_NAV' THEN 1 ELSE 2 END,
+      o.created_at, o.outbox_id
+    LIMIT 1
+  `, portfolio ? [claimedAt, claimedAt, portfolio] : [claimedAt, claimedAt]);
+  const candidate = candidates[0];
+  if (!candidate) return null;
+
+  const claimToken = OUTBOX_CLAIM_PREFIX + crypto.randomUUID();
+  const leaseUntil = claimedAt + OUTBOX_LEASE_MS;
+  const claimed = await db.prepare(`
+    UPDATE ledger_outbox
+    SET status = 'PROCESSING', available_at = ?, last_error = ?, processed_at = NULL
+    WHERE outbox_id = ? AND ledger_revision = ?
+      AND (
+        (status IN ('PENDING', 'FAILED') AND available_at <= ?)
+        OR (status = 'PROCESSING' AND available_at <= ?)
+      )
+      AND EXISTS (
+        SELECT 1 FROM ledger_portfolios
+        WHERE portfolio_id = ledger_outbox.portfolio_id
+          AND ledger_revision = ledger_outbox.ledger_revision
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM ledger_outbox newer
+        WHERE newer.portfolio_id = ledger_outbox.portfolio_id
+          AND newer.kind = ledger_outbox.kind
+          AND newer.ledger_revision > ledger_outbox.ledger_revision
+          AND newer.status != 'DONE'
+      )
+      AND (
+        kind = 'REBUILD_KV'
+        OR (kind = 'RECALC_NAV' AND NOT EXISTS (
+          SELECT 1 FROM ledger_outbox dependency
+          WHERE dependency.portfolio_id = ledger_outbox.portfolio_id
+            AND dependency.ledger_revision = ledger_outbox.ledger_revision
+            AND dependency.kind = 'REBUILD_KV' AND dependency.status != 'DONE'
+        ))
+        OR (kind = 'REBUILD_EXCEL' AND NOT EXISTS (
+          SELECT 1 FROM ledger_outbox dependency
+          WHERE dependency.portfolio_id = ledger_outbox.portfolio_id
+            AND dependency.ledger_revision = ledger_outbox.ledger_revision
+            AND dependency.kind IN ('REBUILD_KV', 'RECALC_NAV')
+            AND dependency.status != 'DONE'
+        ))
+      )
+  `).bind(
+    leaseUntil, claimToken, candidate.outbox_id, Number(candidate.ledger_revision),
+    claimedAt, claimedAt,
+  ).run();
+  if (changedRows(claimed) !== 1) return null;
+  const row = await dbFirst(db, `
+    SELECT * FROM ledger_outbox
+    WHERE outbox_id = ? AND status = 'PROCESSING' AND last_error = ?
+  `, [candidate.outbox_id, claimToken]);
+  return row ? { row, claimToken, leaseUntil } : null;
+}
+
+async function finishOutboxClaim(
+  db,
+  row,
+  claimToken,
+  updates,
+  values,
+  requireCurrentRevision = true,
+) {
+  const result = await db.prepare(`
+    UPDATE ledger_outbox SET ${updates}
+    WHERE outbox_id = ? AND ledger_revision = ?
+      AND status = 'PROCESSING' AND last_error = ?
+      ${requireCurrentRevision ? `AND EXISTS (
+        SELECT 1 FROM ledger_portfolios
+        WHERE portfolio_id = ledger_outbox.portfolio_id
+          AND ledger_revision = ledger_outbox.ledger_revision
+      )` : ''}
+  `).bind(...values, row.outbox_id, Number(row.ledger_revision), claimToken).run();
+  if (changedRows(result) !== 1) throw outboxClaimLostError();
+}
+
+async function outboxRemainder(db, portfolio) {
+  const row = await dbFirst(db, `
+    SELECT COUNT(*) AS remaining, MIN(available_at) AS next_available_at
+    FROM ledger_outbox
+    WHERE status IN ('PENDING', 'FAILED', 'PROCESSING')
+      ${portfolio ? 'AND portfolio_id = ?' : ''}
+  `, portfolio ? [portfolio] : []);
+  const remaining = Number(row && row.remaining || 0);
+  const nextAvailableAt = row && row.next_available_at;
+  return {
+    remaining,
+    nextAvailableAt: nextAvailableAt == null ? null : Number(nextAvailableAt),
+  };
+}
+
+export async function drainLedgerOutbox(env, options = {}) {
+  const db = ledgerDb(env);
+  const portfolio = options.portfolio ? portfolioId(options.portfolio) : null;
+  const navBatchSize = navReplayBatchSize(options.navBatchSize);
   const results = [];
-  for (const row of rows) {
+  await propagateAffectedFromAndSupersede(db, portfolio, now());
+  for (let index = 0; index < OUTBOX_DRAIN_LIMIT; index += 1) {
+    const claimed = await claimNextOutbox(
+      db,
+      portfolio,
+      typeof options.refreshPortfolio === 'function',
+    );
+    if (!claimed) break;
+    const { row, claimToken } = claimed;
     try {
-      const fresh = await dbFirst(db, 'SELECT status, available_at FROM ledger_outbox WHERE outbox_id = ?', [row.outbox_id]);
-      if (!fresh || !['PENDING', 'FAILED'].includes(fresh.status) || Number(fresh.available_at) > now()) continue;
-      if (row.kind === 'REBUILD_KV') await materializeLedgerKv(env, row.portfolio_id);
+      if (row.kind === 'REBUILD_KV') {
+        await materializeLedgerKv(env, row.portfolio_id, {
+          expectedLedgerRevision: Number(row.ledger_revision),
+        });
+        await finishOutboxClaim(
+          db,
+          row,
+          claimToken,
+          "status = 'DONE', attempts = attempts + 1, available_at = ?, processed_at = ?, last_error = NULL",
+          [now(), now()],
+        );
+      }
       else if (row.kind === 'RECALC_NAV' && typeof options.refreshPortfolio === 'function') {
-        const dependency = await dbFirst(db, `
-          SELECT COUNT(*) AS count FROM ledger_outbox
-          WHERE portfolio_id = ? AND kind = 'REBUILD_KV'
-            AND ledger_revision <= ? AND status != 'DONE'
-        `, [row.portfolio_id, Number(row.ledger_revision)]);
-        if (Number(dependency && dependency.count || 0) > 0) continue;
+        const expectedRevision = Number(row.ledger_revision);
+        const portfolioState = await portfolioRow(db, row.portfolio_id);
+        if (Number(portfolioState.ledger_revision) !== expectedRevision) {
+          throw revisionChangedError();
+        }
+        const payload = parseJson(row.payload_json, {});
+        const affectedFrom = payload.affectedFrom || null;
+        const checkpoint = validNavReplayCheckpoint(
+          payload.navReplay,
+          row.portfolio_id,
+          expectedRevision,
+          affectedFrom,
+        );
         const refresh = await options.refreshPortfolio(env, row.portfolio_id, {
-          ledgerRevision: Number(row.ledger_revision),
-          affectedFrom: row.affected_from_min || parseJson(row.payload_json, {}).affectedFrom || null,
+          ledgerRevision: expectedRevision,
+          affectedFrom,
+          batchSize: navBatchSize,
+          phase: checkpoint && checkpoint.phase,
+          cursor: checkpoint && checkpoint.cursor,
+          targetThrough: checkpoint && checkpoint.targetThrough,
+          lastNavDate: checkpoint && checkpoint.lastNavDate,
+          previousUnitNav: checkpoint && checkpoint.lastUnitNav,
         });
         if (refresh && (refresh.skip || refresh.fallback === true)) {
           throw new Error('NAV recalculation did not complete: ' + (refresh.skip || refresh.reason || 'fallback'));
         }
-        await db.prepare(`
-          UPDATE ledger_outbox SET status = 'DONE', attempts = attempts + 1,
-            processed_at = ?, last_error = NULL
-          WHERE portfolio_id = ? AND kind = 'RECALC_NAV'
-            AND ledger_revision <= ? AND status IN ('PENDING', 'FAILED')
-        `).bind(now(), row.portfolio_id, Number(row.ledger_revision)).run();
+        if (Number(refresh && refresh.ledgerRevision) !== expectedRevision) {
+          throw revisionChangedError();
+        }
+        const afterRefresh = await portfolioRow(db, row.portfolio_id);
+        if (Number(afterRefresh.ledger_revision) !== expectedRevision) {
+          throw revisionChangedError();
+        }
+        if (refresh && refresh.historicalReplay === true && refresh.complete === false) {
+          const nextPhase = String(refresh.nextPhase || '').toLowerCase();
+          const nextCursor = String(refresh.nextCursor || '').slice(0, 10);
+          const targetThrough = String(refresh.targetThrough || '').slice(0, 10);
+          const lastNavDate = String(refresh.lastNavDate || '').slice(0, 10);
+          const lastUnitNav = Number(refresh.lastUnitNav);
+          if (!['replay', 'materialize', 'publish'].includes(nextPhase) ||
+              !/^\d{4}-\d{2}-\d{2}$/.test(targetThrough) ||
+              !/^\d{4}-\d{2}-\d{2}$/.test(lastNavDate) ||
+              !Number.isFinite(lastUnitNav) || lastNavDate > targetThrough ||
+              (nextPhase === 'replay' && (!/^\d{4}-\d{2}-\d{2}$/.test(nextCursor) ||
+                nextCursor <= lastNavDate || nextCursor > targetThrough)) ||
+              (nextPhase !== 'replay' && nextCursor)) {
+            throw new Error('NAV recalculation returned an invalid continuation');
+          }
+          const nextPayload = stableJson({
+            ...payload,
+            affectedFrom,
+            navReplay: {
+              portfolio: row.portfolio_id,
+              ledgerRevision: expectedRevision,
+              affectedFrom,
+              phase: nextPhase,
+              cursor: nextCursor || null,
+              targetThrough,
+              lastNavDate,
+              lastUnitNav,
+            },
+          });
+          await finishOutboxClaim(
+            db,
+            row,
+            claimToken,
+            "payload_json = ?, status = 'PENDING', available_at = ?, last_error = NULL, processed_at = NULL",
+            [nextPayload, now()],
+          );
+          results.push({
+            id: row.outbox_id,
+            kind: row.kind,
+            ok: true,
+            complete: false,
+            phase: refresh.phase,
+            nextPhase,
+            batchFrom: refresh.batchFrom,
+            batchThrough: refresh.batchThrough,
+            navRows: Number(refresh.navRows || 0),
+            nextCursor: nextCursor || null,
+            targetThrough,
+          });
+          break;
+        }
+        if (!refresh || refresh.complete !== true) {
+          throw new Error('NAV recalculation completion contract missing');
+        }
+        await finishOutboxClaim(
+          db,
+          row,
+          claimToken,
+          "status = 'DONE', attempts = attempts + 1, available_at = ?, processed_at = ?, last_error = NULL",
+          [now(), now()],
+        );
       } else if (row.kind === 'REBUILD_EXCEL') {
-        const dependency = await dbFirst(db, `
-          SELECT COUNT(*) AS count FROM ledger_outbox
-          WHERE portfolio_id = ? AND kind IN ('REBUILD_KV', 'RECALC_NAV')
-            AND ledger_revision <= ? AND status != 'DONE'
-        `, [row.portfolio_id, Number(row.ledger_revision)]);
-        if (Number(dependency && dependency.count || 0) > 0) continue;
+        const expectedRevision = Number(row.ledger_revision);
+        const portfolioState = await portfolioRow(db, row.portfolio_id);
+        if (Number(portfolioState.ledger_revision) !== expectedRevision) {
+          throw revisionChangedError();
+        }
         // On-demand export always reads current revision; this outbox item is
         // an observable invalidation rather than a stored binary workbook.
-        await db.prepare(`
-          UPDATE ledger_outbox SET status = 'DONE', attempts = attempts + 1,
-            processed_at = ?, last_error = NULL
-          WHERE portfolio_id = ? AND kind = 'REBUILD_EXCEL'
-            AND ledger_revision <= ? AND status IN ('PENDING', 'FAILED')
-        `).bind(now(), row.portfolio_id, Number(row.ledger_revision)).run();
+        await finishOutboxClaim(
+          db,
+          row,
+          claimToken,
+          "status = 'DONE', attempts = attempts + 1, available_at = ?, processed_at = ?, last_error = NULL",
+          [now(), now()],
+        );
       } else {
-        continue;
+        throw new Error('unsupported outbox kind');
       }
-      results.push({ id: row.outbox_id, kind: row.kind, ok: true });
+      results.push({ id: row.outbox_id, kind: row.kind, ok: true, complete: true });
+      await propagateAffectedFromAndSupersede(db, portfolio, now());
     } catch (error) {
+      if (isOutboxClaimLostError(error)) {
+        results.push({
+          id: row.outbox_id,
+          kind: row.kind,
+          ok: false,
+          complete: false,
+          retryable: true,
+          error: 'outbox claim lost',
+        });
+        break;
+      }
+      if (isRevisionChangedError(error)) {
+        const current = await portfolioRow(db, row.portfolio_id);
+        const superseded = Number(current.ledger_revision) > Number(row.ledger_revision);
+        try {
+          if (superseded) {
+            await finishOutboxClaim(
+              db,
+              row,
+              claimToken,
+              "status = 'DONE', available_at = ?, processed_at = ?, last_error = ?",
+              [now(), now(), 'superseded by newer ledger revision'],
+              false,
+            );
+          } else {
+            await finishOutboxClaim(
+              db,
+              row,
+              claimToken,
+              "status = 'PENDING', available_at = ?, last_error = ?, processed_at = NULL",
+              [now(), 'ledger revision changed; retry the latest outbox revision'],
+            );
+          }
+        } catch (claimError) {
+          if (!isOutboxClaimLostError(claimError)) throw claimError;
+          results.push({
+            id: row.outbox_id,
+            kind: row.kind,
+            ok: false,
+            complete: false,
+            retryable: true,
+            error: 'outbox claim lost',
+          });
+          break;
+        }
+        if (superseded) {
+          results.push({
+            id: row.outbox_id,
+            kind: row.kind,
+            ok: true,
+            complete: true,
+            superseded: true,
+          });
+          await propagateAffectedFromAndSupersede(db, portfolio, now());
+          continue;
+        }
+        results.push({
+          id: row.outbox_id,
+          kind: row.kind,
+          ok: false,
+          complete: false,
+          retryable: true,
+          error: 'ledger revision changed',
+        });
+        break;
+      }
       const attempts = Number(row.attempts || 0) + 1;
       const status = attempts >= 8 ? 'FAILED' : 'PENDING';
       const delay = Math.min(6 * 3600_000, 30_000 * 2 ** Math.min(attempts, 8));
-      await db.prepare(`
-        UPDATE ledger_outbox SET status = ?, attempts = ?, available_at = ?, last_error = ?
-        WHERE outbox_id = ?
-      `).bind(status, attempts, now() + delay, String(error.message || error).slice(0, 1000), row.outbox_id).run();
+      try {
+        await finishOutboxClaim(
+          db,
+          row,
+          claimToken,
+          'status = ?, attempts = ?, available_at = ?, last_error = ?, processed_at = NULL',
+          [status, attempts, now() + delay, String(error.message || error).slice(0, 1000)],
+        );
+      } catch (claimError) {
+        if (!isOutboxClaimLostError(claimError)) throw claimError;
+        results.push({
+          id: row.outbox_id,
+          kind: row.kind,
+          ok: false,
+          complete: false,
+          retryable: true,
+          error: 'outbox claim lost',
+        });
+        break;
+      }
       results.push({ id: row.outbox_id, kind: row.kind, ok: false, error: error.message });
     }
   }
-  return { ok: results.every(item => item.ok), processed: results.length, results };
+  const remainder = await outboxRemainder(db, portfolio);
+  return {
+    ok: results.every(item => item.ok),
+    processed: results.length,
+    pending: remainder.remaining > 0,
+    remaining: remainder.remaining,
+    nextAvailableAt: remainder.nextAvailableAt,
+    results,
+  };
 }
 
 export async function ledgerHealth(env) {
@@ -2264,7 +2738,8 @@ export async function ledgerHealth(env) {
       )
     `);
     const outbox = await dbFirst(db, `
-      SELECT COUNT(*) AS pending FROM ledger_outbox WHERE status IN ('PENDING', 'FAILED')
+      SELECT COUNT(*) AS pending FROM ledger_outbox
+      WHERE status IN ('PENDING', 'FAILED', 'PROCESSING')
     `).catch(() => ({ pending: 0 }));
     return { ready: Number(row && row.count || 0) === 12, outboxPending: Number(outbox && outbox.pending || 0) };
   } catch (error) {

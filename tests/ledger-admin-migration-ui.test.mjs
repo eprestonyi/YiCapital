@@ -96,6 +96,9 @@ test('legacy migration UI uses preview, signed confirm, and outbox contracts', a
   assert.match(drain, /api\(\s*["']\/api\/admin\/ledger\/outbox["']/);
   assert.match(drain, /method\s*:\s*["']POST["']/);
   assert.match(drain, /portfolio\s*:\s*state\.portfolio/);
+  assert.match(drain, /result\.pending\s*===\s*true/);
+  assert.match(drain, /item\.complete\s*===\s*false/);
+  assert.match(drain, /請繼續 Drain/);
 });
 
 test('legacy migration stays in memory and delegates bearer handling to YCAdmin', async () => {
