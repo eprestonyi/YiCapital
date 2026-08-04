@@ -3922,12 +3922,7 @@ export default {
               'Cache-Control': 'no-store',
             });
           }
-          return J(env, {
-            ok: false,
-            code: 'google_keys_unavailable',
-            local: String(error && error.message || 'unavailable').slice(0, 80),
-            remote: tokenInfoProbe.status || tokenInfoProbe.error || 'unavailable',
-          }, 503,
+          return J(env, { ok: false, code: 'google_keys_unavailable' }, 503,
             { 'Cache-Control': 'no-store', 'Retry-After': '5' });
         }
       }

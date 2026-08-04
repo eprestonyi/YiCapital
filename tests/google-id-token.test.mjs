@@ -83,6 +83,7 @@ test('verifies RS256 signature and required Google claims, then reuses the cache
       fetches += 1;
       assert.equal(url, 'https://keys.test/valid');
       assert.equal(init.signal.aborted, false);
+      assert.equal(init.redirect, 'manual');
       return jwksResponse([fixture.jwk]);
     },
   };
@@ -322,6 +323,7 @@ test('tokeninfo fallback revalidates identity claims and uses POST without putti
     fetch: async (url, init) => {
       assert.equal(String(url), 'https://oauth2.googleapis.com/tokeninfo');
       assert.equal(init.method, 'POST');
+      assert.equal(init.redirect, 'manual');
       assert.equal(String(url).includes(token), false);
       observedBody = init.body;
       return new Response(JSON.stringify({
@@ -351,6 +353,7 @@ test('tokeninfo fallback rejects invalid tokens and exposes only a reachability 
     fetch: async (url, init) => {
       assert.equal(String(url), 'https://oauth2.googleapis.com/tokeninfo');
       assert.equal(init.body, 'id_token=probe');
+      assert.equal(init.redirect, 'manual');
       return new Response('{}', { status: 400 });
     },
   }), true);

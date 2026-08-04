@@ -186,7 +186,7 @@ async function fetchJwks(url, fetchImpl, now, timeoutMs, keyCache, keyCacheKey) 
       response = await fetchImpl(url, {
         method: 'GET',
         headers: { Accept: 'application/json' },
-        redirect: 'error',
+        redirect: 'manual',
         signal: controller.signal,
       });
       if (!response || !response.ok) {
@@ -400,7 +400,7 @@ export async function verifyGoogleIdTokenWithTokenInfo(token, expectedAudience, 
         'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
       },
       body: 'id_token=' + encodeURIComponent(token),
-      redirect: 'error',
+      redirect: 'manual',
       signal: controller.signal,
     });
     if (!response || !response.ok) {
@@ -448,7 +448,7 @@ export async function probeGoogleTokenInfo(options = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
       body: 'id_token=probe',
-      redirect: 'error',
+      redirect: 'manual',
       signal: controller.signal,
     });
     const reachable = !!response && (response.status === 400 || response.status === 401);
