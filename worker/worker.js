@@ -1601,7 +1601,7 @@ async function tusharePortfolioCalendarTape(
       throw error;
     }
   }
-  const dates = rows.filter(row => row.isOpen).map(row => row.date);
+  const dates = [...new Set(rows.filter(row => row.isOpen).map(row => row.date))].sort();
   const watermarkResult = await adapter.query(request.watermarkDataset, {
     params: {
       ts_code: request.watermarkTicker,
@@ -1616,8 +1616,14 @@ async function tusharePortfolioCalendarTape(
     .sort()
     .at(-1) || null;
   const localToday = portfolioMarketDate(nowValue, market);
-  const unavailableCompletedSession = dates.find(date => !watermark || date > watermark) || null;
-  if (unavailableCompletedSession && unavailableCompletedSession <= localToday) {
+  // The current market date is not an EOD session until the raw-close
+  // watermark reaches it. During trading hours, keep it out of the immutable
+  // historical tape and let the separate counter-price path value today.
+  // A watermark gap strictly before the market's current date is still a
+  // missing completed session and must fail closed.
+  const unavailableCompletedSession = dates.find(date =>
+    date < localToday && (!watermark || date > watermark)) || null;
+  if (unavailableCompletedSession) {
     const error = new Error(`portfolio_eod_watermark_incomplete:${unavailableCompletedSession}`);
     error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
     throw error;
