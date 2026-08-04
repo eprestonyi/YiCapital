@@ -896,6 +896,57 @@ test('admin derived rebuild requeues the current revision idempotently without c
   assert.ok(auditByReason.has('repeat safely'));
 });
 
+test('admin rebuild cannot discard a tape that becomes published before its batch starts', async () => {
+  const { env } = await setup();
+  await createAndConfirm(env, {
+    type: 'CAPITAL', date: '2026-02-01', shareholder: 'LP1',
+    subscription: '1000.00', redemption: '0', unit_price: '1.00',
+  });
+  const database = env.FEEDBACK_DB.database;
+  const revision = database.prepare(`
+    SELECT ledger_revision FROM ledger_portfolios WHERE portfolio_id = 'us'
+  `).get().ledger_revision;
+  const tape = await freezeUsTape(env, revision, {
+    from: '2026-02-01',
+    prices: [{ ticker: 'AAA', date: '2026-02-01', close: 10 }],
+  });
+  const originalBatch = env.FEEDBACK_DB.batch.bind(env.FEEDBACK_DB);
+  let injectedPublication = false;
+  env.FEEDBACK_DB.batch = async statements => {
+    if (!injectedPublication) {
+      injectedPublication = true;
+      database.prepare(`
+        INSERT INTO ledger_nav_snapshots (
+          portfolio_id, nav_date, ledger_revision, cash_minor,
+          market_value_minor, total_assets_minor, liability_minor,
+          liability_asset_ratio_micros, net_value_minor, units_micros,
+          unit_nav_micros, fund_action_adjustment_minor, source, source_ref,
+          valuation_json, warnings_json, calculated_at
+        ) VALUES (
+          'us', '2026-02-01', ?, 100000,
+          0, 100000, 0,
+          0, 100000, 1000000000,
+          1000000, 0, 'race-publish', 'unit-test',
+          '{"priceBasis":"raw_close","adjusted":false}', '[]', 123456
+        )
+      `).run(revision);
+    }
+    return originalBatch(statements);
+  };
+
+  const response = await api(env, '/api/admin/ledger/rebuild', {
+    method: 'POST', body: { portfolio: 'us', reason: 'concurrent publish guard' },
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.body.discardedPriceTapeId, null);
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_price_tapes WHERE price_tape_id = ?
+  `).get(tape.priceTapeId).count, 1);
+  assert.ok(database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_price_tape_rows WHERE price_tape_id = ?
+  `).get(tape.priceTapeId).count > 0);
+});
+
 test('admin derived rebuild defers an ordered outbox drain when refresh is available', async () => {
   const { env } = await setup();
   await createAndConfirm(env, {
