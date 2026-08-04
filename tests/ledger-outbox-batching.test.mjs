@@ -173,8 +173,8 @@ function historicalAdapter() {
       calls.push({ dataset, tsCode: request.params.ts_code });
       if (dataset === 'us_tradecal') return officialCalendar(request, dates);
       assert.equal(dataset, 'us_daily');
-      if (request.params.ts_code === 'SPY') return { data: dates.map((trade_date, index) => ({
-        ts_code: 'SPY', trade_date, close: 600 + index,
+      if (request.params.ts_code === 'AAPL') return { data: dates.map((trade_date, index) => ({
+        ts_code: 'AAPL', trade_date, close: 600 + index,
       })) };
       assert.equal(request.params.ts_code, 'AAA');
       return { data: dates.map((trade_date, index) => ({
@@ -193,7 +193,7 @@ async function seedFrozenTape(env) {
     calendarFrom: dates[0],
     calendarDates: dates,
     calendarSource: 'tushare:us_tradecal+us_daily',
-    calendarSourceRef: 'us_tradecal:is_open+us_daily:SPY:eod-watermark',
+    calendarSourceRef: 'us_tradecal:is_open+us_daily:AAPL:eod-watermark',
     requiredTickers: ['AAA'],
     priceSource: 'tushare:us_daily',
     priceBasis: 'raw_close',
