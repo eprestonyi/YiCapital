@@ -732,15 +732,35 @@ function canonicalNavSeedRow(raw, portfolio, index) {
   }
   const cashMinor = scaledInteger(raw.cash, 100, `${date} cash`);
   const marketValueMinor = scaledInteger(raw.market_value ?? raw.marketValue, 100, `${date} market_value`);
-  const totalAssetsMinor = scaledInteger(raw.total_assets ?? raw.totalAssets, 100, `${date} total_assets`);
+  const suppliedTotalAssetsMinor = scaledInteger(
+    raw.total_assets ?? raw.totalAssets,
+    100,
+    `${date} total_assets`,
+  );
   const liabilityMinor = scaledInteger(raw.liability, 100, `${date} liability`);
+  const suppliedNetValueMinor = scaledInteger(
+    raw.net_value ?? raw.netValue,
+    100,
+    `${date} net_value`,
+  );
+  if (Math.abs(suppliedTotalAssetsMinor - cashMinor - marketValueMinor) > 2) {
+    throw new LedgerHttpError(422, `${date} NAV 總資產不等於現金加持倉市值`);
+  }
+  if (Math.abs(suppliedNetValueMinor - suppliedTotalAssetsMinor + liabilityMinor) > 2) {
+    throw new LedgerHttpError(422, `${date} NAV 淨值不等於總資產減負債`);
+  }
+  // Persist the accounting identities from their authoritative components.
+  // Independently rounded floating totals can otherwise differ by one cent
+  // when a raw counter price lands on a half-cent boundary.
+  const totalAssetsMinor = cashMinor + marketValueMinor;
+  const netValueMinor = totalAssetsMinor - liabilityMinor;
   const liabilityAssetRatioMicros = scaledInteger(
-    raw.liability_asset_ratio ?? raw.liabilityAssetRatio ?? (totalAssetsMinor ? liabilityMinor / totalAssetsMinor : 0),
+    raw.liability_asset_ratio ?? raw.liabilityAssetRatio ??
+      (totalAssetsMinor ? liabilityMinor / totalAssetsMinor : 0),
     1_000_000,
     `${date} liability_asset_ratio`,
     true,
   );
-  const netValueMinor = scaledInteger(raw.net_value ?? raw.netValue, 100, `${date} net_value`);
   const unitsMicros = scaledInteger(raw.units, 1_000_000, `${date} units`);
   const unitNavMicros = scaledInteger(raw.unit_nav ?? raw.unitNav ?? raw.nav, 1_000_000, `${date} unit_nav`, true);
   const fundActionAdjustmentMinor = scaledInteger(
@@ -751,21 +771,15 @@ function canonicalNavSeedRow(raw, portfolio, index) {
   if (String(raw.currency || PORTFOLIOS[portfolio].currency).toUpperCase() !== PORTFOLIOS[portfolio].currency) {
     throw new LedgerHttpError(422, `${date} NAV 幣種與基金不匹配`);
   }
-  if (Math.abs(totalAssetsMinor - cashMinor - marketValueMinor) > 2) {
-    throw new LedgerHttpError(422, `${date} NAV 總資產不等於現金加持倉市值`);
-  }
-  if (Math.abs(netValueMinor - totalAssetsMinor + liabilityMinor) > 2) {
-    throw new LedgerHttpError(422, `${date} NAV 淨值不等於總資產減負債`);
-  }
   if (unitsMicros < 0 || (unitsMicros > 0 && unitNavMicros == null)) {
     throw new LedgerHttpError(422, `${date} NAV 份額或單位淨值無效`);
   }
   if (unitsMicros > 0 && unitNavMicros != null) {
     const expectedUnitNavMicros = Math.round(
-      (netValueMinor / 100) / (unitsMicros / 1_000_000) * 1_000_000,
+      (suppliedNetValueMinor / 100) / (unitsMicros / 1_000_000) * 1_000_000,
     );
-    // net value is stored to cents while Python-compatible unit NAV is
-    // calculated from the exact, pre-display net value. Permit only the
+    // The supplied net value is rounded to cents while Python-compatible unit
+    // NAV is calculated from the exact, pre-display net value. Permit only the
     // mathematically unavoidable half-cent storage delta plus one micro for
     // unit-NAV rounding; this is not a loose accounting tolerance.
     const units = unitsMicros / 1_000_000;
@@ -3522,7 +3536,10 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
   return ledger;
 }
 
-const NAV_REPLAY_DEFAULT_BATCH_SIZE = 20;
+// Cloudflare scheduled invocations have a tighter CPU ceiling than admin
+// requests. Keep every continuation small enough for minute-cron replay even
+// after the event history and frozen raw-price tape have grown.
+const NAV_REPLAY_DEFAULT_BATCH_SIZE = 5;
 const NAV_REPLAY_MAX_BATCH_SIZE = 50;
 
 function navReplayBatchSize(value) {

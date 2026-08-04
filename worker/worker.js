@@ -1704,7 +1704,7 @@ async function writePortfolioAttempt(env, pf, status) {
 }
 
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
-const HISTORICAL_NAV_DEFAULT_BATCH_SIZE = 20;
+const HISTORICAL_NAV_DEFAULT_BATCH_SIZE = 5;
 const HISTORICAL_NAV_MAX_BATCH_SIZE = 50;
 const compactIsoDate = value => String(value || '').slice(0, 10).replaceAll('-', '');
 const addIsoDays = (value, days) => {
