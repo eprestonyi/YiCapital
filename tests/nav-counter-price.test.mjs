@@ -1038,6 +1038,35 @@ test('live market value sums exact fractional quantity-price products before rou
     liability: 0, totalAssets: 1, netValue: 1,
     mv: 1, divPerUnit: 0,
   });
+
+  const priorKv = Object.fromEntries(
+    ['ledger:us', 'live:us', 'lastpx:us', 'navstatus:us', 'navcache:us']
+      .map(key => [key, env.YC_KV.values.get(key)]),
+  );
+  const originalPut = env.YC_KV.put.bind(env.YC_KV);
+  let revisionAdvanced = false;
+  env.YC_KV.put = async (key, value) => {
+    await originalPut(key, value);
+    if (key === 'navcache:us' && !revisionAdvanced) {
+      revisionAdvanced = true;
+      database.prepare(`
+        UPDATE ledger_portfolios SET ledger_revision = 4 WHERE portfolio_id = 'us'
+      `).run();
+    }
+  };
+  yahooPrice = 3;
+  await assert.rejects(
+    updatePortfolioNav(env, 'us', {
+      adapter,
+      now: () => Date.parse('2026-07-30T19:00:00.000Z'),
+      fetch: yahooFetch,
+    }),
+    error => error && error.details && error.details.code === 'LEDGER_REVISION_CHANGED',
+  );
+  assert.equal(revisionAdvanced, true);
+  for (const [key, value] of Object.entries(priorKv)) {
+    assert.equal(env.YC_KV.values.get(key), value, key);
+  }
 });
 
 test('A 2025-01-06 NAV uses raw counter closes and rejects the old adjusted-price result', async () => {
