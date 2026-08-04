@@ -164,6 +164,10 @@ function stripSyncFields(event) {
     'portfolio', 'portfolio_id',
     '__yi_event_id', '__yi_event_version', '__yi_base_hash', '__yi_sync_token',
   ].forEach(key => delete copy[key]);
+  // Dividend price is a display-only derivative of authoritative Amount / quantity.
+  // Legacy workbooks retained more precision here than the reversible Excel format,
+  // so hashing it would turn an untouched export into a false UPDATE.
+  if (upper(copy.event_type || copy.type) === 'DIVIDEND') delete copy.price;
   return copy;
 }
 const canonicalHash = event => sha256Hex(stableJson(stripSyncFields(event)));
@@ -408,7 +412,11 @@ async function requestDerivedRebuild(db, body, actor) {
   const guardId = makeId('ltg');
   const requestId = makeId('ldr');
   const kinds = ['RECALC_NAV', 'REBUILD_KV', 'REBUILD_EXCEL'];
-  const payload = stableJson({ affectedFrom, reason });
+  // An administrator rebuild is also the recovery path for a tape that is
+  // internally complete but has not yet appended the provider's newest EOD
+  // session.  Force the NAV worker to probe the official raw-close watermark
+  // instead of taking the publish-only fast path for the existing tape.
+  const payload = stableJson({ affectedFrom, probeEod: true, reason });
   try {
     const batchResults = await db.batch([
       ...(discardCandidatePriceTapeId ? [
@@ -1174,7 +1182,13 @@ export async function enqueueDailyNavReplay(env, requestedPortfolios = ['us', 'h
     const outboxId = makeId('lob');
     const payload = stableJson({
       affectedFrom: tape.tapeThrough,
+      probeEod: true,
       reason: 'scheduled-eod-raw-tape-extension',
+    });
+    const followUpEod = stableJson({
+      affectedFrom: tape.tapeThrough,
+      reason: 'scheduled-eod-raw-tape-extension',
+      requestedAt: timestamp,
     });
     await db.batch([
       db.prepare(`
@@ -1199,13 +1213,27 @@ export async function enqueueDailyNavReplay(env, requestedPortfolios = ['us', 'h
         SELECT ?, ?, ?, 'RECALC_NAV', ?, 'PENDING', 0, ?, NULL, ?, NULL
         FROM ledger_transaction_guards WHERE guard_id = ?
         ON CONFLICT(portfolio_id, ledger_revision, kind) DO UPDATE SET
-          payload_json = excluded.payload_json,
-          status = 'PENDING', attempts = 0, available_at = excluded.available_at,
-          last_error = NULL, processed_at = NULL
-        WHERE ledger_outbox.status = 'DONE'
+          payload_json = CASE
+            WHEN ledger_outbox.status = 'DONE' THEN excluded.payload_json
+            ELSE json_set(
+              CASE WHEN json_valid(ledger_outbox.payload_json)
+                THEN ledger_outbox.payload_json ELSE '{}' END,
+              '$.followUpEod', json(?)
+            )
+          END,
+          status = CASE WHEN ledger_outbox.status = 'DONE'
+            THEN 'PENDING' ELSE ledger_outbox.status END,
+          attempts = CASE WHEN ledger_outbox.status = 'DONE'
+            THEN 0 ELSE ledger_outbox.attempts END,
+          available_at = CASE WHEN ledger_outbox.status = 'DONE'
+            THEN excluded.available_at ELSE ledger_outbox.available_at END,
+          last_error = CASE WHEN ledger_outbox.status = 'DONE'
+            THEN NULL ELSE ledger_outbox.last_error END,
+          processed_at = CASE WHEN ledger_outbox.status = 'DONE'
+            THEN NULL ELSE ledger_outbox.processed_at END
       `).bind(
         outboxId, portfolio, ledgerRevision, payload,
-        timestamp, timestamp, guardId,
+        timestamp, timestamp, guardId, followUpEod,
       ),
       db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
     ]);
@@ -2073,6 +2101,9 @@ export async function persistLedgerValuationBatch(
   const replaceFrom = String(batch.replaceFrom || '').slice(0, 10);
   const replaceThrough = String(batch.replaceThrough || '').slice(0, 10);
   const pruneAfter = batch.pruneAfter === true;
+  const preserveCurrentSessionDate = String(
+    batch.preserveCurrentSessionDate || '',
+  ).slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(replaceFrom) ||
       !/^\d{4}-\d{2}-\d{2}$/.test(replaceThrough) || replaceFrom > replaceThrough) {
     throw new LedgerHttpError(422, '歷史 NAV 替換日期範圍無效');
@@ -2145,13 +2176,34 @@ export async function persistLedgerValuationBatch(
     `).bind(portfolio, replaceFrom, replaceThrough),
   ];
   if (pruneAfter) {
-    // A stale live/intraday row after the frozen EOD target must not leak into
-    // historical publication. It is derived state and the counter refresh can
-    // rebuild it after this revision-fenced replay completes.
+    // Remove stale/future derived rows after the frozen EOD target, but retain
+    // one same-revision, session-verified current counter. A long historical
+    // replay can finish after the market closes, when the minute cron can no
+    // longer recreate a counter row that it wrote earlier that day.
     statements.push(db.prepare(`
       DELETE FROM ledger_nav_snapshots
       WHERE portfolio_id = ? AND nav_date > ? AND ledger_revision <= ?
-    `).bind(portfolio, replaceThrough, revision));
+        AND NOT (
+          ledger_revision = ? AND nav_date = ?
+          AND json_extract(valuation_json, '$.adjusted') = 0
+          AND LOWER(COALESCE(
+            json_extract(valuation_json, '$.priceBasis'),
+            json_extract(valuation_json, '$.price_basis'), ''
+          )) IN ('raw_counter', 'raw_close', 'cash_only')
+          AND COALESCE(
+            json_extract(valuation_json, '$.sessionVerified'),
+            json_extract(valuation_json, '$.session_verified'), 0
+          ) = 1
+          AND COALESCE(
+            json_extract(valuation_json, '$.quoteDate'),
+            json_extract(valuation_json, '$.quote_date'), ''
+          ) = nav_date
+        )
+    `).bind(
+      portfolio, replaceThrough, revision,
+      revision, /^\d{4}-\d{2}-\d{2}$/.test(preserveCurrentSessionDate)
+        ? preserveCurrentSessionDate : '',
+    ));
   }
   if (priceRows.length) {
     statements.push(db.prepare(`
@@ -3686,6 +3738,50 @@ async function finishOutboxClaim(
   if (changedRows(result) !== 1) throw outboxClaimLostError();
 }
 
+async function completeNavOutboxClaim(db, row, claimToken) {
+  const timestamp = now();
+  const hasFollowUp = `
+    json_valid(payload_json)
+    AND json_type(payload_json, '$.followUpEod') = 'object'
+    AND json_extract(payload_json, '$.followUpEod.affectedFrom') GLOB '????-??-??'
+  `;
+  const result = await db.prepare(`
+    UPDATE ledger_outbox SET
+      payload_json = CASE WHEN ${hasFollowUp} THEN json_object(
+        'affectedFrom', json_extract(payload_json, '$.followUpEod.affectedFrom'),
+        'probeEod', json('true'),
+        'reason', COALESCE(
+          json_extract(payload_json, '$.followUpEod.reason'),
+          'scheduled-eod-raw-tape-extension'
+        ),
+        'requestedAt', json_extract(payload_json, '$.followUpEod.requestedAt')
+      ) ELSE payload_json END,
+      status = CASE WHEN ${hasFollowUp} THEN 'PENDING' ELSE 'DONE' END,
+      attempts = attempts + 1,
+      available_at = ?,
+      processed_at = CASE WHEN ${hasFollowUp} THEN NULL ELSE ? END,
+      last_error = NULL
+    WHERE outbox_id = ? AND ledger_revision = ?
+      AND status = 'PROCESSING' AND last_error = ?
+      AND EXISTS (
+        SELECT 1 FROM ledger_portfolios
+        WHERE portfolio_id = ledger_outbox.portfolio_id
+          AND ledger_revision = ledger_outbox.ledger_revision
+      )
+  `).bind(
+    timestamp, timestamp,
+    row.outbox_id, Number(row.ledger_revision), claimToken,
+  ).run();
+  if (changedRows(result) !== 1) throw outboxClaimLostError();
+  const completed = await dbFirst(db, `
+    SELECT status, payload_json FROM ledger_outbox WHERE outbox_id = ?
+  `, [row.outbox_id]);
+  return {
+    followUpEod: completed && completed.status === 'PENDING',
+    payload: parseJson(completed && completed.payload_json, {}),
+  };
+}
+
 async function outboxRemainder(db, portfolio) {
   const row = await dbFirst(db, `
     SELECT COUNT(*) AS remaining, MIN(available_at) AS next_available_at
@@ -3715,6 +3811,7 @@ export async function drainLedgerOutbox(env, options = {}) {
     );
     if (!claimed) break;
     const { row, claimToken } = claimed;
+    let completionDetails = null;
     try {
       if (row.kind === 'REBUILD_KV') {
         await materializeLedgerKv(env, row.portfolio_id, {
@@ -3745,6 +3842,7 @@ export async function drainLedgerOutbox(env, options = {}) {
         const refresh = await options.refreshPortfolio(env, row.portfolio_id, {
           ledgerRevision: expectedRevision,
           affectedFrom,
+          probeEod: payload.probeEod === true,
           batchSize: navBatchSize,
           phase: checkpoint && checkpoint.phase,
           cursor: checkpoint && checkpoint.cursor,
@@ -3795,8 +3893,18 @@ export async function drainLedgerOutbox(env, options = {}) {
             db,
             row,
             claimToken,
-            "payload_json = ?, status = 'PENDING', available_at = ?, last_error = NULL, processed_at = NULL",
-            [nextPayload, now()],
+            `payload_json = CASE
+              WHEN json_valid(payload_json)
+                AND json_type(payload_json, '$.followUpEod') = 'object'
+              THEN json_set(
+                ?, '$.followUpEod',
+                json(json_extract(payload_json, '$.followUpEod'))
+              )
+              ELSE ?
+            END,
+            status = 'PENDING', available_at = ?,
+            last_error = NULL, processed_at = NULL`,
+            [nextPayload, nextPayload, now()],
           );
           results.push({
             id: row.outbox_id,
@@ -3816,13 +3924,7 @@ export async function drainLedgerOutbox(env, options = {}) {
         if (!refresh || refresh.complete !== true) {
           throw new Error('NAV recalculation completion contract missing');
         }
-        await finishOutboxClaim(
-          db,
-          row,
-          claimToken,
-          "status = 'DONE', attempts = attempts + 1, available_at = ?, processed_at = ?, last_error = NULL",
-          [now(), now()],
-        );
+        completionDetails = await completeNavOutboxClaim(db, row, claimToken);
       } else if (row.kind === 'REBUILD_EXCEL') {
         const expectedRevision = Number(row.ledger_revision);
         const portfolioState = await portfolioRow(db, row.portfolio_id);
@@ -3841,7 +3943,15 @@ export async function drainLedgerOutbox(env, options = {}) {
       } else {
         throw new Error('unsupported outbox kind');
       }
-      results.push({ id: row.outbox_id, kind: row.kind, ok: true, complete: true });
+      results.push({
+        id: row.outbox_id,
+        kind: row.kind,
+        ok: true,
+        complete: true,
+        ...(completionDetails && completionDetails.followUpEod
+          ? { followUpEod: true }
+          : {}),
+      });
       await propagateAffectedFromAndSupersede(db, portfolio, now());
     } catch (error) {
       if (isOutboxClaimLostError(error)) {
@@ -3983,13 +4093,31 @@ export async function ledgerHealth(env) {
           continue;
         }
         try {
-          const [tape, navRows, recalcOutbox] = await Promise.all([
+          const [tape, navRows, recalcOutbox, verifiedPriceSession] = await Promise.all([
             loadFrozenLedgerPriceTape(env, portfolio, revision),
             loadNavSnapshots(db, portfolio, revision),
             dbFirst(db, `
               SELECT COUNT(*) AS pending FROM ledger_outbox
               WHERE portfolio_id = ? AND ledger_revision = ? AND kind = 'RECALC_NAV'
                 AND status IN ('PENDING', 'FAILED', 'PROCESSING')
+            `, [portfolio, revision]),
+            dbFirst(db, `
+              SELECT MAX(price_date) AS expected_session_date
+              FROM ledger_prices
+              WHERE portfolio_id = ? AND ledger_revision = ?
+                AND json_extract(valuation_json, '$.adjusted') = 0
+                AND LOWER(COALESCE(
+                  json_extract(valuation_json, '$.priceBasis'),
+                  json_extract(valuation_json, '$.price_basis'), ''
+                )) IN ('raw_counter', 'raw_close')
+                AND COALESCE(
+                  json_extract(valuation_json, '$.sessionVerified'),
+                  json_extract(valuation_json, '$.session_verified'), 0
+                ) = 1
+                AND COALESCE(
+                  json_extract(valuation_json, '$.quoteDate'),
+                  json_extract(valuation_json, '$.quote_date'), ''
+                ) = price_date
             `, [portfolio, revision]),
           ]);
           const navByDate = new Map(navRows.map(item => [item.date, item]));
@@ -4000,20 +4128,38 @@ export async function ledgerHealth(env) {
             ? navRows.filter(item => item.date > tape.tapeThrough)
             : [];
           const currentCounterReady = postTapeRows.length <= 1 && postTapeRows.every(item => {
-            const basis = String(item.valuation && item.valuation.priceBasis || '').toLowerCase();
+            const valuation = item.valuation && typeof item.valuation === 'object'
+              ? item.valuation : {};
+            const basis = String(
+              valuation.priceBasis || valuation.price_basis || '',
+            ).toLowerCase();
+            const verifiedSession = (valuation.sessionVerified === true ||
+              valuation.session_verified === true) &&
+              String(valuation.quoteDate || valuation.quote_date || '').slice(0, 10) === item.date;
+            const verifiedRawPrice = ['raw_counter', 'raw_close'].includes(basis) &&
+              verifiedSession;
             const verifiedCashOnly = basis === 'cash_only' &&
-              item.valuation && item.valuation.sessionVerified === true &&
-              String(item.valuation.quoteDate || '').slice(0, 10) === item.date;
+              verifiedSession;
             return Number(item.ledgerRevision) === revision &&
-              item.valuation && item.valuation.adjusted === false &&
-              (basis === 'raw_counter' || basis === 'raw_close' || verifiedCashOnly) &&
-              String(item.valuation.source || '').trim().length > 0;
+              valuation.adjusted === false &&
+              (verifiedRawPrice || verifiedCashOnly) &&
+              String(valuation.source || '').trim().length > 0;
           });
           const exactTarget = !!tape && !!last &&
             (last.date === tape.tapeThrough || currentCounterReady && postTapeRows.length === 1) &&
             Number(navByDate.get(tape.tapeThrough)?.ledgerRevision) === revision;
+          const knownVerifiedSession = String(
+            verifiedPriceSession && verifiedPriceSession.expected_session_date || '',
+          ).slice(0, 10) || null;
+          const expectedSessionDate = [
+            tape && tape.tapeThrough,
+            knownVerifiedSession,
+          ].filter(Boolean).sort().at(-1) || null;
+          const completedSessionFresh = !!last && !!expectedSessionDate &&
+            last.date >= expectedSessionDate;
           const noPendingRecalc = Number(recalcOutbox && recalcOutbox.pending || 0) === 0;
-          const portfolioReady = !!tape && coverageReady && noDirtyRows && exactTarget && noPendingRecalc;
+          const portfolioReady = !!tape && coverageReady && noDirtyRows &&
+            completedSessionFresh && exactTarget && noPendingRecalc;
           rawNavPortfolios[portfolio] = {
             ledgerRevision: revision,
             required: true,
@@ -4021,13 +4167,17 @@ export async function ledgerHealth(env) {
             tapeThrough: tape && tape.tapeThrough || null,
             latestNavDate: last && last.date || null,
             currentCounterAfterTape: currentCounterReady && postTapeRows.length === 1,
+            expectedCompletedSession: expectedSessionDate,
+            knownVerifiedPriceSession: knownVerifiedSession,
+            completedSessionFresh,
             priceTapeId: tape && tape.priceTapeId || null,
             priceBasis: tape ? 'raw_close' : null,
             adjusted: tape ? false : null,
             reason: portfolioReady ? null
               : !tape ? 'CURRENT_REVISION_RAW_TAPE_MISSING'
-                : !coverageReady ? 'NAV_CALENDAR_COVERAGE_MISSING'
-                  : !noDirtyRows ? 'NAV_RECALCULATION_REQUIRED'
+              : !coverageReady ? 'NAV_CALENDAR_COVERAGE_MISSING'
+                : !noDirtyRows ? 'NAV_RECALCULATION_REQUIRED'
+                  : !completedSessionFresh ? 'RAW_NAV_COMPLETED_SESSION_STALE'
                     : !exactTarget ? 'NAV_TARGET_MISMATCH'
                       : 'RECALC_NAV_OUTBOX_PENDING',
           };

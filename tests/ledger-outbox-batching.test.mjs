@@ -8,8 +8,10 @@ import {
   drainLedgerOutbox,
   enqueueDailyNavReplay,
   freezeLedgerPriceTape,
+  handleLedgerAdminRequest,
   ledgerHealth,
   materializeLedgerKv,
+  persistLedgerValuation,
   persistLedgerValuationBatch,
   portfolioDerivationState,
 } from '../worker/ledger-store.js';
@@ -205,7 +207,7 @@ async function seedFrozenTape(env) {
   }, 2);
 }
 
-test('daily EOD scheduling requeues only DONE and preserves unfinished checkpoints', async () => {
+test('daily EOD scheduling requeues DONE and attaches intent to unfinished checkpoints', async () => {
   const env = await setup();
   seedEvents(env);
   await seedFrozenTape(env);
@@ -221,7 +223,8 @@ test('daily EOD scheduling requeues only DONE and preserves unfinished checkpoin
   assert.equal(row.kind, 'RECALC_NAV');
   assert.equal(row.status, 'PENDING');
   assert.deepEqual(JSON.parse(row.payload_json), {
-    affectedFrom: '2026-07-24', reason: 'scheduled-eod-raw-tape-extension',
+    affectedFrom: '2026-07-24', probeEod: true,
+    reason: 'scheduled-eod-raw-tape-extension',
   });
   for (const status of ['PENDING', 'FAILED', 'PROCESSING']) {
     const protectedPayload = JSON.stringify({
@@ -234,7 +237,7 @@ test('daily EOD scheduling requeues only DONE and preserves unfinished checkpoin
       WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
     `).run(protectedPayload, status, `keep:${status}`);
     const before = env.FEEDBACK_DB.database.prepare(`
-      SELECT payload_json, status, attempts, available_at, last_error, processed_at
+      SELECT status, attempts, available_at, last_error, processed_at
       FROM ledger_outbox WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
     `).get();
     await enqueueDailyNavReplay(env, ['us']);
@@ -242,7 +245,21 @@ test('daily EOD scheduling requeues only DONE and preserves unfinished checkpoin
       SELECT payload_json, status, attempts, available_at, last_error, processed_at
       FROM ledger_outbox WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
     `).get();
-    assert.deepEqual(after, before, `${status} continuation must remain byte-for-byte intact`);
+    const afterPayload = JSON.parse(after.payload_json);
+    delete after.payload_json;
+    assert.deepEqual(after, before, `${status} checkpoint state must remain intact`);
+    assert.deepEqual({
+      affectedFrom: afterPayload.affectedFrom,
+      navReplay: afterPayload.navReplay,
+    }, JSON.parse(protectedPayload));
+    assert.deepEqual({
+      affectedFrom: afterPayload.followUpEod.affectedFrom,
+      reason: afterPayload.followUpEod.reason,
+    }, {
+      affectedFrom: '2026-07-24',
+      reason: 'scheduled-eod-raw-tape-extension',
+    });
+    assert.ok(Number.isInteger(afterPayload.followUpEod.requestedAt));
   }
 
   env.FEEDBACK_DB.database.prepare(`
@@ -257,10 +274,80 @@ test('daily EOD scheduling requeues only DONE and preserves unfinished checkpoin
   `).get();
   assert.deepEqual({ ...requeued }, {
     payload_json: JSON.stringify({
-      affectedFrom: '2026-07-24', reason: 'scheduled-eod-raw-tape-extension',
+      affectedFrom: '2026-07-24', probeEod: true,
+      reason: 'scheduled-eod-raw-tape-extension',
     }),
     status: 'PENDING', attempts: 0, last_error: null, processed_at: null,
   });
+});
+
+test('a busy NAV replay remembers and automatically runs the EOD follow-up', async () => {
+  const env = await setup();
+  seedEvents(env);
+  await seedFrozenTape(env);
+  insertOutbox(env, {
+    id: 'nav-2', revision: 2, kind: 'RECALC_NAV',
+    payload: { affectedFrom: '2026-07-20', reason: 'long historical replay' },
+  });
+
+  let firstEnteredResolve;
+  let firstReleaseResolve;
+  const firstEntered = new Promise(resolve => { firstEnteredResolve = resolve; });
+  const firstRelease = new Promise(resolve => { firstReleaseResolve = resolve; });
+  const calls = [];
+  const refreshPortfolio = async (_runtimeEnv, portfolio, options) => {
+    calls.push({ portfolio, ...options });
+    if (calls.length === 1) {
+      firstEnteredResolve();
+      await firstRelease;
+    }
+    return {
+      historicalReplay: true,
+      complete: true,
+      ledgerRevision: 2,
+      fallback: false,
+    };
+  };
+
+  const drainPromise = drainLedgerOutbox(env, { portfolio: 'us', refreshPortfolio });
+  await firstEntered;
+  await enqueueDailyNavReplay(env, ['us']);
+  const during = outboxRows(env).find(row => row.outbox_id === 'nav-2');
+  assert.equal(during.status, 'PROCESSING');
+  assert.match(during.last_error, /^OUTBOX_CLAIM:/);
+  const duringPayload = JSON.parse(during.payload_json);
+  assert.deepEqual({
+    affectedFrom: duringPayload.followUpEod.affectedFrom,
+    reason: duringPayload.followUpEod.reason,
+  }, {
+    affectedFrom: '2026-07-24',
+    reason: 'scheduled-eod-raw-tape-extension',
+  });
+  assert.ok(Number.isInteger(duringPayload.followUpEod.requestedAt));
+
+  firstReleaseResolve();
+  const drained = await drainPromise;
+  assert.equal(drained.ok, true, JSON.stringify(drained));
+  assert.equal(drained.pending, false);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].probeEod, false);
+  assert.equal(calls[1].probeEod, true);
+  assert.equal(calls[1].affectedFrom, '2026-07-24');
+  assert.equal(drained.results[0].followUpEod, true);
+  const final = outboxRows(env).find(row => row.outbox_id === 'nav-2');
+  assert.equal(final.status, 'DONE');
+  assert.equal(final.attempts, 2);
+  const finalPayload = JSON.parse(final.payload_json);
+  assert.deepEqual({
+    affectedFrom: finalPayload.affectedFrom,
+    probeEod: finalPayload.probeEod,
+    reason: finalPayload.reason,
+  }, {
+    affectedFrom: '2026-07-24',
+    probeEod: true,
+    reason: 'scheduled-eod-raw-tape-extension',
+  });
+  assert.ok(Number.isInteger(finalPayload.requestedAt));
 });
 
 test('historical NAV outbox resumes in bounded replay, materialize, and publish phases', async () => {
@@ -579,6 +666,244 @@ test('current-revision NAV publishes without rewrite only when its raw tape is a
   );
   assert.equal(staleResponse.status, 503);
   assert.equal((await staleResponse.json()).pending, true);
+});
+
+test('admin rebuild probes and appends a newer official EOD session', async () => {
+  const env = await setup();
+  seedEvents(env);
+  const dates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24'];
+  await persistLedgerValuationBatch(env, 'us', {
+    replaceFrom: dates[0],
+    replaceThrough: dates.at(-1),
+    navRows: dates.map((date, index) => ({
+      date,
+      cash: index === 0 ? 1000 : 900,
+      market_value: index === 0 ? 0 : [100, 110, 115, 120][index - 1],
+      total_assets: index === 0 ? 1000 : 900 + [100, 110, 115, 120][index - 1],
+      liability: 0,
+      net_value: index === 0 ? 1000 : 900 + [100, 110, 115, 120][index - 1],
+      units: 1000,
+      unit_nav: index === 0 ? 1 : (900 + [100, 110, 115, 120][index - 1]) / 1000,
+      sourceRef: 'admin-eod-probe-fixture',
+    })),
+    priceRows: [],
+  }, 2);
+  await seedFrozenTape(env);
+  await materializeLedgerKv(env, 'us', { expectedLedgerRevision: 2 });
+
+  const queuedResponse = await handleLedgerAdminRequest(
+    new Request('https://ledger.test/api/admin/ledger/rebuild', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ portfolio: 'us', reason: 'probe newest official EOD' }),
+    }),
+    env,
+    { actor: 'test-admin' },
+  );
+  assert.equal(queuedResponse.status, 200);
+  const queued = await queuedResponse.json();
+  assert.equal(queued.ledgerRevision, 2);
+  const recalc = outboxRows(env).find(row => row.kind === 'RECALC_NAV');
+  assert.equal(JSON.parse(recalc.payload_json).probeEod, true);
+
+  const calls = [];
+  let watermarkReady = false;
+  const adapter = {
+    async query(dataset, request) {
+      calls.push({ dataset, params: { ...request.params } });
+      if (dataset === 'us_tradecal') {
+        return officialCalendar(request, ['20260727']);
+      }
+      assert.equal(dataset, 'us_daily');
+      if (request.params.ts_code === 'AAPL') {
+        return { data: [{
+          ts_code: 'AAPL',
+          trade_date: watermarkReady ? '20260727' : '20260724',
+          close: watermarkReady ? 605 : 604,
+        }] };
+      }
+      assert.equal(request.params.ts_code, 'AAA');
+      return { data: [{ ts_code: 'AAA', trade_date: '20260727', close: 13 }] };
+    },
+  };
+  const probeNow = () => Date.parse('2026-07-27T22:00:00.000Z');
+  let drained = await drainLedgerOutbox(env, {
+    portfolio: 'us',
+    refreshPortfolio: (runtimeEnv, portfolio, options) =>
+      updatePortfolioNav(runtimeEnv, portfolio, {
+        ...options,
+        adapter,
+        now: probeNow,
+      }),
+  });
+  assert.equal(drained.ok, false);
+  assert.equal(drained.pending, true);
+  let waiting = outboxRows(env).find(row => row.kind === 'RECALC_NAV');
+  assert.equal(waiting.status, 'PENDING');
+  assert.match(waiting.last_error, /portfolio_eod_watermark_pending:2026-07-27/);
+
+  watermarkReady = true;
+  env.FEEDBACK_DB.database.prepare(`
+    UPDATE ledger_outbox SET available_at = 0
+    WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
+  `).run();
+  for (let index = 0; index < 5; index += 1) {
+    drained = await drainLedgerOutbox(env, {
+      portfolio: 'us',
+      refreshPortfolio: (runtimeEnv, portfolio, options) =>
+        updatePortfolioNav(runtimeEnv, portfolio, {
+          ...options,
+          adapter,
+          now: probeNow,
+        }),
+    });
+    if (!drained.pending) break;
+  }
+  assert.equal(drained.ok, true, JSON.stringify(drained));
+  assert.equal(drained.pending, false, JSON.stringify(drained));
+  assert.ok(calls.some(call => call.dataset === 'us_tradecal'));
+  assert.ok(calls.some(call => call.dataset === 'us_daily' &&
+    call.params.ts_code === 'AAPL'));
+  assert.ok(calls.some(call => call.dataset === 'us_daily' &&
+    call.params.ts_code === 'AAA'));
+  const tape = env.FEEDBACK_DB.database.prepare(`
+    SELECT tape_through, price_basis, adjusted
+    FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 2
+  `).get();
+  assert.deepEqual({ ...tape }, {
+    tape_through: '2026-07-27', price_basis: 'raw_close', adjusted: 0,
+  });
+  assert.equal(navRows(env).at(-1).nav_date, '2026-07-27');
+  const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  assert.equal(cache.as_of, '2026-07-27');
+  assert.equal(cache.holdings[0].price, 13);
+});
+
+test('historical publish preserves a verified same-day counter after the EOD tape', async () => {
+  const env = await setup();
+  seedEvents(env);
+  const dates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24'];
+  const historicalRow = date => ({
+    date,
+    cash: date === '2026-07-20' ? 1000 : 900,
+    market_value: date === '2026-07-20' ? 0 : 120,
+    total_assets: date === '2026-07-20' ? 1000 : 1020,
+    liability: 0,
+    net_value: date === '2026-07-20' ? 1000 : 1020,
+    units: 1000,
+    unit_nav: date === '2026-07-20' ? 1 : 1.02,
+    sourceRef: 'counter-preservation-history',
+    valuation: { priceBasis: 'raw_close', adjusted: false },
+  });
+  await persistLedgerValuationBatch(env, 'us', {
+    replaceFrom: dates[0],
+    replaceThrough: dates.at(-1),
+    navRows: dates.map(historicalRow),
+    priceRows: [],
+  }, 2);
+  await seedFrozenTape(env);
+  await materializeLedgerKv(env, 'us', { expectedLedgerRevision: 2 });
+
+  await persistLedgerValuation(env, 'us', {
+    date: '2026-07-27',
+    cash: 900,
+    marketValue: 130,
+    totalAssets: 1030,
+    liability: 0,
+    netValue: 1030,
+    units: 1000,
+    unitNav: 1.03,
+    source: 'tushare:rt_k',
+    sourceRef: 'rt_k:AAA:2026-07-27',
+    valuation: {
+      source: 'tushare:rt_k',
+      source_endpoint: 'rt_k',
+      fetched_at: '2026-07-27T19:00:00.000Z',
+      freshness_class: 'intraday_snapshot',
+      priceBasis: 'raw_counter',
+      adjusted: false,
+      quoteDate: '2026-07-27',
+      sessionVerified: true,
+    },
+    warnings: [],
+  }, [{
+    ticker: 'AAA',
+    date: '2026-07-27',
+    close: 13,
+    source: 'tushare:rt_k',
+    sourceRef: 'rt_k:AAA:2026-07-27',
+    valuation: {
+      priceBasis: 'raw_counter',
+      adjusted: false,
+      quoteDate: '2026-07-27',
+      sessionVerified: true,
+    },
+  }], 2);
+
+  // This is the final historical replay batch. It must prune invalid future
+  // rows while retaining the already-verified current-session counter.
+  await persistLedgerValuationBatch(env, 'us', {
+    replaceFrom: '2026-07-24',
+    replaceThrough: '2026-07-24',
+    pruneAfter: true,
+    preserveCurrentSessionDate: '2026-07-27',
+    navRows: [historicalRow('2026-07-24')],
+    priceRows: [],
+  }, 2);
+  assert.deepEqual(navRows(env).slice(-2).map(row => row.nav_date), [
+    '2026-07-24', '2026-07-27',
+  ]);
+
+  insertOutbox(env, { id: 'kv-2', revision: 2, kind: 'REBUILD_KV' });
+  insertOutbox(env, {
+    id: 'nav-2',
+    revision: 2,
+    kind: 'RECALC_NAV',
+    payload: {
+      affectedFrom: '2026-07-20',
+      navReplay: {
+        portfolio: 'us',
+        ledgerRevision: 2,
+        affectedFrom: '2026-07-20',
+        phase: 'materialize',
+        cursor: null,
+        targetThrough: '2026-07-24',
+        lastNavDate: '2026-07-24',
+        lastUnitNav: 1.02,
+      },
+    },
+  });
+  insertOutbox(env, { id: 'xlsx-2', revision: 2, kind: 'REBUILD_EXCEL' });
+  const replayNow = () => Date.parse('2026-07-27T19:00:00.000Z');
+  const adapter = historicalAdapter();
+  let drained;
+  for (let index = 0; index < 3; index += 1) {
+    drained = await drainLedgerOutbox(env, {
+      portfolio: 'us',
+      refreshPortfolio: (runtimeEnv, portfolio, options) =>
+        updatePortfolioNav(runtimeEnv, portfolio, {
+          ...options,
+          adapter,
+          now: replayNow,
+        }),
+    });
+    if (!drained.pending) break;
+  }
+  assert.equal(drained.ok, true, JSON.stringify(drained));
+  assert.equal(drained.pending, false, JSON.stringify(drained));
+  assert.equal(navRows(env).at(-1).nav_date, '2026-07-27');
+  const status = JSON.parse(env.YC_KV.values.get('navstatus:us'));
+  assert.equal(status.counterPreserved, true);
+  assert.equal(status.historicalThrough, '2026-07-24');
+  assert.equal(status.as_of, '2026-07-27');
+  const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  assert.equal(cache.as_of, '2026-07-27');
+  assert.equal(cache.holdings[0].price, 13);
+  assert.equal(cache.holdings[0].priceBasis, 'raw_counter');
+  const health = await ledgerHealth(env);
+  assert.equal(health.rawNavPortfolios.us.ready, true,
+    JSON.stringify(health.rawNavPortfolios.us));
+  assert.equal(health.rawNavPortfolios.us.expectedCompletedSession, '2026-07-27');
 });
 
 test('revision change cannot advance a stale NAV checkpoint or mark Excel complete', async () => {

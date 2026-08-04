@@ -2061,6 +2061,36 @@ function materializedReplayRangeCurrent(navRows, affectedFrom, targetThrough, le
       row.recalculationRequired !== true);
 }
 
+function preservedCurrentSessionNav(
+  navRows,
+  targetThrough,
+  ledgerRevision,
+  currentSessionDate,
+) {
+  const postTarget = (Array.isArray(navRows) ? navRows : [])
+    .filter(row => String(row && row.date || '').slice(0, 10) > targetThrough)
+    .sort((left, right) => String(left.date).localeCompare(String(right.date)));
+  if (!postTarget.length) return null;
+  if (postTarget.length !== 1) {
+    throw new Error('historical_nav_post_tape_counter_multiple');
+  }
+  const row = postTarget[0];
+  const date = String(row.date || '').slice(0, 10);
+  const valuation = row.valuation && typeof row.valuation === 'object'
+    ? row.valuation : {};
+  const basis = String(valuation.priceBasis || valuation.price_basis || '').toLowerCase();
+  const quoteDate = String(valuation.quoteDate || valuation.quote_date || '').slice(0, 10);
+  const sessionVerified = valuation.sessionVerified === true ||
+    valuation.session_verified === true;
+  if (date !== currentSessionDate || Number(row.ledgerRevision) !== ledgerRevision ||
+      row.recalculationRequired === true || valuation.adjusted !== false ||
+      !['raw_counter', 'raw_close', 'cash_only'].includes(basis) ||
+      !sessionVerified || quoteDate !== date) {
+    throw new Error('historical_nav_post_tape_counter_invalid');
+  }
+  return row;
+}
+
 function historicalReplayMissingSession(
   tradingDays,
   affectedFrom,
@@ -2183,12 +2213,21 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
   };
   if (phase === 'materialize') {
     const tape = await requireFrozenTape(endTarget);
+    const currentSessionDate = portfolioMarketDate(nowFn(), market);
     const freshLedger = await materializeLedgerKv(env, pf, {
       expectedLedgerRevision: ledgerRevision,
+      currentDate: currentSessionDate,
     });
     const freshNavRows = Array.isArray(freshLedger.navRows) ? freshLedger.navRows : [];
-    const freshLast = freshNavRows.length ? freshNavRows.at(-1) : null;
+    const freshHistoricalRows = freshNavRows.filter(row => row.date <= endTarget);
+    const freshLast = freshHistoricalRows.length ? freshHistoricalRows.at(-1) : null;
     const freshTarget = freshNavRows.find(row => row.date === endTarget);
+    const preservedCounter = preservedCurrentSessionNav(
+      freshNavRows,
+      endTarget,
+      ledgerRevision,
+      currentSessionDate,
+    );
     const missingSession = historicalReplayMissingSession(
       tape.calendarDates,
       affectedFrom,
@@ -2260,13 +2299,24 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       priceTapeRows: tape.priceRows.length,
       unavailable: [],
       calendarFallback: false,
+      counterPreserved: Boolean(preservedCounter),
       fallback: false,
     };
   }
   if (phase === 'publish') {
     const tape = await requireFrozenTape(endTarget);
     const materializedRows = Array.isArray(led.navRows) ? led.navRows : [];
-    const materializedLast = materializedRows.length ? materializedRows.at(-1) : null;
+    const currentSessionDate = portfolioMarketDate(nowFn(), market);
+    const materializedHistoricalRows = materializedRows
+      .filter(row => row.date <= endTarget);
+    const materializedLast = materializedHistoricalRows.length
+      ? materializedHistoricalRows.at(-1) : null;
+    const preservedCounter = preservedCurrentSessionNav(
+      materializedRows,
+      endTarget,
+      ledgerRevision,
+      currentSessionDate,
+    );
     if (Number(led.ledgerRevision) !== ledgerRevision) {
       const error = new Error('historical_nav_publish_revision_changed');
       error.code = 'LEDGER_REVISION_CHANGED';
@@ -2297,33 +2347,57 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     // prices, so rebuild the valued ledger before publishing presentation
     // fields. Otherwise the NAV rows are correct while public holdings/base
     // silently expose zero prices and market values from the replay input.
+    const publishedNav = preservedCounter || materializedLast;
+    const publishedDate = publishedNav.date;
+    const publishedValuation = publishedNav.valuation &&
+      typeof publishedNav.valuation === 'object'
+      ? publishedNav.valuation : {};
     const publishedLedger = await materializeLedgerKv(env, pf, {
       expectedLedgerRevision: ledgerRevision,
-      currentDate: publishedThrough,
+      currentDate: publishedDate,
     });
+    const publishedFreshness = preservedCounter
+      ? String(
+        publishedValuation.freshness_class ||
+        publishedValuation.freshnessClass || 'intraday_snapshot',
+      )
+      : 'eod';
+    const publishedSource = preservedCounter
+      ? String(publishedValuation.source || 'portfolio-ledger')
+      : historicalSource;
     const live = {
       rows: [],
       holdings: publishedLedger.sourceHoldings || [],
       updatedAt: new Date(nowFn()).toISOString(),
-      marketDate: publishedThrough,
+      marketDate: publishedDate,
       ledgerRevision,
       sourceMeta: {
-        source: historicalSource,
-        priceSource,
-        source_endpoint: 'historical-nav-replay:raw-close',
-        as_of: publishedThrough,
-        fetched_at: new Date(nowFn()).toISOString(),
-        freshness_class: 'eod',
-        price_basis: 'raw_close',
+        source: publishedSource,
+        priceSource: preservedCounter
+          ? publishedValuation.source || publishedSource
+          : priceSource,
+        source_endpoint: preservedCounter
+          ? publishedValuation.source_endpoint ||
+            publishedValuation.sourceEndpoint || 'verified-current-session'
+          : 'historical-nav-replay:raw-close',
+        as_of: publishedDate,
+        fetched_at: preservedCounter
+          ? publishedValuation.fetched_at ||
+            publishedValuation.fetchedAt || new Date(nowFn()).toISOString()
+          : new Date(nowFn()).toISOString(),
+        freshness_class: publishedFreshness,
+        price_basis: preservedCounter
+          ? publishedValuation.priceBasis || publishedValuation.price_basis
+          : 'raw_close',
         adjusted: false,
-        price_tape_id: tape.priceTapeId,
+        price_tape_id: preservedCounter ? null : tape.priceTapeId,
       },
     };
     const status = {
       pf,
       ranAt: new Date(nowFn()).toISOString(),
-      source: 'tushare',
-      freshness_class: 'eod',
+      source: publishedSource,
+      freshness_class: publishedFreshness,
       historicalReplay: true,
       complete: true,
       phase: 'publish',
@@ -2333,17 +2407,19 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       batchFrom: null,
       batchThrough: null,
       appended: publishedThrough,
-      as_of: publishedThrough,
+      as_of: publishedDate,
       targetThrough: endTarget,
       nextCursor: null,
-      lastNavDate: materializedLast.date,
-      lastUnitNav: Number(materializedLast.unitNav ?? materializedLast.nav),
+      lastNavDate: publishedDate,
+      lastUnitNav: Number(publishedNav.unitNav ?? publishedNav.nav),
       navRows: materializedRows.length,
       priceRows: 0,
       priceTapeId: tape.priceTapeId,
       priceTapeRows: tape.priceRows.length,
       unavailable: [],
       calendarFallback: false,
+      counterPreserved: Boolean(preservedCounter),
+      historicalThrough: publishedThrough,
       fallback: false,
     };
     const [previousLive, previousStatus, previousCache] = await Promise.all([
@@ -2690,6 +2766,22 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       priceRows: fetched.flatMap(item => item.rows),
     }, ledgerRevision);
   }
+  if (options.probeEod === true && tape.tapeThrough < marketToday) {
+    const closeMinute = market === 'a' ? 15 * 60 : 16 * 60;
+    if (marketLocalMinute(nowFn(), market) >= closeMinute) {
+      const verifiedSession = await tusharePortfolioVerifiedSession(
+        adapter,
+        market,
+        nowFn,
+      );
+      if (verifiedSession.currentIsOpen === true &&
+          verifiedSession.date === marketToday) {
+        const error = new Error(`portfolio_eod_watermark_pending:${marketToday}`);
+        error.code = 'HISTORICAL_NAV_EOD_WATERMARK_PENDING';
+        throw error;
+      }
+    }
+  }
   const targetThrough = tape.tapeThrough;
   if (prepareTapeOnly) {
     return {
@@ -2817,6 +2909,7 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     replaceFrom: batchFrom,
     replaceThrough: batchThrough,
     pruneAfter: complete,
+    preserveCurrentSessionDate: marketToday,
     navRows,
     priceRows: [],
   }, ledgerRevision);
@@ -3010,7 +3103,8 @@ async function updatePortfolioNav(env, pf, options = {}) {
       .filter(date => isoDatePattern.test(date)).sort()[0];
     const materializedRows = Array.isArray(led.navRows) ? led.navRows : [];
     const materializedLast = materializedRows.length ? materializedRows.at(-1) : null;
-    const recoverPublishedTarget = !options.phase && historicalReplayRequested &&
+    const recoverPublishedTarget = options.probeEod !== true &&
+      !options.phase && historicalReplayRequested &&
       dirtyNavDates.length === 0 && recentCorporateActionDates.length === 0 &&
       Number(led.ledgerRevision) === ledgerRevision && materializedLast
       ? await materializedHistoricalReplayTarget(

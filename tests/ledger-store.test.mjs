@@ -714,6 +714,9 @@ test('price-enriched projection preserves the Python nominal and exposure return
   await createAndConfirm(env, {
     type: 'DIVIDEND', date: '2026-02-04', ticker: 'AAA', name: 'AAA Inc', quantity: 8,
     gross_amount: '4.00', tax_amount: '0', fee_amount: '0', net_cash: '4.00',
+    // Production legacy rows can retain more precision than the Excel-visible
+    // derived per-share value. This must not make an untouched export an UPDATE.
+    price: 0.500000000123,
   });
 
   await persistLedgerValuation(env, 'us', {
@@ -743,6 +746,68 @@ test('price-enriched projection preserves the Python nominal and exposure return
   assert.equal(position.average_cost, 8.75);
   assert.ok(Math.abs(position.nominal_return - (12 - 8.75) / 8.75) < 1e-12);
   assert.ok(Math.abs(position.exposure_return - 0.3) < 1e-12);
+
+  const dividend = exported.body.events.find(item => item.eventType === 'DIVIDEND');
+  assert.ok(dividend);
+  assert.equal(dividend.event.price, 0.500000000123);
+  assert.equal(dividend.event.per_share, 0.5);
+  const roundtrip = await api(env, '/api/admin/ledger/import/preview', {
+    method: 'POST',
+    body: {
+      portfolio: 'us', fileName: 'dividend-roundtrip.xlsx',
+      uploadSha256: 'd'.repeat(64), exportId: exported.body.exportId,
+      syncToken: exported.body.syncToken,
+      baseLedgerRevision: exported.body.ledgerRevision,
+      rows: [{
+        sheetName: 'ETF Stock Dividend Record', rowNumber: 3,
+        lineageId: dividend.lineageId, eventVersion: dividend.eventVersion,
+        // The workbook parser intentionally recomputes dividend price from
+        // Amount / quantity at its visible eight-decimal precision.
+        event: { ...dividend.event, price: null },
+      }],
+    },
+  });
+  assert.equal(roundtrip.status, 200, JSON.stringify(roundtrip.body));
+  const dividendOperation = roundtrip.body.operations.find(item =>
+    item.lineageId === dividend.lineageId);
+  assert.equal(dividendOperation.operation, 'NOOP', JSON.stringify(dividendOperation));
+
+  const changedQuantity = await api(env, '/api/admin/ledger/import/preview', {
+    method: 'POST',
+    body: {
+      portfolio: 'us', fileName: 'dividend-quantity-edit.xlsx',
+      uploadSha256: 'e'.repeat(64), exportId: exported.body.exportId,
+      syncToken: exported.body.syncToken,
+      baseLedgerRevision: exported.body.ledgerRevision,
+      rows: [{
+        sheetName: 'ETF Stock Dividend Record', rowNumber: 3,
+        lineageId: dividend.lineageId, eventVersion: dividend.eventVersion,
+        event: { ...dividend.event, quantity: 9, price: null },
+      }],
+    },
+  });
+  assert.equal(changedQuantity.status, 200, JSON.stringify(changedQuantity.body));
+  assert.equal(changedQuantity.body.operations.find(item =>
+    item.lineageId === dividend.lineageId).operation, 'UPDATE');
+
+  const buy = exported.body.events.find(item => item.eventType === 'BUY');
+  const changedBuyPrice = await api(env, '/api/admin/ledger/import/preview', {
+    method: 'POST',
+    body: {
+      portfolio: 'us', fileName: 'buy-price-edit.xlsx',
+      uploadSha256: 'f'.repeat(64), exportId: exported.body.exportId,
+      syncToken: exported.body.syncToken,
+      baseLedgerRevision: exported.body.ledgerRevision,
+      rows: [{
+        sheetName: 'ETF Stock Buy Record', rowNumber: 3,
+        lineageId: buy.lineageId, eventVersion: buy.eventVersion,
+        event: { ...buy.event, price: Number(buy.event.price) + 1 },
+      }],
+    },
+  });
+  assert.equal(changedBuyPrice.status, 200, JSON.stringify(changedBuyPrice.body));
+  assert.equal(changedBuyPrice.body.operations.find(item =>
+    item.lineageId === buy.lineageId).operation, 'UPDATE');
 });
 
 test('D1 action-date prices never allocate cash-derived corporate action cost', async () => {
@@ -848,7 +913,8 @@ test('admin derived rebuild requeues the current revision idempotently without c
   assert.ok(resetRows.every(row => row.processed_at === null));
   for (const row of resetRows) {
     assert.deepEqual(JSON.parse(row.payload_json), {
-      affectedFrom: '2026-02-01', reason: 'raw price tape repair',
+      affectedFrom: '2026-02-01', probeEod: true,
+      reason: 'raw price tape repair',
     });
   }
 
@@ -874,6 +940,7 @@ test('admin derived rebuild requeues the current revision idempotently without c
   assert.deepEqual(afterOutbox.map(row => row.outbox_id), originalIds.map(row => row.outbox_id));
   assert.ok(afterOutbox.every(row => row.status === 'PENDING' && row.attempts === 0));
   assert.ok(afterOutbox.every(row => row.last_error === null && row.processed_at === null));
+  assert.ok(afterOutbox.every(row => JSON.parse(row.payload_json).probeEod === true));
   assert.ok(afterOutbox.every(row => JSON.parse(row.payload_json).reason === 'repeat safely'));
 
   const audits = database.prepare(`
