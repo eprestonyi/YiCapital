@@ -266,6 +266,40 @@ test('single and batch NAV persistence canonicalize cent-exact accounting identi
   }
 });
 
+test('canonical liability ratio keeps Python parity for non-positive assets', async () => {
+  const env = await setup();
+  env.FEEDBACK_DB.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  await persistLedgerValuation(env, 'us', {
+    date: '2026-08-04',
+    cash: -100,
+    marketValue: 0,
+    totalAssets: -100,
+    liability: 10,
+    netValue: -110,
+    units: 0,
+    unitNav: 0,
+    source: 'python-parity-fixture',
+    sourceRef: 'non-positive-assets',
+    valuation: { priceBasis: 'raw_counter', adjusted: false },
+    warnings: [],
+  }, [], 1);
+
+  const row = env.FEEDBACK_DB.database.prepare(`
+    SELECT total_assets_minor, liability_minor, net_value_minor,
+      liability_asset_ratio_micros
+    FROM ledger_nav_snapshots
+    WHERE portfolio_id = 'us' AND ledger_revision = 1 AND nav_date = '2026-08-04'
+  `).get();
+  assert.deepEqual({ ...row }, {
+    total_assets_minor: -10_000,
+    liability_minor: 1_000,
+    net_value_minor: -11_000,
+    liability_asset_ratio_micros: 0,
+  });
+});
+
 test('NAV outbox defaults to a CPU-bounded five-session continuation', async () => {
   const env = await setup();
   env.FEEDBACK_DB.database.prepare(`

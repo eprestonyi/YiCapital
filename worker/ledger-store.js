@@ -754,9 +754,12 @@ function canonicalNavSeedRow(raw, portfolio, index) {
   // when a raw counter price lands on a half-cent boundary.
   const totalAssetsMinor = cashMinor + marketValueMinor;
   const netValueMinor = totalAssetsMinor - liabilityMinor;
+  if (!Number.isSafeInteger(totalAssetsMinor) || !Number.isSafeInteger(netValueMinor)) {
+    throw new LedgerHttpError(422, `${date} NAV 金額超出可用數值範圍`);
+  }
   const liabilityAssetRatioMicros = scaledInteger(
     raw.liability_asset_ratio ?? raw.liabilityAssetRatio ??
-      (totalAssetsMinor ? liabilityMinor / totalAssetsMinor : 0),
+      (totalAssetsMinor > 0 ? liabilityMinor / totalAssetsMinor : 0),
     1_000_000,
     `${date} liability_asset_ratio`,
     true,
@@ -1955,7 +1958,7 @@ export async function persistLedgerValuation(
     market_value: rawSnapshot.marketValue,
     total_assets: rawSnapshot.totalAssets,
     liability: rawSnapshot.liability,
-    liability_asset_ratio: Number(rawSnapshot.totalAssets)
+    liability_asset_ratio: Number(rawSnapshot.totalAssets) > 0
       ? Number(rawSnapshot.liability) / Number(rawSnapshot.totalAssets)
       : 0,
     net_value: rawSnapshot.netValue,
