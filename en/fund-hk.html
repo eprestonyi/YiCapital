@@ -11,17 +11,6 @@
 <link rel="stylesheet" href="../assets/style.css?v=20260802a">
 <script src="../assets/portal-config.js"></script>
 <script src="../assets/yc-i18n.js"></script>
-<script>
-
-window.ensureXLSX=function(){return new Promise(function(res,rej){
-  if(window.XLSX)return res();
-  var urls=['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'],i=0;
-  (function next(){ if(window.XLSX)return res();
-    if(i>=urls.length)return rej(new Error('Spreadsheet parser failed to load — refresh or switch browsers'));
-    var s=document.createElement('script');s.src=urls[i++];s.onload=function(){window.XLSX?res():next()};s.onerror=next;document.head.appendChild(s);
-  })();
-});}
-</script>
 <script src="../assets/yc-analytics.js"></script>
 <script src="../assets/yc-charts.js"></script>
 <style>
@@ -32,8 +21,6 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   @media(max-width:900px){.grid2{grid-template-columns:1fr}}
   .panel h4{font-family:var(--sans);font-size:15.5px;color:#fff;margin-bottom:14px}
   #loader{padding:70px 0;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px;letter-spacing:1.5px}
-  #loader .drop{margin-top:26px;display:inline-block;border:1px dashed var(--line);border-radius:8px;padding:26px 40px;cursor:pointer}
-  #loader .drop:hover{border-color:var(--cyan);color:var(--cyan)}
   .logic p{color:#cdd6e3;font-size:15.5px;line-height:2;margin-bottom:18px}
   .logic b{color:#fff}
   .logic .pull{border-left:3px solid var(--cyan);padding:6px 0 6px 20px;margin:26px 0;color:#e8edf5;font-size:16.5px;font-family:var(--zh)}
@@ -65,24 +52,20 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   <div class="page-hero">
     <div class="crumb"><a href="./">HOME</a> / <a href="portfolios">OUR PORTFOLIOS</a> / YI CAPITAL HK</div>
     <h1><small>Fund Profile | HKD | Cyclical Mean-Reversion</small>Yi Capital HK</h1>
-    <p>Every figure and chart on this page is read from a persisted backend snapshot. Excel is only the source when trades, cash flows or corporate actions change; daily valuation, metrics and curves are updated and cached by the backend.</p>
+    <p>Every figure and chart on this page is read only from the persisted backend database snapshot. Trades, cash flows, corporate actions, valuations, metrics and curves are processed by the backend; this page is display-only.</p>
     <p class="asof" id="asof"></p>
   </div>
 </div>
 
 <div class="wrap">
   <div class="yc-lock">
-  <div id="srcbar" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:12px 18px;margin-bottom:8px;font-family:var(--mono);font-size:12px;color:var(--muted)">
+  <div id="srcbar" style="display:none;align-items:center;gap:14px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:12px 18px;margin-bottom:8px;font-family:var(--mono);font-size:12px;color:var(--muted)">
     <span id="srcstate">Data source: loading…</span>
-    <button id="bindbtn" class="menu-btn" style="display:inline-block">🔗 Bind local NAV workbook (live sync)</button>
-    <button id="unbindbtn" class="menu-btn" style="display:none">Unbind</button>
-    <span id="synctick" style="color:var(--up);display:none">● LIVE</span>
   </div>
 </div>
 
 <div class="wrap" id="loader">
   Loading backend snapshot …
-  <div><label class="drop" id="dropzone">or click / drop the fund Excel here (workbook exported by Yi_Capital_Manager; one-off preview)<input type="file" id="filepick" accept=".xlsx,.xlsm" style="display:none"></label></div>
 </div>
 
 <div id="report" style="display:none">
@@ -170,23 +153,8 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 
 <script>
 (function(){
-  const DATA_URL = '../assets/data/Yi_Capital_HK.xlsx';
   const CURRENCY = 'HK$';
   const $ = id => document.getElementById(id);
-  const IS_ADMIN = localStorage.getItem('yc-role')==='admin';
-  if(!IS_ADMIN){
-    
-    const sb=$('srcbar'); if(sb) sb.style.display='none';
-    const dz=document.getElementById('dropzone'); if(dz) dz.style.display='none';
-    $('loader').firstChild.textContent='Loading data…';
-  }
-
-  function workbookToSheets(wb){
-    const out = {};
-    wb.SheetNames.forEach(n => out[n] = XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:true, defval:null}));
-    return out;
-  }
-
   function statCard(v, k, cls){ return `<div class="stat"><div class="v ${cls||''}">${v}</div><div class="k">${k}</div></div>`; }
 
   function validStress(s){
@@ -228,12 +196,11 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     return prefix+YC.snapshotLabel(R.snapshot,lang)+(bm?' · BM '+bm:'');
   }
   async function bootCache(){
-    if(new URLSearchParams(location.search).has('data')) return false;
     const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return false;
     try{
       const j=await (await fetch(api+'/api/nav/hk',{cache:'no-store'})).json();
       const R=cachedReport(j); if(!R) return false;
-      render(await fetchBenchmarks(R));
+      render(R);
       $('srcstate').textContent=snapshotSourceText(R);
       return true;
     }catch(e){ return false; }
@@ -243,21 +210,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     if(R.error){ $('loader').firstChild.textContent = '⚠ ' + R.error; return; }
     const M = R.metrics, F = YCC;
     $('loader').style.display='none'; $('report').style.display='block';
-    const __auto=window.__liveAdded?((window.YCI&&YCI.lang==='en')?` | incl. ${window.__liveAdded} auto-updated day(s)`:` | incl. ${window.__liveAdded} auto-updated day(s)`):'';
-    $('asof').textContent = R.source==='api'
-      ? `Data as of ${R.end} | Window ${R.start} → ${R.end} (${M.days} trading days) | persisted backend snapshot · AUTO · CACHE`
-      : `Data as of ${R.end} | Window ${R.start} → ${R.end} (${M.days} trading days) | compatibility workbook mode${__auto}`;
-
-    
-    const endVal = Math.round(10000*(1+M.totalRet));
-    const L=window.YCI?YCI.lbl.bind(YCI):(k=>k);
-    $('statCards').innerHTML =
-      statCard(F.pct(M.totalRet,1,true), L('st.cum'), M.totalRet>=0?'u':'d') +
-      statCard(F.pct(M.annRet,1), L('st.ann')) +
-      statCard(F.pct(M.vol,1), L('st.vol')) +
-      statCard(F.pct(M.maxDD,1), L('st.mdd'), 'd') +
-      statCard(F.pct(M.var95,2), L('st.var')) +
-      statCard(F.pct(M.winRate,1), L('st.win'));
+    $('asof').textContent = `Data as of ${R.end} | Window ${R.start} → ${R.end} (${M.days} trading days) | persisted backend snapshot AUTO · CACHE`;
 
     // 01 Performance
     const series = [{name:'Yi Capital HK', color:F.colors.cyan, width:3, data:R.curve}];
@@ -293,7 +246,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       const byER = [...R.assets].filter(a=>a.exposureReturn!=null).sort((a,b)=>a.exposureReturn-b.exposureReturn);
       $('c-expret-bars').innerHTML = F.hBarChart(byER.map(a=>({label:a.ticker, v:a.exposureReturn})), {title:'Exposure return by holding (total P&L / total cost)', valueFmt:v=>(v>=0?'+':'')+v.toFixed(1)+'%'});
     } else {
-      $('c-donut').innerHTML = $('c-holdings-table').innerHTML = '<div class="legend">Asset Position Record sheet not found in the workbook.</div>';
+      $('c-donut').innerHTML = $('c-holdings-table').innerHTML = '<div class="legend">The backend snapshot currently contains no holdings.</div>';
     }
     $('c-stacked').innerHTML = F.stackedArea(R.navRows, {cur:CURRENCY});
     $('c-unitnav').innerHTML = F.lineChart([{name:'Unit NAV', color:F.colors.up, width:2, data:R.navRows.map(r=>({date:r.date, v:r.nav})), fill:true}], {yFmt:v=>v.toFixed(2)});
@@ -308,147 +261,12 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     $('c-fan-grind').innerHTML = F.stressFanChart(R.stress.grind);
   }
 
-  async function fetchLiveRows(sheets){
-    const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return 0;
-    try{
-      const j=await (await fetch(api+'/api/nav/hk',{cache:'no-store'})).json();
-      window.__livePayload=j;
-      if(j.ok && j.enabled && j.rows && j.rows.length) return YC.appendLive(sheets, j.rows);
-    }catch(e){}
-    return 0;
-  }
-  async function fetchBenchmarks(R){
-    const api=(window.YC_API||'').replace(/\/+$/,'');
-    if(R.error||!api) return R;
-    R.benchmarks={}; R.primaryBM=null;
-    try{
-      const j=await (await fetch(api+'/api/benchmark?set=hk')).json();
-      R.benchmarkSnapshot=YC.snapshotMeta(j);
-      if(j.ok) YC.attachBenchmarks(R,Object.fromEntries(Object.entries({
-        'Hang Seng Index':j.data&&j.data.HSI,
-        'Hang Seng TECH Index':j.data&&j.data.HSTECH,
-      }).filter(([,rows])=>Array.isArray(rows))));
-    }catch(e){}
-    return R;
-  }
-  async function loadArrayBuffer(buf, srcLabel){
-    try{
-      await ensureXLSX();
-      const wb = XLSX.read(buf, {type:'array', cellDates:false});
-      const __sheets=workbookToSheets(wb);
-      window.__liveAdded=await fetchLiveRows(__sheets);
-      const R=YC.analyze(__sheets);
-      if(window.__livePayload&&window.__livePayload.holdings) YC.applyLiveHoldings(R,window.__livePayload.holdings);
-      render(await fetchBenchmarks(R));
-      if(srcLabel) $('srcstate').textContent = 'Data source: ' + srcLabel;
-      return true;
-    }catch(e){
-      $('loader').style.display='block';
-      $('loader').firstChild.textContent = '⚠ Parse failed: ' + e.message + ' ';
-      return false;
-    }
-  }
-
-  
-  const idb = {
-    open: () => new Promise((res,rej)=>{ const q=indexedDB.open('yc-fund',1);
-      q.onupgradeneeded=()=>q.result.createObjectStore('kv');
-      q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }),
-    get: async k => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); },
-    set: async (k,v) => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv','readwrite').objectStore('kv').put(v,k); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); }); },
-    del: async k => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv','readwrite').objectStore('kv').delete(k); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); }); },
-  };
-
-  let liveHandle=null, liveTimer=null, lastMod=0;
-
-  async function startLiveSync(handle){
-    liveHandle=handle;
-    const f=await handle.getFile();
-    lastMod=f.lastModified;
-    if(loadArrayBuffer(await f.arrayBuffer(), 'Local file: '+f.name+' (live sync)')){
-      $('bindbtn').style.display='none'; $('unbindbtn').style.display='inline-block'; $('synctick').style.display='inline';
-    }
-    clearInterval(liveTimer);
-    liveTimer=setInterval(async ()=>{
-      try{
-        const nf=await liveHandle.getFile();
-        if(nf.lastModified!==lastMod){       
-          lastMod=nf.lastModified;
-          $('synctick').textContent='● Updating…';
-          loadArrayBuffer(await nf.arrayBuffer(), 'Local file: '+nf.name+' (live sync)');
-          $('synctick').textContent='● LIVE · '+new Date().toLocaleTimeString();
-        }
-      }catch(e){  }
-    }, 4000);
-  }
-
-  
-  $('bindbtn').addEventListener('click', async ()=>{
-    if(!window.showOpenFilePicker){ alert('This browser does not support live sync (needs desktop Chrome / Edge). Use drag-and-drop for a one-off preview.'); return; }
-    try{
-      const [h]=await showOpenFilePicker({types:[{description:'Excel',accept:{'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx','.xlsm']}}]});
-      await idb.set('handle-hk', h);
-      startLiveSync(h);
-    }catch(e){  }
-  });
-  $('unbindbtn').addEventListener('click', async ()=>{
-    await idb.del('handle-hk'); clearInterval(liveTimer); liveHandle=null;
-    $('bindbtn').style.display='inline-block'; $('unbindbtn').style.display='none'; $('synctick').style.display='none';
-    $('srcstate').textContent='Data source: unbound (using site data)';
-    bootCache();
-  });
-
-  
-  async function bootHandle(){
-    if(!window.showOpenFilePicker) return false;
-    try{
-      const h=await idb.get('handle-hk'); if(!h) return false;
-      let perm=await h.queryPermission({mode:'read'});
-      if(perm==='prompt'){
-        
-        $('srcstate').textContent='Data source: previously bound local file detected — click to reconnect →';
-        $('bindbtn').textContent='🔗 Reconnect local NAV workbook';
-        $('bindbtn').onclick=async ()=>{ if(await h.requestPermission({mode:'read'})==='granted') startLiveSync(h); };
-        return 'pending';
-      }
-      if(perm==='granted'){ startLiveSync(h); return true; }
-    }catch(e){}
-    return false;
-  }
-
-  
-  function bootFetch(){
-    const remote=new URLSearchParams(location.search).get('data');
-    if(!remote)return;
-    const url=remote;
-    
-    const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
-    fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
-      .then(buf=>loadArrayBuffer(buf, remote?('Remote '+url):('Site '+DATA_URL+' (updates with deploys)')))
-      .catch(()=>{ $('loader').style.display='block'; $('loader').firstChild.textContent=IS_ADMIN?('Not found: '+url+' (bind a local file for live sync, or drop a file to preview)'):'Data temporarily unavailable — please try again later.'; $('srcstate').textContent='Data source: none'; });
-  }
-
   (async ()=>{
-    const remote=new URLSearchParams(location.search).get('data');
-    if(remote){ bootFetch(); return; }
     if(await bootCache()) return;
     $('loader').style.display='block';
-    $('loader').firstChild.textContent='The persisted backend snapshot is temporarily unavailable; an older Excel file will not replace it.';
-    $('srcstate').textContent='Data source: awaiting the last successful backend snapshot';
+    $('loader').firstChild.textContent='The persisted backend snapshot is temporarily unavailable. No workbook or local file fallback is permitted.';
+    $('srcstate').textContent='Data source: waiting for the last successful backend snapshot';
   })();
-
-  
-  $('filepick').addEventListener('change', e=>{
-    const f=e.target.files[0]; if(!f) return;
-    f.arrayBuffer().then(b=>loadArrayBuffer(b,'Dropped file: '+f.name+' (one-off preview)'));
-  });
-  if(IS_ADMIN){
-  ['dragover','drop'].forEach(ev=>document.addEventListener(ev, e=>e.preventDefault()));
-  document.addEventListener('drop', e=>{
-    const f=e.dataTransfer && e.dataTransfer.files[0];
-    if(f) f.arrayBuffer().then(b=>loadArrayBuffer(b,'Dropped file: '+f.name+' (one-off preview)'));
-  });
-  }
 })();
 </script>
 <script src="../assets/yc-gate.js"></script>

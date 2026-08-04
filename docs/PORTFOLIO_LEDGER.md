@@ -10,7 +10,8 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 
 公開網站仍只讀 `navcache:{us|hk|a}`，`/api/nav/*`、`/api/benchmark` 和
 `/api/entry-market` 的回應合同不變。後台確認事件後，由 D1 outbox 重建
-`ledger:{us|hk|a}`；現有 Cron 再刷新 KV 公開快照。因此数据库切换不要求修改
+`ledger:{us|hk|a}`；盘中一分钟 Cron 只用当下未复权 counter 覆盖当日点，收盘任务
+再冻结 raw close 并刷新 KV 公開快照。因此数据库切换不要求修改
 首页、组合页或基金页的 HTML/CSS。
 
 ## 事件与状态
@@ -54,9 +55,8 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 - 同日顺序为 Capital → Liability → Corporate Action → Buy/Sell → Dividend → Fund Action。
 - 公司行动在同日交易前执行。
 - 公司行动只描述原持仓变成哪些新 ticker 及各自绝对数量；现金变化独立进入现金链。
-- 单一输出继承全部累计成本。多输出自动使用行动日起七日内各输出的首个可得收盘价，
-  按 `Post Quantity × Close` 分配累计成本；七日内全部无价时成本归第一个输出并报警，
-  不要求 Form 8937，也不阻断 Confirm。
+- 公司行动不会按市价分摊、搬移或创造成本；买入成本、卖出收入、股息、税费永远留在产生该现金记录的 ticker。
+- 负现金照实保留并参与 NAV，但不产生警告、确认要求或阻断。
 - 净成本为累计买入成本减累计卖出收入。
 - 总盈亏为当前市值 + 累计卖出 + 净股息 - 累计买入。
 - 名义收益率严格沿用旧 Python：`(Latest Price - Net Cost / Quantity) / abs(Net Cost / Quantity)`。
@@ -64,8 +64,8 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 - NAV 为现金 + 市值 - 负债，单位 NAV 再除以总份额。
 
 现金以最小货币单位整数重放。Quantity、Price 和 NAV 以规范化 decimal 字段保留，
-避免把 JavaScript/SQLite 二进制浮点当作账务事实。现金可以为负；负现金只产生可见
-warning，不是 Confirm 或历史迁移 blocker，也不得自动补融资事件。
+避免把 JavaScript/SQLite 二进制浮点当作账务事实。现金可以为负；系统照实用于后续
+现金、总资产和 NAV 运算，不产生 warning、确认项或 blocker，也不得自动补融资事件。
 
 ## 股息和扣税
 
@@ -125,9 +125,9 @@ event 或原始 source record。四张派生表的改动显示 `IGNORED_DERIVED`
 
 ## 自动化输入
 
-自动发现的股息、公司行动、负债、基金行动及其他非人工事件原文先不可变写入
-`ledger_source_records`，再以 `source=AUTOMATION` 创建 Pending。交易也可由 Broker
-自动进入相同流程，但人工新增交易仍只允许 BUY/SELL。唯一键是：
+后台连接器发现的股息、公司行动、负债和基金行动原文先不可变写入
+`ledger_source_records`，再以 `source=AUTOMATION` 创建 Pending。自动 source 不得创建
+BUY、SELL 或 CAPITAL；这三类只能由后台人工或签名 Excel 进入 Pending。唯一键是：
 
 `(portfolio, source_system, source_account, source_event_id)`
 
@@ -137,18 +137,25 @@ event 或原始 source record。四张派生表的改动显示 `IGNORED_DERIVED`
 
 D1 和 KV 不能组成跨存储事务。确认 batch 会在 D1 同时写入 `ledger_outbox`：
 
+- `RECALC_NAV`
 - `REBUILD_KV`
 - `REBUILD_EXCEL`
-- `RECALC_NAV`
 
-Confirm 后请求路径会立即触发 outbox：从最早受影响日期全历史重放现金、持仓、负债、
-份额及 NAV，再 materialize KV 和 Excel。Cron 和后台 outbox 按指数退避重试。D1
+Confirm 后请求路径会立即触发 outbox：先从最早受影响日期冻结当前 revision 的未复权
+raw-close 价格带并重放现金、持仓、负债、份额及 NAV，完成后才 materialize KV 和
+Excel。不能在价格带之前先发布 KV。Cron 和后台 outbox 按指数退避重试。D1
 事件已经提交但重算或 KV 暂时失败时，公开页继续返回上一份成功快照，不返回半成品。
 
 历史日期事件或行情会从对应日期起自动重建全部 NAV；修改或撤销旧事件时从新旧日期
-中较早者开始。交易日价格按 as-of 沿用最后已知价，完全无价时按 Python 的 Book
-Value 规则估值。重建完成前普通刷新不得发布新的 KV 或 Excel 快照；若 D1 revision
+中较早者开始。非交易日可按 as-of 沿用上一个已冻结 raw close；任一实际交易日缺少
+raw close 时必须 fail closed，不得用复权价、Book Value、参考价或成本代替。重建完成前普通
+刷新不得发布新的 KV 或 Excel 快照；若 D1 revision
 在重算或 KV 写入期间变化，整批结果作废，outbox 按最新 revision 重新排队。
+每个 ledger revision 都有独立、带 hash 的 immutable raw-close price tape；新 revision
+必须逐行继承上一 revision 的重叠历史，只能补更早的新事件区间或向未来追加 EOD。
+当日 verified counter 可以每分钟覆盖当日 NAV，但不能改写 tape 内任何历史日期。
+三市场只在各自正常交易时段运行实时刷新；美股 Yahoo counter 与带明确时间戳的
+A/HK counter 超过 15 分钟即拒绝，绝不把同日陈旧成交当作“现在价格”。
 
 ## 迁移门禁
 
@@ -157,19 +164,18 @@ Value 规则估值。重建完成前普通刷新不得发布新的 KV 或 Excel 
 Statement` 只用于离线 parity 核验，不进入 operational migration payload，也不作为
 价格、NAV 或任何账务 seed。生产 D1 的四张派生结果必须从 confirmed events、后台
 行情和 Python 兼容重放重新计算。
-正式导入前必须人工确认：
+正式导入前必须核验：
 
-1. US 历史有 49 个负现金节点，期末 -12,809.08 USD。
-2. HK 历史有 56 个负现金节点，期末 -138,224 HKD。
-3. A 历史有 1 个短暂负现金节点。
-4. US 在 2026-05-29 有两笔字段完全相同的 ORCL 卖出（10 股、2,140 USD）。
-5. 历史股息税项全部为 UNKNOWN_LEGACY。
-6. US 的 2026-07-01 SPGI → SPGI + MBGL 是多输出公司行动；迁移保留原股、新 ticker
-   和绝对数量，由引擎按七日首价自动分配，全部无价时成本归 SPGI 并产生 warning。
+1. US、HK、A 的每笔 Cash Amount 必须按事件顺序连续重放，期末现金分别与原工作簿一致；
+   过程中出现负现金时只保留数值并进入 NAV 运算，不作告警或确认门禁。
+2. US 在 2026-05-29 有两笔字段完全相同的 ORCL 卖出（10 股、2,140 USD）。
+3. 历史股息税项全部为 UNKNOWN_LEGACY。
+4. US 的 2026-07-01 SPGI → SPGI + MBGL 是多输出公司行动；迁移只保留原 ticker、
+   输出 ticker 和绝对数量。行动本身不分配、搬移或创造成本，独立 Cash Amount 才改变现金。
 
 迁移器只警告，不自动补融资、不去重、不推测税额。先在 D1 preview 环境导入三本，
 对账事件数、现金、份额、持仓、负债和 NAV；全部通过后才允许切断旧 `/api/ledger`。
-导入确认必须显式确认 exact duplicates 与 unknown tax。负现金只作 warning；derived
+导入确认必须显式确认 exact duplicates 与 unknown tax。负现金不作 warning；derived
 NAV/price 不作为迁移 seed，因此没有 historical NAV/prices 的 operational sign-off。
 确认短语必须使用服务端真实合同：US、HK、A 分别为 `CONFIRM LEGACY US`、
 `CONFIRM LEGACY HK`、`CONFIRM LEGACY A`，不得由客户端按事件数自行拼接。

@@ -7,14 +7,9 @@
   const MAX_IMPORT_ROWS = 280;
   const MAX_LEGACY_JSON_BYTES = 2 * 1024 * 1024;
   const MAX_LEGACY_EVENTS = 120;
-  const MAX_LEGACY_NAV_ROWS = 800;
-  const MAX_LEGACY_PRICE_ROWS = 500;
   const LEGACY_ACKS = [
-    { key: 'negativeCash', input: 'legacy-ack-negative-cash', row: 'legacy-ack-negative-cash-row', state: 'legacy-ack-negative-cash-state' },
     { key: 'duplicates', input: 'legacy-ack-duplicates', row: 'legacy-ack-duplicates-row', state: 'legacy-ack-duplicates-state' },
     { key: 'unknownTax', input: 'legacy-ack-unknown-tax', row: 'legacy-ack-unknown-tax-row', state: 'legacy-ack-unknown-tax-state' },
-    { key: 'historicalNav', input: 'legacy-ack-historical-nav', row: 'legacy-ack-historical-nav-row', state: 'legacy-ack-historical-nav-state' },
-    { key: 'historicalPrices', input: 'legacy-ack-historical-prices', row: 'legacy-ack-historical-prices-row', state: 'legacy-ack-historical-prices-state' },
   ];
   const PORTFOLIOS = {
     us: { label: 'Yi Capital US', currency: 'USD', template: 'assets/data/Yi_Capital_US.xlsx', file: 'Yi_Capital_US.xlsx' },
@@ -253,6 +248,7 @@
     $('event-form').addEventListener('submit', savePending);
     $('reset-event').addEventListener('click', resetForm);
     $('export-workbook').addEventListener('click', exportWorkbook);
+    $('rebuild-derived').addEventListener('click', rebuildDerived);
     $('import-file').addEventListener('change', event => prepareImport(event.target.files && event.target.files[0]));
     $('preview-import').addEventListener('click', previewImport);
     $('confirm-import').addEventListener('click', confirmImport);
@@ -317,6 +313,32 @@
     }
   }
 
+  async function rebuildDerived() {
+    const button = $('rebuild-derived');
+    const reason = String($('rebuild-reason').value || '').trim();
+    const log = $('rebuild-log');
+    if (!reason) {
+      log.textContent = '✗ 請填寫重算原因。';
+      $('rebuild-reason').focus();
+      return;
+    }
+    button.disabled = true;
+    log.textContent = '正在排隊 REBUILD_KV → RECALC_NAV → REBUILD_EXCEL…';
+    try {
+      const result = await api('/api/admin/ledger/rebuild', {
+        method: 'POST',
+        body: JSON.stringify({ portfolio: state.portfolio, reason }),
+      });
+      const revision = asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.ledgerRevision), state.ledgerRevision);
+      const affectedFrom = first(result, ['affectedFrom', 'affected_from'], '—');
+      log.textContent = `✓ 已排隊 ${state.portfolio.toUpperCase()} revision ${revision} · from ${affectedFrom}。後台會按批次自動完成。`;
+    } catch (error) {
+      log.textContent = '✗ 重算排隊失敗：' + error.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function renderPending() {
     const host = $('pending-list');
     host.replaceChildren();
@@ -356,9 +378,16 @@
     const review = el('div', 'ledger-review');
     const reason = document.createElement('input');
     reason.type = 'text'; reason.placeholder = '確認／驳回理由（必填）'; reason.setAttribute('aria-label', '確認或驳回理由');
-    const cashRule = el('span', 'ledger-meta', '負現金按 Python 邏輯報警，不改寫或阻斷現金鏈。');
+    const cashRule = el('span', 'ledger-meta', '負現金照實進入現金與淨值計算，不報警、不改寫、不阻斷。');
+    const taxStatus = String(first(item.event, ['tax_status', 'taxStatus'], '') || '').toUpperCase();
+    const taxNeedsReview = item.event.tax_review_required === true ||
+      taxStatus === 'PENDING_RECONFIRMATION' || taxStatus === 'UNKNOWN_LEGACY';
     review.append(reason, cashRule);
+    if (taxNeedsReview) {
+      review.append(el('span', 'log err', '稅項尚未確認：請先點「修改」核對 gross / tax / fees，保存後才能 Confirm。'));
+    }
     const confirm = el('button', 'btn', '確認入賬'); confirm.type = 'button';
+    confirm.disabled = taxNeedsReview;
     const reject = el('button', 'danger-solid', '驳回'); reject.type = 'button';
     const status = el('span', 'form-state', ''); status.setAttribute('role', 'status');
     confirm.addEventListener('click', () => confirmPending(item, reason, confirm, reject, status));
@@ -627,6 +656,12 @@
   }
 
   async function confirmPending(item, reasonInput, confirmButton, rejectButton, status) {
+    const taxStatus = String(first(item.event, ['tax_status', 'taxStatus'], '') || '').toUpperCase();
+    if (item.event.tax_review_required === true ||
+        taxStatus === 'PENDING_RECONFIRMATION' || taxStatus === 'UNKNOWN_LEGACY') {
+      status.textContent = '請先修改並確認稅項，保存 Pending 後再入賬。';
+      return;
+    }
     const reason = reasonInput.value.trim();
     if (!reason) { status.textContent = '請先填寫確認理由。'; reasonInput.focus(); return; }
     confirmButton.disabled = rejectButton.disabled = true; status.textContent = '確認中…';
@@ -1020,7 +1055,7 @@
     if (name === 'Asset Position Record') {
       const headers = ['No.', 'Ticker', 'Asset Name', 'Quantity', `Latest Price (${currency})`, `Market Value (${currency})`, 'Weight (%)', `Total Buy Cost (${currency})`, `Total Sell Proceeds (${currency})`, `Dividend Income (${currency})`, `Net Cost (${currency})`, `Total P&L (${currency})`, 'Nominal Return (%)', 'Exposure Return (%)', 'Notes'];
       const active = list.filter(row => asNumber(first(row, ['quantity', 'qty', 'shares'], 0), 0) > 0.001);
-      const rowPrice = row => asNumber(first(row, ['latest_price', 'latestPrice', 'price', 'reference_price', 'referencePrice', 'fallback_price', 'fallbackPrice'], 0), 0);
+      const rowPrice = row => asNumber(first(row, ['latest_price', 'latestPrice', 'price'], 0), 0);
       const rowMarketValue = row => {
         const explicit = optionalNumber(first(row, ['market_value', 'marketValue'], null));
         return explicit === null
@@ -1695,8 +1730,8 @@
     const historicalPriceRows = first(raw, ['historical_price_rows', 'historicalPriceRows'], []);
     if (!Array.isArray(historicalNavRows)) throw new Error('historical_nav_rows 必須是 array。');
     if (!Array.isArray(historicalPriceRows)) throw new Error('historical_price_rows 必須是 array。');
-    if (historicalNavRows.length > MAX_LEGACY_NAV_ROWS) issues.push(`historical_nav_rows 超過上限 ${MAX_LEGACY_NAV_ROWS}。`);
-    if (historicalPriceRows.length > MAX_LEGACY_PRICE_ROWS) issues.push(`historical_price_rows 超過上限 ${MAX_LEGACY_PRICE_ROWS}。`);
+    if (historicalNavRows.length) issues.push('historical_nav_rows 必須為空；NAV 只能從 confirmed events + raw prices 派生。');
+    if (historicalPriceRows.length) issues.push('historical_price_rows 必須為空；歷史價格只能由 raw-close 價格帶提供。');
 
     const warnings = first(raw, ['warnings'], []);
     const blockingErrors = first(raw, ['blocking_errors', 'blockingErrors'], []);
@@ -1744,8 +1779,8 @@
         portfolio_id: portfolio,
         source_workbook_sha256: sourceWorkbookSha256,
         events: stableClone(events),
-        historical_nav_rows: stableClone(historicalNavRows),
-        historical_price_rows: stableClone(historicalPriceRows),
+        historical_nav_rows: [],
+        historical_price_rows: [],
       },
     };
   }
@@ -1861,26 +1896,14 @@
     }
   }
 
-  function legacyMinorText(value, currency) {
-    const minor = asNumber(value, NaN);
-    if (!Number.isFinite(minor)) return '—';
-    return `${currency || PORTFOLIOS[state.portfolio].currency} ${new Intl.NumberFormat('zh-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(minor / 100)}`;
-  }
-
   function renderLegacyPreview(result) {
     const exactDuplicates = Array.isArray(result.exactDuplicates) ? result.exactDuplicates : [];
     const eventCount = asNumber(first(result, ['eventCount', 'event_count'], 0), 0);
     const unknownTaxEvents = asNumber(first(result, ['unknownTaxEvents', 'unknown_tax_events'], 0), 0);
-    const historicalNavRowCount = asNumber(first(result, ['historicalNavRowCount', 'historical_nav_row_count'], 0), 0);
-    const historicalPriceRowCount = asNumber(first(result, ['historicalPriceRowCount', 'historical_price_row_count'], 0), 0);
-    const lowestCashMinor = asNumber(first(result, ['lowestCashMinor', 'lowest_cash_minor'], 0), 0);
     renderLegacyStats($('legacy-preview-summary'), [
       ['EVENTS', eventCount],
-      ['LOWEST CASH', legacyMinorText(lowestCashMinor, result.currency)],
       ['DUPLICATES', exactDuplicates.length],
       ['UNKNOWN TAX', unknownTaxEvents],
-      ['NAV SEEDS', historicalNavRowCount],
-      ['PRICE SEEDS', historicalPriceRowCount],
     ]);
     $('legacy-import-id').textContent = state.legacyImportId;
     $('legacy-migration-hash').textContent = state.legacyMigrationHash;
@@ -1888,11 +1911,8 @@
     if (result.duplicateUpload === true) previewNotes.push(`相同 portfolio + source SHA 已 Preview；沿用既有 importId（狀態 ${first(result, ['importStatus', 'import_status'], 'UNKNOWN')}）。`);
     renderLegacyMessages($('legacy-preview-messages'), [], [...previewNotes, ...(Array.isArray(result.warnings) ? result.warnings : [])]);
     state.legacyRequirements = {
-      negativeCash: lowestCashMinor < 0,
       duplicates: exactDuplicates.length > 0,
       unknownTax: unknownTaxEvents > 0,
-      historicalNav: historicalNavRowCount > 0,
-      historicalPrices: historicalPriceRowCount > 0,
     };
     LEGACY_ACKS.forEach(item => {
       const required = state.legacyRequirements[item.key] === true;

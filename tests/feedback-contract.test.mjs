@@ -19,10 +19,11 @@ function testEnv(overrides = {}) {
       prepare: sql => {
         const result = String(sql).includes('FROM ledger_outbox')
           ? { pending: 0 }
-          : { count: String(sql).includes("'ledger_portfolios'") ? 12 : 3 };
+          : { count: String(sql).includes("'ledger_portfolios'") ? 14 : 3 };
         const statement = {
           bind: () => statement,
           first: async () => result,
+          all: async () => ({ results: [] }),
         };
         return statement;
       },

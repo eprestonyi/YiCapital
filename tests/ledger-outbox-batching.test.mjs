@@ -6,6 +6,8 @@ import test from 'node:test';
 
 import {
   drainLedgerOutbox,
+  enqueueDailyNavReplay,
+  freezeLedgerPriceTape,
   ledgerHealth,
   materializeLedgerKv,
   persistLedgerValuationBatch,
@@ -71,7 +73,10 @@ class MemoryKv {
 }
 
 async function setup() {
-  const sql = await readFile(new URL('../migrations/0002_portfolio_ledger.sql', import.meta.url), 'utf8');
+  const sql = (await Promise.all([
+    '../migrations/0002_portfolio_ledger.sql',
+    '../migrations/0003_frozen_price_tapes.sql',
+  ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   return {
     FEEDBACK_DB: new D1Database(sql),
     YC_KV: new MemoryKv(),
@@ -143,6 +148,21 @@ function navHash(env) {
   return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
 }
 
+function officialCalendar(request, openDates) {
+  const compactToIso = value => `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+  const start = compactToIso(request.params.start_date);
+  const end = compactToIso(request.params.end_date);
+  const opens = new Set(openDates);
+  const data = [];
+  for (let time = Date.parse(`${start}T00:00:00.000Z`);
+    time <= Date.parse(`${end}T00:00:00.000Z`);
+    time += 86400000) {
+    const calDate = new Date(time).toISOString().slice(0, 10).replaceAll('-', '');
+    data.push({ cal_date: calDate, is_open: opens.has(calDate) ? 1 : 0 });
+  }
+  return { data };
+}
+
 function historicalAdapter() {
   const calls = [];
   const dates = ['20260720', '20260721', '20260722', '20260723', '20260724'];
@@ -151,12 +171,11 @@ function historicalAdapter() {
     calls,
     async query(dataset, request) {
       calls.push({ dataset, tsCode: request.params.ts_code });
+      if (dataset === 'us_tradecal') return officialCalendar(request, dates);
       assert.equal(dataset, 'us_daily');
-      if (request.params.ts_code === 'SPY') {
-        return { data: dates.map((trade_date, index) => ({
-          ts_code: 'SPY', trade_date, close: 600 + index,
-        })) };
-      }
+      if (request.params.ts_code === 'SPY') return { data: dates.map((trade_date, index) => ({
+        ts_code: 'SPY', trade_date, close: 600 + index,
+      })) };
       assert.equal(request.params.ts_code, 'AAA');
       return { data: dates.map((trade_date, index) => ({
         ts_code: 'AAA', trade_date, close: prices[index],
@@ -164,6 +183,85 @@ function historicalAdapter() {
     },
   };
 }
+
+async function seedFrozenTape(env) {
+  const dates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24'];
+  const prices = [10, 10, 11, 11.5, 12];
+  return freezeLedgerPriceTape(env, 'us', {
+    tapeFrom: dates[0],
+    tapeThrough: dates.at(-1),
+    calendarFrom: dates[0],
+    calendarDates: dates,
+    calendarSource: 'tushare:us_tradecal+us_daily',
+    calendarSourceRef: 'us_tradecal:is_open+us_daily:SPY:eod-watermark',
+    requiredTickers: ['AAA'],
+    priceSource: 'tushare:us_daily',
+    priceBasis: 'raw_close',
+    adjusted: false,
+    priceRows: dates.map((date, index) => ({
+      ticker: 'AAA', date, close: prices[index],
+      source: 'tushare:us_daily', sourceRef: 'us_daily:close:raw-unadjusted',
+    })),
+  }, 2);
+}
+
+test('daily EOD scheduling requeues only DONE and preserves unfinished checkpoints', async () => {
+  const env = await setup();
+  seedEvents(env);
+  await seedFrozenTape(env);
+  const queued = await enqueueDailyNavReplay(env, ['us', 'hk', 'a']);
+  assert.deepEqual(queued, [{
+    portfolio: 'us', ledgerRevision: 2, affectedFrom: '2026-07-24',
+  }]);
+  const row = env.FEEDBACK_DB.database.prepare(`
+    SELECT ledger_revision, kind, status, payload_json FROM ledger_outbox
+    WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
+  `).get();
+  assert.equal(row.ledger_revision, 2);
+  assert.equal(row.kind, 'RECALC_NAV');
+  assert.equal(row.status, 'PENDING');
+  assert.deepEqual(JSON.parse(row.payload_json), {
+    affectedFrom: '2026-07-24', reason: 'scheduled-eod-raw-tape-extension',
+  });
+  for (const status of ['PENDING', 'FAILED', 'PROCESSING']) {
+    const protectedPayload = JSON.stringify({
+      affectedFrom: '2026-07-20',
+      navReplay: { phase: 'replay', cursor: `checkpoint-${status}` },
+    });
+    env.FEEDBACK_DB.database.prepare(`
+      UPDATE ledger_outbox SET payload_json = ?, status = ?, attempts = 7,
+        available_at = 123, last_error = ?, processed_at = 456
+      WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
+    `).run(protectedPayload, status, `keep:${status}`);
+    const before = env.FEEDBACK_DB.database.prepare(`
+      SELECT payload_json, status, attempts, available_at, last_error, processed_at
+      FROM ledger_outbox WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
+    `).get();
+    await enqueueDailyNavReplay(env, ['us']);
+    const after = env.FEEDBACK_DB.database.prepare(`
+      SELECT payload_json, status, attempts, available_at, last_error, processed_at
+      FROM ledger_outbox WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
+    `).get();
+    assert.deepEqual(after, before, `${status} continuation must remain byte-for-byte intact`);
+  }
+
+  env.FEEDBACK_DB.database.prepare(`
+    UPDATE ledger_outbox SET status = 'DONE', attempts = 9,
+      available_at = 123, last_error = 'old', processed_at = 456
+    WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
+  `).run();
+  await enqueueDailyNavReplay(env, ['us']);
+  const requeued = env.FEEDBACK_DB.database.prepare(`
+    SELECT payload_json, status, attempts, last_error, processed_at
+    FROM ledger_outbox WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
+  `).get();
+  assert.deepEqual({ ...requeued }, {
+    payload_json: JSON.stringify({
+      affectedFrom: '2026-07-24', reason: 'scheduled-eod-raw-tape-extension',
+    }),
+    status: 'PENDING', attempts: 0, last_error: null, processed_at: null,
+  });
+});
 
 test('historical NAV outbox resumes in bounded replay, materialize, and publish phases', async () => {
   const env = await setup();
@@ -184,12 +282,12 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.equal(first.ok, true, JSON.stringify(first));
   assert.equal(first.pending, true);
   assert.deepEqual(first.results.map(item => [item.kind, item.complete]), [
-    ['REBUILD_KV', true],
     ['RECALC_NAV', false],
   ]);
   assert.equal(first.results.at(-1).nextPhase, 'replay');
   assert.equal(first.results.at(-1).nextCursor, '2026-07-22');
   assert.equal(navRows(env).length, 2);
+  assert.equal(adapter.calls.length, 3);
   const firstCheckpointPayload = outboxRows(env)
     .find(row => row.outbox_id === 'nav-2').payload_json;
   const firstCheckpoint = JSON.parse(firstCheckpointPayload).navReplay;
@@ -212,6 +310,7 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.equal(second.ok, true, JSON.stringify(second));
   assert.equal(second.results[0].nextCursor, '2026-07-24');
   assert.equal(navRows(env).length, 4);
+  assert.equal(adapter.calls.length, 3);
 
   // Simulate a lost response after the D1 batch committed but before the caller
   // retained the newer cursor. Replaying the same range replaces, not duplicates.
@@ -224,6 +323,7 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.deepEqual(navRows(env).map(row => row.nav_date), [
     '2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23',
   ]);
+  assert.equal(adapter.calls.length, 3);
 
   const finalReplay = await drain();
   assert.equal(finalReplay.ok, true, JSON.stringify(finalReplay));
@@ -231,6 +331,7 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.equal(finalReplay.results[0].nextPhase, 'materialize');
   assert.equal(finalReplay.results[0].nextCursor, null);
   assert.equal(navRows(env).length, 5);
+  assert.equal(adapter.calls.length, 3);
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-2').status, 'PENDING');
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'xlsx-2').status, 'PENDING');
   assert.equal(env.YC_KV.values.has('navcache:us'), false);
@@ -240,8 +341,7 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.equal(materialized.ok, true, JSON.stringify(materialized));
   assert.equal(materialized.results[0].nextPhase, 'publish');
   assert.equal(materialized.results[0].complete, false);
-  assert.equal(adapter.calls.length, callsBeforeMaterialize + 1);
-  assert.deepEqual(adapter.calls.at(-1), { dataset: 'us_daily', tsCode: 'SPY' });
+  assert.equal(adapter.calls.length, callsBeforeMaterialize);
   assert.equal(JSON.parse(env.YC_KV.values.get('ledger:us')).navRows.length, 5);
   assert.equal(env.YC_KV.values.has('navcache:us'), false);
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-2').status, 'PENDING');
@@ -253,7 +353,7 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
     ['RECALC_NAV', true],
     ['REBUILD_EXCEL', true],
   ]);
-  assert.equal(adapter.calls.length, callsBeforeMaterialize + 1);
+  assert.equal(adapter.calls.length, callsBeforeMaterialize);
   assert.ok(outboxRows(env).every(row => row.status === 'DONE'));
   const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
   assert.equal(cache.navRows.length, 5);
@@ -294,6 +394,7 @@ test('materialize coverage restarts replay from the earliest missing trading ses
     })),
     priceRows: [],
   }, 2);
+  await seedFrozenTape(env);
   await materializeLedgerKv(env, 'us', { expectedLedgerRevision: 2 });
   insertOutbox(env, { id: 'kv-2', revision: 2, kind: 'REBUILD_KV', status: 'DONE' });
   insertOutbox(env, {
@@ -336,7 +437,7 @@ test('materialize coverage restarts replay from the earliest missing trading ses
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'xlsx-2').status, 'PENDING');
 });
 
-test('legacy outbox publishes an already-complete current-revision NAV without rewriting D1', async () => {
+test('current-revision NAV publishes without rewrite only when its raw tape is already frozen', async () => {
   const env = await setup();
   seedEvents(env);
   const dates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24'];
@@ -364,6 +465,7 @@ test('legacy outbox publishes an already-complete current-revision NAV without r
       sourceRef: 'us_daily',
     })),
   }, 2);
+  await seedFrozenTape(env);
   const ledger = await materializeLedgerKv(env, 'us', { expectedLedgerRevision: 2 });
   assert.equal(ledger.navRows.length, 5);
   assert.ok(ledger.navRows.every(row => row.ledgerRevision === 2));
@@ -395,9 +497,7 @@ test('legacy outbox publishes an already-complete current-revision NAV without r
     ['RECALC_NAV', true],
     ['REBUILD_EXCEL', true],
   ]);
-  assert.deepEqual(adapter.calls.map(call => [call.dataset, call.tsCode]), [
-    ['us_daily', 'SPY'],
-  ]);
+  assert.deepEqual(adapter.calls, []);
   assert.equal(navHash(env), beforeHash);
   assert.ok(outboxRows(env).every(row => row.status === 'DONE'));
   const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));

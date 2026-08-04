@@ -465,10 +465,6 @@ function duplicateRowKey(definition, row) {
   return stableStringify(businessCells);
 }
 
-function eventCashChange(event) {
-  return requiredNumber(event.payload.net_cash, `${event.source_ref} net cash`);
-}
-
 function eventSort(left, right) {
   return left.trade_date.localeCompare(right.trade_date) ||
     (EVENT_PRIORITY[left.event_type] ?? 99) - (EVENT_PRIORITY[right.event_type] ?? 99) ||
@@ -476,39 +472,6 @@ function eventSort(left, right) {
     (SHEET_ORDER.get(left.sheet) ?? 99) - (SHEET_ORDER.get(right.sheet) ?? 99) ||
     left.source_row - right.source_row ||
     left.event_id.localeCompare(right.event_id);
-}
-
-function moneyToMinor(value, context) {
-  const minor = Math.round(requiredNumber(value, context) * 100);
-  if (!Number.isSafeInteger(minor)) throw new Error(`${context} is outside the safe cash range`);
-  return minor;
-}
-
-function negativeCashWarnings(events) {
-  let cashMinor = 0;
-  const warnings = [];
-  for (const event of events) {
-    const changeMinor = moneyToMinor(eventCashChange(event), `${event.source_ref} cash change`);
-    cashMinor += changeMinor;
-    if (!Number.isSafeInteger(cashMinor)) {
-      throw new Error(`${event.source_ref} caused cash to exceed the safe integer range`);
-    }
-    if (changeMinor === 0) continue;
-    if (cashMinor < 0) {
-      warnings.push({
-        code: 'NEGATIVE_CASH',
-        severity: 'warning',
-        message: `cash became ${(cashMinor / 100).toFixed(2)} after ${event.source_ref}`,
-        event_id: event.event_id,
-        trade_date: event.trade_date,
-        sheet: event.sheet,
-        source_row: event.source_row,
-        cash_after: cashMinor / 100,
-        cash_after_minor: cashMinor,
-      });
-    }
-  }
-  return warnings;
 }
 
 function historicalNavSeed(inputPath, sheets, sharedStrings, currency) {
@@ -676,10 +639,10 @@ function historicalPriceSeed(inputPath, sheets, sharedStrings, currency, workboo
 }
 
 function migrationBlockingErrors() {
-  // Python treats corporate actions as old-position -> absolute new-position
-  // transformations. Multi-output cost is calculated later from post-action
-  // market values (or kept on the first output when prices are unavailable),
-  // so it is never an operator-supplied migration blocker.
+  // Corporate actions are old-position -> absolute new-position quantity
+  // transformations. Cash-record Amounts remain the only cost/proceeds truth;
+  // a multi-output action never allocates or creates cost basis, so there is no
+  // operator-supplied allocation field to block during migration.
   return [];
 }
 
@@ -735,7 +698,6 @@ export async function migrateLegacyWorkbook({ portfolio, input }) {
   }
 
   events.sort(eventSort);
-  warnings.push(...negativeCashWarnings(events));
   const navSeed = historicalNavSeed(inputPath, sheets, sharedStrings, portfolioDefinition.currency);
   navSeed.rows.forEach(row => { row.source_workbook_sha256 = workbookSha; });
   warnings.push(...navSeed.warnings);

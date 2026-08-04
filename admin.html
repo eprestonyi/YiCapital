@@ -66,7 +66,7 @@
         ['用戶意見 D1', h.feedback?'✓':'✗'],
         ['投資組合 D1 賬本', h.ledger?('✓（待處理 outbox '+Number(h.ledger_outbox_pending||0)+'）'):'✗ 尚未套用 migration'],
         ['意見防濫用', h.feedback_rate_limit?'✓':'✗'],
-        ['每日自動更新', nav&&nav.enabled?('✓ 已啟用（實時行 '+nav.rows.length+' 條'+(nav.updatedAt?('，最近 '+nav.updatedAt.slice(0,16).replace('T',' ')):'')+'）'):'—（發布一次淨值表即自動開啟）'],
+        ['每日自動更新', nav&&nav.enabled?('✓ 已啟用（實時行 '+nav.rows.length+' 條'+(nav.updatedAt?('，最近 '+nav.updatedAt.slice(0,16).replace('T',' ')):'')+'）'):'—（confirmed events 與未復權原始價格尚未完成重算）'],
       ];
       $('health').className='log';
       $('health').textContent=rows.map(r=>r[0]+'：'+r[1]).join('\n');

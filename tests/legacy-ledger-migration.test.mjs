@@ -298,9 +298,7 @@ test('duplicate business rows are warned but preserved and event ids remain dete
     const duplicate = first.warnings.find(warning => warning.code === 'DUPLICATE_LEGACY_ROW');
     assert.deepEqual(duplicate.source_rows, [3, 4]);
     assert.deepEqual(duplicate.event_ids, buys.map(event => event.event_id));
-    const negativeCash = first.warnings.filter(warning => warning.code === 'NEGATIVE_CASH');
-    assert.equal(negativeCash.length, 3);
-    assert.equal(negativeCash.every(warning => warning.severity === 'warning'), true);
+    assert.equal(first.warnings.some(warning => warning.code === 'NEGATIVE_CASH'), false);
     assert.equal(first.events.length, 4);
   });
 });

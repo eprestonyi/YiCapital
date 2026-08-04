@@ -27,9 +27,10 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Pas
    Variable name 填 FEEDBACK_DB，Database 選 yicapital-feedback。
    使用倉庫的 wrangler.toml 部署時，執行：
      npx wrangler d1 migrations apply FEEDBACK_DB --remote
-   這會依次套用 migrations/0001_user_feedback.sql 與
-   migrations/0002_portfolio_ledger.sql。不要把用戶意見、投資組合事件或稅務
-   資料存入公開 GitHub 文件。
+   這會依次套用 migrations/0001_user_feedback.sql、
+   migrations/0002_portfolio_ledger.sql 與 migrations/0003_frozen_price_tapes.sql。
+   0003 為每個 ledger revision 建立 immutable、未復權 raw-close price tape，
+   是 NAV 發布門禁。不要把用戶意見、投資組合事件或稅務資料存入公開 GitHub 文件。
 
    v9 過渡期可讓事件賬本與 user log 共用 FEEDBACK_DB。若另建專用 D1，綁定名
    必須是 LEDGER_DB；Worker 會優先使用 LEDGER_DB，未配置時才回退 FEEDBACK_DB。
@@ -93,18 +94,19 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Pas
 
 附：v9 D1 事件賬本、自動淨值與基準行情
   · D1 的 ledger_events 是唯一真源；公开 GET 只读 KV，不在访客请求时读 Excel。
-  · POST /api/ledger 默认返回 410，只可在紧急回退时显式设置
-    ALLOW_LEGACY_LEDGER_UPLOAD=true；正常运作绝不可设置。
+  · POST /api/ledger 与 POST /api/publish 永久返回 410；不存在可重新开启的
+    Excel/KV 快照回退开关。
   · 人工只可新增 BUY、SELL、CAPITAL；股息、公司行动、负债及基金行动必须由
     Broker/custodian/后台任务自动写 source record 后进入 Pending。所有 Pending 均可
     修改，现金事件可补扣税资料，Confirm 后才写 immutable event。
   · Amount 是现金链与买入成本/卖出收入的唯一真相；Price 只作参考，gross/tax/fee
-    是审计拆分，不得在 Amount 之外再次扣减。负现金只显示 warning，不阻断 Confirm。
-  · 公司行动只记录原股变成哪些新 ticker 及绝对数量；单输出继承全部成本，多输出
-    按行动日起七日内首个收盘价的 `Post Qty × Close` 自动分配，全部无价时成本归第
-    一个输出并 warning。公司行动 Cash 独立进入现金链。
-  · Confirm 立即由 outbox 全历史重算现金、持仓、负债、份额与 NAV；每日 Cron 再以
-    实际收盘行情更新。Excel 四张 derived statements 只展示后台计算结果，不是
+    是审计拆分，不得在 Amount 之外再次扣减。负现金照实进入 NAV，不警告、不阻断 Confirm。
+  · 公司行动只记录原股变成哪些新 ticker 及绝对数量；不按价格分配、搬移或创造
+    成本。所有成本/收入/税费只来自各自的 Cash Amount；公司行动 Cash 独立进入现金链。
+  · Confirm 立即由 outbox 先冻结当前 revision 的未复权 raw-close price tape，再全历史
+    重算现金、持仓、负债、份额与 NAV，完成后才重建 KV / Excel；每日 Cron 再以
+    实际收盘行情更新。盘中一分钟 Cron 只在各市场正常交易时段用已核验 counter
+    覆盖当日点；已冻结历史不可改写。Excel 四张 derived statements 只展示后台计算结果，不是
     operational seed，也不要求每日手工上传。
   · GET /api/benchmark?set=us：S&P 500 / NASDAQ / DOW
   · GET /api/benchmark?set=hk：恒生指數 HSI / 恒生科技指數 HKTECH
@@ -116,6 +118,7 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Pas
     首頁、portfolios 與 fund-us 直接展示同一份快照。
 
 ⑦ 配置每日任務（Worker → Settings → Triggers → Cron Triggers）
+     * * * * *     各市场正常交易时段每分钟更新当日未复权 counter NAV；同时续跑 outbox
      30 21 * * *   US 收盤後更新 US + US 三大指數
      0 9 * * *     北京 17:00 更新 HK/A 即時收盤快照
      30 10 * * *   北京 18:30 以官方 EOD 對賬 HK/A + 三隻港股 ETF/滬深300
@@ -126,10 +129,10 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Pas
    份额、持仓和 NAV 一致，再从「事件账本」确认 outbox 与三市场行情预热。
    在任何 production migration/import 前先记录 D1 Time Travel bookmark；导入确认
    必须显式确认 duplicates 与 unknownTax，并输入服务端真实确认短语：
-   CONFIRM LEGACY US / CONFIRM LEGACY HK / CONFIRM LEGACY A。负现金只作 warning；
+   CONFIRM LEGACY US / CONFIRM LEGACY HK / CONFIRM LEGACY A。负现金照实计算且不作 warning；
    Asset Position、Liability Statement、Cash Flow Statement、NAV Statement 只用于
-   parity 核验，不得作为 operational seed。SPGI → SPGI + MBGL 由七日首价规则自动
-   分配，不要求 Form 8937，也不是 migration blocker。
+   parity 核验，不得作为 operational seed。SPGI → SPGI + MBGL 只转换数量，不分配
+   成本，不要求 Form 8937，也不是 migration blocker。
    不要再通过 admin-publish 或 GitHub 工作簿更新投资组合；Excel 只从数据库导出，
    上传可为 BUY / SELL / CAPITAL 新建事实，也可修改带签名元数据的既有事件；两者
    都必须经过 Preview → Pending → Confirm，四张 derived statements 永不反写。

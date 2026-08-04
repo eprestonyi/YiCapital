@@ -11,17 +11,6 @@
 <link rel="stylesheet" href="../assets/style.css?v=20260802a">
 <script src="../assets/portal-config.js"></script>
 <script src="../assets/yc-i18n.js"></script>
-<script>
-/* Safari 偶发 XLSX CDN 加載失败 → 备援 jsdelivr/unpkg */
-window.ensureXLSX=function(){return new Promise(function(res,rej){
-  if(window.XLSX)return res();
-  var urls=['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'],i=0;
-  (function next(){ if(window.XLSX)return res();
-    if(i>=urls.length)return rej(new Error('表格解析库加載失败，请刷新或更換浏览器'));
-    var s=document.createElement('script');s.src=urls[i++];s.onload=function(){window.XLSX?res():next()};s.onerror=next;document.head.appendChild(s);
-  })();
-});}
-</script>
 <script src="../assets/yc-analytics.js"></script>
 <script src="../assets/yc-charts.js"></script>
 <style>
@@ -32,8 +21,6 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   @media(max-width:900px){.grid2{grid-template-columns:1fr}}
   .panel h4{font-family:var(--sans);font-size:15.5px;color:#fff;margin-bottom:14px}
   #loader{padding:70px 0;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px;letter-spacing:1.5px}
-  #loader .drop{margin-top:26px;display:inline-block;border:1px dashed var(--line);border-radius:8px;padding:26px 40px;cursor:pointer}
-  #loader .drop:hover{border-color:var(--cyan);color:var(--cyan)}
   .logic p{color:#cdd6e3;font-size:15.5px;line-height:2;margin-bottom:18px}
   .logic b{color:#fff}
   .logic .pull{border-left:3px solid var(--cyan);padding:6px 0 6px 20px;margin:26px 0;color:#e8edf5;font-size:16.5px;font-family:var(--zh)}
@@ -65,24 +52,20 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
   <div class="page-hero">
     <div class="crumb"><a href="./">首页</a> / <a href="portfolios">组合实录</a> / YI CAPITAL US</div>
     <h1><small>基金档案 ｜ USD ｜ 多资产配置</small>Yi Capital US</h1>
-    <p>本页所有数据与图表均读取后台持久化快照。Excel 只作交易、出入金与公司行动变更时的来源；日常估值、指标与曲线由后台更新并覆盖缓存，页面只负责展示。</p>
+    <p>本页所有数据与图表只读取后台数据库持久化快照；交易、出入金、公司行动、估值、指标与曲线均由后台处理，页面只负责展示。</p>
     <p class="asof" id="asof"></p>
   </div>
 </div>
 
 <div class="wrap">
   <div class="yc-lock">
-  <div id="srcbar" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:12px 18px;margin-bottom:8px;font-family:var(--mono);font-size:12px;color:var(--muted)">
-    <span id="srcstate">數据源：載入中…</span>
-    <button id="bindbtn" class="menu-btn" style="display:inline-block">🔗 绑定本地净值表（持续同步）</button>
-    <button id="unbindbtn" class="menu-btn" style="display:none">解除绑定</button>
-    <span id="synctick" style="color:var(--up);display:none">● LIVE</span>
+  <div id="srcbar" style="display:none;align-items:center;gap:14px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:12px 18px;margin-bottom:8px;font-family:var(--mono);font-size:12px;color:var(--muted)">
+    <span id="srcstate">数据源：载入中…</span>
   </div>
 </div>
 
 <div class="wrap" id="loader">
   正在加载后台快照 …
-  <div><label class="drop" id="dropzone">或点此 / 拖入基金 Excel（Yi_Capital_Manager 导出的工作簿，仅本次预览）<input type="file" id="filepick" accept=".xlsx,.xlsm" style="display:none"></label></div>
 </div>
 
 <div id="report" style="display:none">
@@ -170,22 +153,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
 
 <script>
 (function(){
-  const DATA_URL = '../assets/data/Yi_Capital_US.xlsx';
   const $ = id => document.getElementById(id);
-  const IS_ADMIN = localStorage.getItem('yc-role')==='admin';
-  if(!IS_ADMIN){
-    // 访客/未登入：纯展示，不出现任何上传/绑定控件
-    const sb=$('srcbar'); if(sb) sb.style.display='none';
-    const dz=document.getElementById('dropzone'); if(dz) dz.style.display='none';
-    $('loader').firstChild.textContent='正在載入數据…';
-  }
-
-  function workbookToSheets(wb){
-    const out = {};
-    wb.SheetNames.forEach(n => out[n] = XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:true, defval:null}));
-    return out;
-  }
-
   function statCard(v, k, cls){ return `<div class="stat"><div class="v ${cls||''}">${v}</div><div class="k">${k}</div></div>`; }
 
   function validStress(s){
@@ -227,12 +195,11 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     return prefix+YC.snapshotLabel(R.snapshot,lang)+(bm?' · BM '+bm:'');
   }
   async function bootCache(){
-    if(new URLSearchParams(location.search).has('data')) return false;
     const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return false;
     try{
       const j=await (await fetch(api+'/api/nav/us',{cache:'no-store'})).json();
       const R=cachedReport(j); if(!R) return false;
-      render(await fetchBenchmarks(R));
+      render(R);
       $('srcstate').textContent=snapshotSourceText(R);
       return true;
     }catch(e){ return false; }
@@ -242,10 +209,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     if(R.error){ $('loader').firstChild.textContent = '⚠ ' + R.error; return; }
     const M = R.metrics, F = YCC;
     $('loader').style.display='none'; $('report').style.display='block';
-    const __auto=window.__liveAdded?((window.YCI&&YCI.lang==='en')?` | incl. ${window.__liveAdded} auto-updated day(s)`:`｜ 含 ${window.__liveAdded} 个自动更新日`):'';
-    $('asof').textContent = R.source==='api'
-      ? `数据截至 ${R.end} ｜ 回测区间 ${R.start} → ${R.end}（${M.days} 交易日）｜ 后台持久化快照 AUTO · CACHE`
-      : `数据截至 ${R.end} ｜ 回测区间 ${R.start} → ${R.end}（${M.days} 交易日）｜ 工作簿兼容模式${__auto}`;
+    $('asof').textContent = `数据截至 ${R.end} ｜ 回测区间 ${R.start} → ${R.end}（${M.days} 交易日）｜ 后台持久化快照 AUTO · CACHE`;
 
     // 指标卡
     const endVal = Math.round(10000*(1+M.totalRet));
@@ -292,7 +256,7 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
       const byER = [...R.assets].filter(a=>a.exposureReturn!=null).sort((a,b)=>a.exposureReturn-b.exposureReturn);
       $('c-expret-bars').innerHTML = F.hBarChart(byER.map(a=>({label:a.ticker, v:a.exposureReturn})), {title:'个股敞口收益率（总盈亏 ÷ 总买入成本）', valueFmt:v=>(v>=0?'+':'')+v.toFixed(1)+'%'});
     } else {
-      $('c-donut').innerHTML = $('c-holdings-table').innerHTML = '<div class="legend">工作簿中未找到 Asset Position Record 分页。</div>';
+      $('c-donut').innerHTML = $('c-holdings-table').innerHTML = '<div class="legend">后台快照目前没有持仓数据。</div>';
     }
     $('c-stacked').innerHTML = F.stackedArea(R.navRows);
     $('c-unitnav').innerHTML = F.lineChart([{name:'每股净资产', color:F.colors.up, width:2, data:R.navRows.map(r=>({date:r.date, v:r.nav})), fill:true}], {yFmt:v=>v.toFixed(2)});
@@ -307,146 +271,12 @@ window.ensureXLSX=function(){return new Promise(function(res,rej){
     $('c-fan-grind').innerHTML = F.stressFanChart(R.stress.grind);
   }
 
-  async function fetchLiveRows(sheets){
-    const api=(window.YC_API||'').replace(/\/+$/,''); if(!api) return 0;
-    try{
-      const j=await (await fetch(api+'/api/nav/us',{cache:'no-store'})).json();
-      window.__livePayload=j;
-      if(j.ok && j.enabled && j.rows && j.rows.length) return YC.appendLive(sheets, j.rows);
-    }catch(e){}
-    return 0;
-  }
-  async function fetchBenchmarks(R){
-    const api=(window.YC_API||'').replace(/\/+$/,'');
-    if(R.error||!api) return R;
-    R.benchmarks={}; R.primaryBM=null;
-    try{ const j=await (await fetch(api+'/api/benchmark?set=us')).json(); R.benchmarkSnapshot=YC.snapshotMeta(j); if(j.ok) YC.attachBenchmarks(R,j.data); }catch(e){}
-    return R;
-  }
-  async function loadArrayBuffer(buf, srcLabel){
-    try{
-      await ensureXLSX();
-      const wb = XLSX.read(buf, {type:'array', cellDates:false});
-      const __sheets=workbookToSheets(wb);
-      window.__liveAdded=await fetchLiveRows(__sheets);
-      const R=YC.analyze(__sheets);
-      if(window.__livePayload&&window.__livePayload.holdings) YC.applyLiveHoldings(R,window.__livePayload.holdings);
-      render(await fetchBenchmarks(R));
-      if(srcLabel) $('srcstate').textContent = '數据源：' + srcLabel;
-      return true;
-    }catch(e){
-      $('loader').style.display='block';
-      $('loader').firstChild.textContent = '⚠ 解析失败：' + e.message + ' ';
-      return false;
-    }
-  }
-
-  /* ══════════ 數据源管理 ══════════
-     优先级：①已绑定的本地文件（File System Access API，持续同步）
-             ②URL 参數 ?data=https://…（远程托管，如 GitHub raw）
-             ③站内 assets/data/Yi_Capital_US.xlsx
-             ④拖入/选择文件（单次预览）                       */
-
-  // — IndexedDB 保存文件句柄（跨会话）—
-  const idb = {
-    open: () => new Promise((res,rej)=>{ const q=indexedDB.open('yc-fund',1);
-      q.onupgradeneeded=()=>q.result.createObjectStore('kv');
-      q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }),
-    get: async k => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); },
-    set: async (k,v) => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv','readwrite').objectStore('kv').put(v,k); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); }); },
-    del: async k => { const db=await idb.open(); return new Promise((res,rej)=>{ const q=db.transaction('kv','readwrite').objectStore('kv').delete(k); q.onsuccess=()=>res(); q.onerror=()=>rej(q.error); }); },
-  };
-
-  let liveHandle=null, liveTimer=null, lastMod=0;
-
-  async function startLiveSync(handle){
-    liveHandle=handle;
-    const f=await handle.getFile();
-    lastMod=f.lastModified;
-    if(loadArrayBuffer(await f.arrayBuffer(), '本地文件「'+f.name+'」（持续同步中）')){
-      $('bindbtn').style.display='none'; $('unbindbtn').style.display='inline-block'; $('synctick').style.display='inline';
-    }
-    clearInterval(liveTimer);
-    liveTimer=setInterval(async ()=>{
-      try{
-        const nf=await liveHandle.getFile();
-        if(nf.lastModified!==lastMod){       // Python 一保存，这里自动重算重画
-          lastMod=nf.lastModified;
-          $('synctick').textContent='● 更新中…';
-          loadArrayBuffer(await nf.arrayBuffer(), '本地文件「'+nf.name+'」（持续同步中）');
-          $('synctick').textContent='● LIVE · '+new Date().toLocaleTimeString();
-        }
-      }catch(e){ /* 文件被暂时锁定（Excel 写入瞬间）→ 下一轮重试 */ }
-    }, 4000);
-  }
-
-  // 绑定按钮：选一次文件，句柄存入 IndexedDB，下次打开页面自动恢复
-  $('bindbtn').addEventListener('click', async ()=>{
-    if(!window.showOpenFilePicker){ alert('此浏览器不支持持续同步（需 Chrome / Edge 桌面版）。可用拖入方式单次预览。'); return; }
-    try{
-      const [h]=await showOpenFilePicker({types:[{description:'Excel',accept:{'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx','.xlsm']}}]});
-      await idb.set('handle', h);
-      startLiveSync(h);
-    }catch(e){ /* 用户取消 */ }
-  });
-  $('unbindbtn').addEventListener('click', async ()=>{
-    await idb.del('handle'); clearInterval(liveTimer); liveHandle=null;
-    $('bindbtn').style.display='inline-block'; $('unbindbtn').style.display='none'; $('synctick').style.display='none';
-    $('srcstate').textContent='數据源：已解除绑定（改用站内數据）';
-    bootCache();
-  });
-
-  // 页面打开：先尝试恢复已绑定的句柄
-  async function bootHandle(){
-    if(!window.showOpenFilePicker) return false;
-    try{
-      const h=await idb.get('handle'); if(!h) return false;
-      let perm=await h.queryPermission({mode:'read'});
-      if(perm==='prompt'){
-        // 重新授权需要一次点击：把绑定按钮变成「重新連接」
-        $('srcstate').textContent='數据源：检测到已绑定的本地文件，点击重新連接 →';
-        $('bindbtn').textContent='🔗 重新連接本地净值表';
-        $('bindbtn').onclick=async ()=>{ if(await h.requestPermission({mode:'read'})==='granted') startLiveSync(h); };
-        return 'pending';
-      }
-      if(perm==='granted'){ startLiveSync(h); return true; }
-    }catch(e){}
-    return false;
-  }
-
-  // 远程/站内 fetch
-  function bootFetch(){
-    const remote=new URLSearchParams(location.search).get('data');
-    if(!remote)return;
-    const url=remote;
-    // cache-bust：避免浏览器/CDN 缓存旧净值表
-    const bust=url+(url.includes('?')?'&':'?')+'v='+Date.now();
-    fetch(bust,{cache:'no-store'}).then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
-      .then(buf=>loadArrayBuffer(buf, remote?('远程 '+url):('站内 '+DATA_URL+'（随部署更新）')))
-      .catch(()=>{ $('loader').style.display='block'; $('loader').firstChild.textContent=IS_ADMIN?('未找到 '+url+'（可绑定本地文件持续同步，或拖入文件预览）'):'數据暂时不可用，请稍后再试。'; $('srcstate').textContent='數据源：无'; });
-  }
-
   (async ()=>{
-    const remote=new URLSearchParams(location.search).get('data');
-    if(remote){ bootFetch(); return; }
     if(await bootCache()) return;
     $('loader').style.display='block';
-    $('loader').firstChild.textContent='后台持久化快照暂时不可用；不会以旧 Excel 覆盖。';
+    $('loader').firstChild.textContent='后台持久化快照暂时不可用；不会使用工作簿或本地文件作为回退。';
     $('srcstate').textContent='数据源：等待后台最后成功快照';
   })();
-
-  // 拖入 / 选择文件（单次预览）
-  $('filepick').addEventListener('change', e=>{
-    const f=e.target.files[0]; if(!f) return;
-    f.arrayBuffer().then(b=>loadArrayBuffer(b,'拖入文件「'+f.name+'」（单次预览）'));
-  });
-  if(IS_ADMIN){
-  ['dragover','drop'].forEach(ev=>document.addEventListener(ev, e=>e.preventDefault()));
-  document.addEventListener('drop', e=>{
-    const f=e.dataTransfer && e.dataTransfer.files[0];
-    if(f) f.arrayBuffer().then(b=>loadArrayBuffer(b,'拖入文件「'+f.name+'」（单次预览）'));
-  });
-  }
 })();
 </script>
 <script src="../assets/yc-gate.js"></script>

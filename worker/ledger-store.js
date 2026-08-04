@@ -15,6 +15,12 @@ const EVENT_TYPES = new Set([
   'LIABILITY', 'CAPITAL', 'FUND_ACTION', 'REVERSAL',
 ]);
 const MANUAL_EVENT_TYPES = new Set(['BUY', 'SELL', 'CAPITAL']);
+const AUTOMATION_EVENT_TYPES = new Set([
+  'DIVIDEND', 'CORPORATE_ACTION', 'LIABILITY', 'FUND_ACTION',
+]);
+const TAX_REVIEW_EVENT_TYPES = new Set([
+  'BUY', 'SELL', 'DIVIDEND', 'CORPORATE_ACTION', 'FUND_ACTION',
+]);
 const CASH_PRIORITY = Object.freeze({
   CAPITAL: 0,
   LIABILITY: 1,
@@ -27,8 +33,10 @@ const CASH_PRIORITY = Object.freeze({
 });
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_IMPORT_ROWS = 280;
-const MAX_NAV_SEED_ROWS = 800;
-const MAX_PRICE_SEED_ROWS = 500;
+const MAX_NAV_BATCH_ROWS = 800;
+const MAX_RAW_PRICE_TAPE_ROWS = 40_000;
+const RAW_PRICE_TAPE_CHUNK_ROWS = 500;
+const ACTIVE_POSITION_EPSILON = 1e-12;
 const LAYOUT_HASH = 'yicapital-xlsx-v2-11sheet-2f5b7c-d9e2ec';
 const textEncoder = new TextEncoder();
 
@@ -42,12 +50,18 @@ class LedgerHttpError extends Error {
 }
 
 const now = () => Date.now();
-function currentHongKongDate(timestamp = now()) {
+function dateInTimeZone(timeZone, timestamp = now()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit',
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(new Date(timestamp));
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
+}
+function currentPortfolioDate(portfolio, timestamp = now()) {
+  const timeZone = portfolio === 'us'
+    ? 'America/New_York'
+    : portfolio === 'a' ? 'Asia/Shanghai' : 'Asia/Hong_Kong';
+  return dateInTimeZone(timeZone, timestamp);
 }
 const makeId = prefix => prefix + '_' + Date.now().toString(36) + '_' + crypto.randomUUID().replace(/-/g, '');
 const upper = value => String(value || '').trim().toUpperCase();
@@ -153,6 +167,29 @@ function stripSyncFields(event) {
   return copy;
 }
 const canonicalHash = event => sha256Hex(stableJson(stripSyncFields(event)));
+
+function cashAuditFingerprint(event) {
+  const source = event && typeof event === 'object' ? event : {};
+  const fields = [
+    'gross_amount_minor', 'tax_amount_minor', 'fee_amount_minor', 'net_cash_minor',
+    'gross_amount', 'tax_amount', 'transaction_tax', 'withholding_tax', 'fees',
+    'net_amount', 'net_cash', 'amount', 'cash_amount', 'cash_change',
+  ];
+  return stableJson(Object.fromEntries(fields.map(field => [field, source[field] ?? null])));
+}
+
+function markExcelTaxReview(currentEvent, excelEvent) {
+  if (!TAX_REVIEW_EVENT_TYPES.has(excelEvent.event_type) ||
+      cashAuditFingerprint(currentEvent) === cashAuditFingerprint(excelEvent)) {
+    return excelEvent;
+  }
+  return {
+    ...excelEvent,
+    tax_status: 'PENDING_RECONFIRMATION',
+    tax_review_required: true,
+    tax_review_reason: 'Excel 修改了 Amount/Cash 或稅費拆分；必須在 Pending 重新核對。',
+  };
+}
 
 function parseJson(value, fallback = null) {
   if (value == null || value === '') return fallback;
@@ -297,6 +334,28 @@ async function activeEvents(db, portfolio, maxRevision = Number.MAX_SAFE_INTEGER
   const revision = Number(maxRevision);
   return (await dbAll(db, ACTIVE_EVENT_SQL, [portfolio, revision, revision, revision])).map(eventItem);
 }
+
+async function earliestActiveEventDate(db, portfolio, maxRevision) {
+  const revision = Number(maxRevision);
+  const row = await dbFirst(db, `
+    SELECT MIN(e.trade_date) AS affected_from
+    FROM ledger_events e
+    WHERE e.portfolio_id = ?
+      AND e.ledger_revision <= ?
+      AND e.event_type != 'REVERSAL'
+      AND NOT EXISTS (
+        SELECT 1 FROM ledger_events replacement
+        WHERE replacement.supersedes_event_id = e.event_id
+          AND replacement.ledger_revision <= ?
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM ledger_events reversal
+        WHERE reversal.reversal_of_event_id = e.event_id
+          AND reversal.ledger_revision <= ?
+      )
+  `, [portfolio, revision, revision, revision]);
+  return row && row.affected_from ? String(row.affected_from).slice(0, 10) : null;
+}
 function engineEvents(items) {
   return items.map(item => ({
     ...item.event,
@@ -313,6 +372,93 @@ function engineEvents(items) {
     status: 'confirmed',
   }));
 }
+
+async function requestDerivedRebuild(db, body, actor) {
+  const requestedPortfolio = String(body.portfolio || '').trim();
+  if (!requestedPortfolio) throw new LedgerHttpError(422, 'portfolio 必須明確指定 us/hk/a');
+  const portfolio = portfolioId(requestedPortfolio);
+  const reason = String(body.reason || '').trim();
+  if (!reason) throw new LedgerHttpError(422, 'reason 必須說明重算原因');
+  if (reason.length > 500) throw new LedgerHttpError(422, 'reason 不可超過 500 個字元');
+
+  const state = await portfolioRow(db, portfolio);
+  const ledgerRevision = Number(state.ledger_revision);
+  const affectedFrom = await earliestActiveEventDate(db, portfolio, ledgerRevision);
+  if (!affectedFrom) {
+    throw new LedgerHttpError(409, '目前沒有可重算的 confirmed active event');
+  }
+
+  const timestamp = now();
+  const guardId = makeId('ltg');
+  const requestId = makeId('ldr');
+  const kinds = ['RECALC_NAV', 'REBUILD_KV', 'REBUILD_EXCEL'];
+  const payload = stableJson({ affectedFrom, reason });
+  try {
+    await db.batch([
+      db.prepare(`
+        INSERT INTO ledger_transaction_guards (
+          guard_id, pending_id, expected_pending_version,
+          portfolio_id, expected_ledger_revision, created_at
+        ) VALUES (
+          ?, ?, 1,
+          (SELECT portfolio_id FROM ledger_portfolios
+            WHERE portfolio_id = ? AND ledger_revision = ?),
+          ?, ?
+        )
+      `).bind(
+        guardId, requestId, portfolio, ledgerRevision,
+        ledgerRevision, timestamp,
+      ),
+      ...kinds.map(kind => db.prepare(`
+        INSERT INTO ledger_outbox (
+          outbox_id, portfolio_id, ledger_revision, kind, payload_json,
+          status, attempts, available_at, last_error, created_at, processed_at
+        ) VALUES (?, ?, ?, ?, ?, 'PENDING', 0, ?, NULL, ?, NULL)
+        ON CONFLICT(portfolio_id, ledger_revision, kind) DO UPDATE SET
+          payload_json = excluded.payload_json,
+          status = 'PENDING',
+          attempts = 0,
+          available_at = excluded.available_at,
+          last_error = NULL,
+          processed_at = NULL
+      `).bind(
+        makeId('lob'), portfolio, ledgerRevision, kind, payload,
+        timestamp, timestamp,
+      )),
+      db.prepare(`
+        INSERT INTO ledger_audit_log (
+          audit_id, portfolio_id, actor_type, actor_ref, action,
+          target_type, target_id, before_json, after_json, metadata_json, created_at
+        ) VALUES (?, ?, 'ADMIN', ?, 'DERIVED_REBUILD_REQUESTED',
+          'PORTFOLIO', ?, NULL, ?, ?, ?)
+      `).bind(
+        makeId('lau'), portfolio, actor, portfolio,
+        stableJson({ ledgerRevision, affectedFrom, kinds, status: 'PENDING' }),
+        stableJson({ requestId, reason }), timestamp,
+      ),
+      db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+    ]);
+  } catch (error) {
+    const current = await portfolioRow(db, portfolio);
+    if (Number(current.ledger_revision) !== ledgerRevision) {
+      throw new LedgerHttpError(
+        409,
+        '重算排隊時 ledger revision 已改變，請刷新後重試',
+        { code: 'LEDGER_REVISION_CHANGED' },
+      );
+    }
+    throw error;
+  }
+
+  return {
+    ok: true,
+    portfolio,
+    ledgerRevision,
+    affectedFrom,
+    kinds,
+    requestId,
+  };
+}
 function replay(items, portfolio, options = {}) {
   try {
     return replayPortfolioLedger(engineEvents(items), {
@@ -320,7 +466,7 @@ function replay(items, portfolio, options = {}) {
       currency: PORTFOLIOS[portfolio].currency,
       include_pending: false,
       corporate_action_prices: options.corporateActionPrices || [],
-      as_of_date: options.asOfDate || currentHongKongDate(),
+      as_of_date: options.asOfDate || currentPortfolioDate(portfolio),
     });
   } catch (error) {
     throw new LedgerHttpError(422, '賬本重放失敗：' + error.message);
@@ -344,9 +490,13 @@ async function createPending(db, portfolio, rawEvent, actor, options = {}) {
   const event = canonicalEvent(rawEvent, portfolio);
   event.status = 'pending';
   const source = SOURCES.has(upper(options.source)) ? upper(options.source) : 'MANUAL';
-  if (source === 'MANUAL' && !MANUAL_EVENT_TYPES.has(event.event_type)) {
+  if (['MANUAL', 'EXCEL'].includes(source) && !MANUAL_EVENT_TYPES.has(event.event_type)) {
     throw new LedgerHttpError(422,
       '人工新增只允許交易和股東申購/贖回；股息、公司行動、負債與基金行動必須由自動來源進入 Pending。');
+  }
+  if (source === 'AUTOMATION' && !AUTOMATION_EVENT_TYPES.has(event.event_type)) {
+    throw new LedgerHttpError(422,
+      '自動來源只允許股息、公司行動、負債與基金行動；BUY、SELL、CAPITAL 必須由人工或簽名 Excel 進入 Pending。');
   }
   const idempotencyKey = options.idempotencyKey ? String(options.idempotencyKey).slice(0, 200) : null;
   if (idempotencyKey) {
@@ -423,6 +573,9 @@ async function updatePending(db, body, actor) {
   const pf = await portfolioRow(db, portfolio);
   const event = canonicalEvent(body.event, portfolio);
   event.status = 'pending';
+  if (event.event_type !== current.event_type) {
+    throw new LedgerHttpError(422, 'Pending 事件類型不可修改；請驳回後以正確類型重新建立。');
+  }
   const timestamp = now();
   const guardId = makeId('ltg');
   const auditId = makeId('lau');
@@ -551,6 +704,24 @@ function canonicalNavSeedRow(raw, portfolio, index) {
   }
   if (unitsMicros < 0 || (unitsMicros > 0 && unitNavMicros == null)) {
     throw new LedgerHttpError(422, `${date} NAV 份額或單位淨值無效`);
+  }
+  if (unitsMicros > 0 && unitNavMicros != null) {
+    const expectedUnitNavMicros = Math.round(
+      (netValueMinor / 100) / (unitsMicros / 1_000_000) * 1_000_000,
+    );
+    // net value is stored to cents while Python-compatible unit NAV is
+    // calculated from the exact, pre-display net value. Permit only the
+    // mathematically unavoidable half-cent storage delta plus one micro for
+    // unit-NAV rounding; this is not a loose accounting tolerance.
+    const units = unitsMicros / 1_000_000;
+    const unitNavToleranceMicros = Math.max(
+      2,
+      Math.ceil((0.005 / units) * 1_000_000) + 1,
+    );
+    if (!Number.isSafeInteger(expectedUnitNavMicros) ||
+        Math.abs(unitNavMicros - expectedUnitNavMicros) > unitNavToleranceMicros) {
+      throw new LedgerHttpError(422, `${date} NAV 單位淨值不等於淨值除以總份額`);
+    }
   }
   return {
     date,
@@ -716,14 +887,755 @@ async function loadPriceHistory(db, portfolio, maxRevision = Number.MAX_SAFE_INT
   }));
 }
 
-function enrichProjectionPrices(projection, priceRows) {
+function normalizedTapeTickers(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(value => String(value || '').trim().toUpperCase())
+    .filter(Boolean))].sort();
+}
+
+function tapeTickersAreSubset(observedTickers, requiredTickers) {
+  const required = new Set(requiredTickers);
+  return observedTickers.every(ticker => required.has(ticker));
+}
+
+function rawTapeError(message, code = 'HISTORICAL_NAV_PRICE_TAPE_INVALID') {
+  return new LedgerHttpError(409, message, { code });
+}
+
+function rawTapeCanonicalRows(rows) {
+  return rows.map(row => [
+    row.ticker,
+    row.price_date,
+    Number(row.price_micros),
+    row.source,
+    row.source_ref || null,
+  ]);
+}
+
+async function rawTapeHash({
+  portfolio,
+  ledgerRevision,
+  tapeFrom,
+  tapeThrough,
+  calendarFrom,
+  calendarDates,
+  requiredTickers,
+  priceSource,
+  calendarSource,
+  calendarSourceRef,
+  parentPriceTapeId = null,
+  inheritedThrough = null,
+  priceRows,
+}) {
+  return sha256Hex(stableJson({
+    portfolio,
+    ledgerRevision,
+    tapeFrom,
+    tapeThrough,
+    calendarFrom,
+    calendarDates,
+    requiredTickers,
+    priceBasis: 'raw_close',
+    adjusted: false,
+    priceSource,
+    calendarSource,
+    calendarSourceRef: calendarSourceRef || null,
+    parentPriceTapeId: parentPriceTapeId || null,
+    inheritedThrough: inheritedThrough || null,
+    priceRows: rawTapeCanonicalRows(priceRows),
+  }));
+}
+
+/** Read one complete raw-close replay tape from storage isolated from live prices. */
+export async function loadFrozenLedgerPriceTape(
+  env,
+  requestedPortfolio,
+  expectedLedgerRevision,
+  expectations = {},
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const ledgerRevision = Number(expectedLedgerRevision);
+  if (!Number.isInteger(ledgerRevision) || ledgerRevision < 0) {
+    throw rawTapeError('歷史價格帶缺少有效 ledger revision');
+  }
+  const manifest = await dbFirst(db, `
+    SELECT * FROM ledger_price_tapes
+    WHERE portfolio_id = ? AND ledger_revision = ?
+    LIMIT 1
+  `, [portfolio, ledgerRevision]);
+  if (!manifest) return null;
+
+  const tapeFrom = String(manifest.tape_from || '').slice(0, 10);
+  const tapeThrough = String(manifest.tape_through || '').slice(0, 10);
+  const calendarFrom = String(manifest.calendar_from || '').slice(0, 10);
+  const rawCalendarDates = parseJson(manifest.calendar_dates_json, []);
+  const calendarDates = Array.isArray(rawCalendarDates)
+    ? rawCalendarDates.map(value => String(value || '').slice(0, 10))
+    : [];
+  const requiredTickers = normalizedTapeTickers(parseJson(manifest.required_tickers_json, []));
+  const priceSource = String(manifest.price_source || '');
+  const tapeId = String(manifest.price_tape_id || '');
+  const tapeHash = String(manifest.price_tape_hash || '');
+  const parentPriceTapeId = String(manifest.parent_price_tape_id || '') || null;
+  const inheritedThrough = String(manifest.inherited_through || '').slice(0, 10) || null;
+  const datesAreValid = calendarDates.length > 0 &&
+    calendarDates.every(date => /^\d{4}-\d{2}-\d{2}$/.test(date)) &&
+    calendarDates.every((date, index) => index === 0 || calendarDates[index - 1] < date) &&
+    calendarDates[0] >= calendarFrom && calendarDates.at(-1) === tapeThrough;
+  if (manifest.price_basis !== 'raw_close' || Number(manifest.adjusted) !== 0 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(tapeFrom) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(tapeThrough) || tapeFrom > tapeThrough ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(calendarFrom) || calendarFrom > tapeThrough ||
+      !datesAreValid || !/^tushare:/.test(priceSource) ||
+      !/^raw-close:[a-z]+:\d+$/.test(tapeId) ||
+      (parentPriceTapeId == null) !== (inheritedThrough == null) ||
+      parentPriceTapeId && !/^raw-close:[a-z]+:\d+$/.test(parentPriceTapeId) ||
+      inheritedThrough && (!/^\d{4}-\d{2}-\d{2}$/.test(inheritedThrough) ||
+        inheritedThrough > tapeThrough) ||
+      !/^[a-f0-9]{64}$/.test(tapeHash)) {
+    throw rawTapeError('D1 歷史 raw-close 價格帶標記無效');
+  }
+
+  const expectedFrom = String(expectations.tapeFrom || '').slice(0, 10);
+  const expectedThrough = String(expectations.tapeThrough || '').slice(0, 10);
+  const expectedCalendarFrom = String(expectations.calendarFrom || '').slice(0, 10);
+  const expectedTickers = normalizedTapeTickers(expectations.requiredTickers);
+  const expectedSource = String(expectations.priceSource || '');
+  const expectedTapeId = String(expectations.priceTapeId || '');
+  if (expectedFrom && tapeFrom !== expectedFrom ||
+      expectedThrough && tapeThrough !== expectedThrough ||
+      expectedCalendarFrom && calendarFrom !== expectedCalendarFrom ||
+      Object.hasOwn(expectations, 'requiredTickers') &&
+        stableJson(requiredTickers) !== stableJson(expectedTickers) ||
+      expectedSource && priceSource !== expectedSource ||
+      expectedTapeId && tapeId !== expectedTapeId) {
+    throw rawTapeError('D1 歷史 raw-close 價格帶與本次重放不匹配');
+  }
+
+  const rows = await dbAll(db, `
+    SELECT * FROM ledger_price_tape_rows
+    WHERE price_tape_id = ?
+    ORDER BY ticker, price_date
+  `, [tapeId]);
+  const priceRows = rows.map(row => ({
+    ticker: String(row.ticker || '').toUpperCase(),
+    price_date: String(row.price_date || '').slice(0, 10),
+    price_micros: Number(row.price_micros),
+    source: String(row.source || ''),
+    source_ref: row.source_ref || null,
+  }));
+  const observedTickers = normalizedTapeTickers(priceRows.map(row => row.ticker));
+  const rowsAreValid = priceRows.length <= MAX_RAW_PRICE_TAPE_ROWS &&
+    priceRows.every(row => row.price_micros > 0 && row.source === priceSource &&
+      row.price_date >= tapeFrom && row.price_date <= tapeThrough &&
+      calendarDates.includes(row.price_date));
+  if (!tapeTickersAreSubset(observedTickers, requiredTickers) || !rowsAreValid ||
+      Number(manifest.price_row_count) !== priceRows.length) {
+    throw rawTapeError('D1 歷史 raw-close 價格帶不完整');
+  }
+  const calculatedHash = await rawTapeHash({
+    portfolio,
+    ledgerRevision,
+    tapeFrom,
+    tapeThrough,
+    calendarFrom,
+    calendarDates,
+    requiredTickers,
+    priceSource,
+    calendarSource: String(manifest.calendar_source || ''),
+    calendarSourceRef: String(manifest.calendar_source_ref || ''),
+    parentPriceTapeId,
+    inheritedThrough,
+    priceRows,
+  });
+  if (calculatedHash !== tapeHash) {
+    throw rawTapeError('D1 歷史 raw-close 價格帶 hash 不一致');
+  }
+  return {
+    portfolio,
+    ledgerRevision,
+    tapeFrom,
+    tapeThrough,
+    calendarFrom,
+    calendarDates,
+    calendarSource: String(manifest.calendar_source || ''),
+    calendarSourceRef: String(manifest.calendar_source_ref || ''),
+    parentPriceTapeId,
+    inheritedThrough,
+    requiredTickers,
+    priceSource,
+    priceTapeId: tapeId,
+    priceTapeHash: tapeHash,
+    priceRows: priceRows.map(row => ({
+      ticker: row.ticker,
+      date: row.price_date,
+      price: row.price_micros / 1_000_000,
+      close: row.price_micros / 1_000_000,
+      source: row.source,
+      sourceRef: row.source_ref,
+      valuation: {
+        immutableRawPriceTape: true,
+        priceBasis: 'raw_close',
+        adjusted: false,
+        priceTapeId: tapeId,
+        priceTapeHash: tapeHash,
+      },
+    })),
+  };
+}
+
+/** Load the newest validated tape strictly before a ledger revision. */
+export async function loadPriorFrozenLedgerPriceTape(
+  env,
+  requestedPortfolio,
+  beforeLedgerRevision,
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const revision = Number(beforeLedgerRevision);
+  if (!Number.isInteger(revision) || revision <= 0) return null;
+  const row = await dbFirst(db, `
+    SELECT ledger_revision FROM ledger_price_tapes
+    WHERE portfolio_id = ? AND ledger_revision < ?
+    ORDER BY ledger_revision DESC LIMIT 1
+  `, [portfolio, revision]);
+  return row
+    ? loadFrozenLedgerPriceTape(env, portfolio, Number(row.ledger_revision))
+    : null;
+}
+
+/** Queue one current-revision EOD tape extension without changing the ledger. */
+export async function enqueueDailyNavReplay(env, requestedPortfolios = ['us', 'hk', 'a']) {
+  const db = ledgerDb(env);
+  const portfolios = [...new Set(requestedPortfolios.map(portfolioId))];
+  const queued = [];
+  for (const portfolio of portfolios) {
+    const state = await portfolioRow(db, portfolio);
+    const ledgerRevision = Number(state.ledger_revision);
+    if (!(ledgerRevision > 0)) continue;
+    const tape = await loadFrozenLedgerPriceTape(env, portfolio, ledgerRevision);
+    if (!tape) continue;
+    const timestamp = now();
+    const guardId = makeId('ltg');
+    const outboxId = makeId('lob');
+    const payload = stableJson({
+      affectedFrom: tape.tapeThrough,
+      reason: 'scheduled-eod-raw-tape-extension',
+    });
+    await db.batch([
+      db.prepare(`
+        INSERT INTO ledger_transaction_guards (
+          guard_id, pending_id, expected_pending_version,
+          portfolio_id, expected_ledger_revision, created_at
+        ) VALUES (
+          ?, ?, 1,
+          (SELECT portfolio_id FROM ledger_portfolios
+           WHERE portfolio_id = ? AND ledger_revision = ?),
+          ?, ?
+        )
+      `).bind(
+        guardId, `daily-nav:${portfolio}:${ledgerRevision}`,
+        portfolio, ledgerRevision, ledgerRevision, timestamp,
+      ),
+      db.prepare(`
+        INSERT INTO ledger_outbox (
+          outbox_id, portfolio_id, ledger_revision, kind, payload_json,
+          status, attempts, available_at, last_error, created_at, processed_at
+        )
+        SELECT ?, ?, ?, 'RECALC_NAV', ?, 'PENDING', 0, ?, NULL, ?, NULL
+        FROM ledger_transaction_guards WHERE guard_id = ?
+        ON CONFLICT(portfolio_id, ledger_revision, kind) DO UPDATE SET
+          payload_json = excluded.payload_json,
+          status = 'PENDING', attempts = 0, available_at = excluded.available_at,
+          last_error = NULL, processed_at = NULL
+        WHERE ledger_outbox.status = 'DONE'
+      `).bind(
+        outboxId, portfolio, ledgerRevision, payload,
+        timestamp, timestamp, guardId,
+      ),
+      db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+    ]);
+    queued.push({ portfolio, ledgerRevision, affectedFrom: tape.tapeThrough });
+  }
+  return queued;
+}
+
+/** Freeze price rows and the complete trading-day calendar in one D1 batch. */
+export async function freezeLedgerPriceTape(
+  env,
+  requestedPortfolio,
+  rawTape,
+  expectedLedgerRevision,
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const ledgerRevision = Number(expectedLedgerRevision);
+  if (!Number.isInteger(ledgerRevision) || ledgerRevision < 0) {
+    throw rawTapeError('歷史價格帶缺少有效 ledger revision');
+  }
+  const input = rawTape && typeof rawTape === 'object' ? rawTape : {};
+  const tapeFrom = String(input.tapeFrom || '').slice(0, 10);
+  const tapeThrough = String(input.tapeThrough || '').slice(0, 10);
+  const calendarFrom = String(input.calendarFrom || '').slice(0, 10);
+  const requiredTickers = normalizedTapeTickers(input.requiredTickers);
+  const calendarDates = (Array.isArray(input.calendarDates) ? input.calendarDates : [])
+    .map(value => String(value || '').slice(0, 10));
+  const priceSource = String(input.priceSource || '');
+  const calendarSource = String(input.calendarSource || '');
+  const calendarSourceRef = String(input.calendarSourceRef || '').slice(0, 240);
+  const parentPriceTapeId = String(input.parentPriceTapeId || '').trim() || null;
+  const inheritedThrough = String(input.inheritedThrough || '').slice(0, 10) || null;
+  if (input.priceBasis !== 'raw_close' || input.adjusted !== false ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(tapeFrom) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(tapeThrough) || tapeFrom > tapeThrough ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(calendarFrom) || calendarFrom > tapeThrough ||
+      !calendarDates.length || calendarDates.at(-1) !== tapeThrough ||
+      calendarDates.some((date, index) => !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        date < calendarFrom || date > tapeThrough || index > 0 && calendarDates[index - 1] >= date) ||
+      !/^tushare:/.test(priceSource) || !/^tushare:/.test(calendarSource) ||
+      (parentPriceTapeId == null) !== (inheritedThrough == null) ||
+      parentPriceTapeId && !/^raw-close:[a-z]+:\d+$/.test(parentPriceTapeId) ||
+      inheritedThrough && (!/^\d{4}-\d{2}-\d{2}$/.test(inheritedThrough) ||
+        inheritedThrough > tapeThrough)) {
+    throw rawTapeError('歷史 raw-close 價格帶輸入無效');
+  }
+  const timestamp = now();
+  const priceKeys = new Set();
+  const priceRows = (Array.isArray(input.priceRows) ? input.priceRows : []).map((raw, index) => {
+    const ticker = String(raw && (raw.ticker || raw.symbol) || '').trim().toUpperCase().slice(0, 32);
+    const priceDate = String(raw && (raw.date || raw.price_date) || '').slice(0, 10);
+    const key = `${ticker}:${priceDate}`;
+    const priceMicros = scaledInteger(raw && (raw.close ?? raw.price), 1_000_000, `${ticker} price`);
+    const source = String(raw && raw.source || '').slice(0, 100);
+    if (!ticker || !/^\d{4}-\d{2}-\d{2}$/.test(priceDate) ||
+        priceDate < tapeFrom || priceDate > tapeThrough || priceKeys.has(key) ||
+        !calendarDates.includes(priceDate) || !(priceMicros > 0) || source !== priceSource) {
+      throw rawTapeError(`第 ${index + 1} 筆 raw-close 價格無效或重複`);
+    }
+    priceKeys.add(key);
+    return {
+      ticker,
+      price_date: priceDate,
+      price_micros: priceMicros,
+      source,
+      source_ref: String(raw.sourceRef || raw.source_ref || '').slice(0, 240) || null,
+    };
+  }).sort((left, right) => left.ticker.localeCompare(right.ticker) ||
+    left.price_date.localeCompare(right.price_date));
+  const observedTickers = normalizedTapeTickers(priceRows.map(row => row.ticker));
+  if (priceRows.length > MAX_RAW_PRICE_TAPE_ROWS ||
+      !tapeTickersAreSubset(observedTickers, requiredTickers)) {
+    throw rawTapeError('歷史 raw-close 價格帶包含 required 以外 ticker 或行數過大');
+  }
+  const priorTape = await loadPriorFrozenLedgerPriceTape(env, portfolio, ledgerRevision);
+  if (priorTape && (parentPriceTapeId !== priorTape.priceTapeId ||
+      inheritedThrough !== priorTape.tapeThrough)) {
+    throw rawTapeError(
+      '新 ledger revision 必須繼承直前 raw-close 價格帶的完整 overlap',
+      'HISTORICAL_NAV_PRICE_TAPE_PARENT_REQUIRED',
+    );
+  }
+  if (!priorTape && parentPriceTapeId) {
+    throw rawTapeError(
+      'raw-close parent 不是直前有效價格帶',
+      'HISTORICAL_NAV_PRICE_TAPE_PARENT_INVALID',
+    );
+  }
+  if (parentPriceTapeId) {
+    const parentMatch = parentPriceTapeId.match(/^raw-close:([a-z]+):(\d+)$/);
+    const parentRevision = Number(parentMatch && parentMatch[2]);
+    if (!parentMatch || parentMatch[1] !== portfolio || !(parentRevision < ledgerRevision)) {
+      throw rawTapeError('raw-close parent 價格帶 revision 無效');
+    }
+    const parent = await loadFrozenLedgerPriceTape(env, portfolio, parentRevision, {
+      priceTapeId: parentPriceTapeId,
+    });
+    if (!parent || inheritedThrough > parent.tapeThrough) {
+      throw rawTapeError('raw-close parent 價格帶不存在或繼承範圍無效');
+    }
+    const commonTickers = new Set(
+      requiredTickers.filter(ticker => parent.requiredTickers.includes(ticker)),
+    );
+    // A later revision can introduce a newly confirmed back-dated event. In
+    // that case the child legitimately has a freshly fetched calendar/price
+    // prefix before the parent tape began. Only the overlapping parent range
+    // is immutable; dates which never existed in the parent are not part of
+    // the inherited prefix contract.
+    const inheritedCalendarFrom = calendarFrom > parent.calendarFrom
+      ? calendarFrom
+      : parent.calendarFrom;
+    const inheritedPriceFrom = tapeFrom > parent.tapeFrom
+      ? tapeFrom
+      : parent.tapeFrom;
+    const parentCalendarPrefix = parent.calendarDates
+      .filter(date => date >= inheritedCalendarFrom && date <= inheritedThrough);
+    const currentCalendarPrefix = calendarDates
+      .filter(date => date >= inheritedCalendarFrom && date <= inheritedThrough);
+    const parentPricePrefix = parent.priceRows
+      .filter(row => commonTickers.has(row.ticker) && row.date >= inheritedPriceFrom &&
+        row.date <= inheritedThrough)
+      .map(row => ({
+        ticker: row.ticker,
+        price_date: row.date,
+        price_micros: Math.round(Number(row.price) * 1_000_000),
+        source: row.source,
+        source_ref: row.sourceRef || null,
+      }));
+    const currentPricePrefix = priceRows
+      .filter(row => commonTickers.has(row.ticker) &&
+        row.price_date >= inheritedPriceFrom && row.price_date <= inheritedThrough);
+    if (stableJson(currentCalendarPrefix) !== stableJson(parentCalendarPrefix) ||
+        stableJson(rawTapeCanonicalRows(currentPricePrefix)) !==
+          stableJson(rawTapeCanonicalRows(parentPricePrefix))) {
+      throw rawTapeError(
+        '跨 revision raw-close 價格帶必須逐行繼承 parent prefix',
+        'HISTORICAL_NAV_PRICE_TAPE_IMMUTABLE_CONFLICT',
+      );
+    }
+  }
+  const priceTapeHash = await rawTapeHash({
+    portfolio,
+    ledgerRevision,
+    tapeFrom,
+    tapeThrough,
+    calendarFrom,
+    calendarDates,
+    requiredTickers,
+    priceSource,
+    calendarSource,
+    calendarSourceRef,
+    parentPriceTapeId,
+    inheritedThrough,
+    priceRows,
+  });
+  const priceTapeId = `raw-close:${portfolio}:${ledgerRevision}`;
+  const existing = await loadFrozenLedgerPriceTape(
+    env,
+    portfolio,
+    ledgerRevision,
+    { requiredTickers, priceSource, priceTapeId },
+  );
+  if (existing) {
+    if (existing.tapeFrom === tapeFrom && existing.tapeThrough === tapeThrough &&
+        existing.calendarFrom === calendarFrom && existing.priceTapeHash === priceTapeHash) {
+      return existing;
+    }
+    throw rawTapeError(
+      '同一 ledger revision 已存在不同的 immutable raw-close 價格帶',
+      'HISTORICAL_NAV_PRICE_TAPE_IMMUTABLE_CONFLICT',
+    );
+  }
+
+  const storedRows = priceRows.map(row => ({
+    price_tape_id: priceTapeId,
+    ticker: row.ticker,
+    price_date: row.price_date,
+    price_micros: row.price_micros,
+    source: row.source,
+    source_ref: row.source_ref,
+    observed_at: timestamp,
+  }));
+  const guardId = makeId('ltg');
+  const statements = [
+    db.prepare(`
+      INSERT INTO ledger_transaction_guards (
+        guard_id, pending_id, expected_pending_version,
+        portfolio_id, expected_ledger_revision, created_at
+      ) VALUES (
+        ?, ?, 1,
+        (SELECT portfolio_id FROM ledger_portfolios
+         WHERE portfolio_id = ? AND ledger_revision = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM ledger_price_tapes
+             WHERE portfolio_id = ? AND ledger_revision = ?
+           )),
+        ?, ?
+      )
+    `).bind(
+      guardId, `raw-price-tape:${portfolio}:${ledgerRevision}`,
+      portfolio, ledgerRevision, portfolio, ledgerRevision,
+      ledgerRevision, timestamp,
+    ),
+    db.prepare(`
+      INSERT INTO ledger_price_tapes (
+        price_tape_id, portfolio_id, ledger_revision, tape_from, tape_through,
+        calendar_from, required_tickers_json, calendar_dates_json,
+        price_source, calendar_source, calendar_source_ref,
+        parent_price_tape_id, inherited_through,
+        price_basis, adjusted, price_tape_hash, price_row_count, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'raw_close', 0, ?, ?, ?)
+    `).bind(
+      priceTapeId, portfolio, ledgerRevision, tapeFrom, tapeThrough,
+      calendarFrom, stableJson(requiredTickers), stableJson(calendarDates),
+      priceSource, calendarSource, calendarSourceRef || null,
+      parentPriceTapeId, inheritedThrough,
+      priceTapeHash, storedRows.length, timestamp,
+    ),
+  ];
+  for (let offset = 0; offset < storedRows.length; offset += RAW_PRICE_TAPE_CHUNK_ROWS) {
+    const chunk = storedRows.slice(offset, offset + RAW_PRICE_TAPE_CHUNK_ROWS);
+    statements.push(db.prepare(`
+      INSERT INTO ledger_price_tape_rows (
+        price_tape_id, ticker, price_date, price_micros,
+        source, source_ref, observed_at
+      )
+      SELECT
+        json_extract(value, '$.price_tape_id'), json_extract(value, '$.ticker'),
+        json_extract(value, '$.price_date'), json_extract(value, '$.price_micros'),
+        json_extract(value, '$.source'), json_extract(value, '$.source_ref'),
+        json_extract(value, '$.observed_at')
+      FROM json_each(?) ORDER BY CAST(key AS INTEGER)
+    `).bind(stableJson(chunk)));
+  }
+  statements.push(
+    db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+  );
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    const currentRevision = await portfolioRow(db, portfolio)
+      .then(row => Number(row.ledger_revision))
+      .catch(() => null);
+    if (currentRevision !== null && currentRevision !== ledgerRevision) {
+      throw rawTapeError(
+        '歷史 raw-close 價格帶寫入時 ledger revision 已變更',
+        'LEDGER_REVISION_CHANGED',
+      );
+    }
+    const raced = await loadFrozenLedgerPriceTape(
+      env,
+      portfolio,
+      ledgerRevision,
+      {
+        tapeFrom,
+        tapeThrough,
+        calendarFrom,
+        requiredTickers,
+        priceSource,
+        priceTapeId,
+      },
+    ).catch(() => null);
+    if (raced) return raced;
+    throw rawTapeError(
+      '同一 ledger revision 已存在不同的 immutable raw-close 價格帶',
+      'HISTORICAL_NAV_PRICE_TAPE_IMMUTABLE_CONFLICT',
+    );
+  }
+  return loadFrozenLedgerPriceTape(
+    env,
+    portfolio,
+    ledgerRevision,
+    {
+      tapeFrom,
+      tapeThrough,
+      calendarFrom,
+      requiredTickers,
+      priceSource,
+      priceTapeId,
+    },
+  );
+}
+
+/**
+ * Append future EOD sessions without changing any already-frozen calendar date
+ * or price row. The manifest hash advances atomically; the tape id and prefix
+ * remain stable for the ledger revision.
+ */
+export async function extendLedgerPriceTape(
+  env,
+  requestedPortfolio,
+  rawExtension,
+  expectedLedgerRevision,
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const ledgerRevision = Number(expectedLedgerRevision);
+  const input = rawExtension && typeof rawExtension === 'object' ? rawExtension : {};
+  const existing = await loadFrozenLedgerPriceTape(env, portfolio, ledgerRevision, {
+    priceTapeId: String(input.priceTapeId || ''),
+    requiredTickers: input.requiredTickers,
+    priceSource: String(input.priceSource || ''),
+  });
+  if (!existing) throw rawTapeError('待延伸的 raw-close 價格帶不存在');
+  if (String(input.expectedPriceTapeHash || '') !== existing.priceTapeHash) {
+    throw rawTapeError(
+      'raw-close 價格帶延伸基準 hash 已改變',
+      'HISTORICAL_NAV_PRICE_TAPE_IMMUTABLE_CONFLICT',
+    );
+  }
+  const appendedCalendarDates = (Array.isArray(input.calendarDates) ? input.calendarDates : [])
+    .map(value => String(value || '').slice(0, 10));
+  const tapeThrough = appendedCalendarDates.at(-1) || '';
+  if (!appendedCalendarDates.length ||
+      appendedCalendarDates.some((date, index) =>
+        !/^\d{4}-\d{2}-\d{2}$/.test(date) || date <= existing.tapeThrough ||
+        index > 0 && appendedCalendarDates[index - 1] >= date) ||
+      tapeThrough <= existing.tapeThrough ||
+      String(input.calendarSource || '') !== existing.calendarSource ||
+      String(input.calendarSourceRef || '') !== existing.calendarSourceRef) {
+    throw rawTapeError('raw-close 價格帶延伸 calendar 無效');
+  }
+  const priceKeys = new Set();
+  const timestamp = now();
+  const appendedRows = (Array.isArray(input.priceRows) ? input.priceRows : []).map((raw, index) => {
+    const ticker = String(raw && (raw.ticker || raw.symbol) || '').trim().toUpperCase().slice(0, 32);
+    const priceDate = String(raw && (raw.date || raw.price_date) || '').slice(0, 10);
+    const priceMicros = scaledInteger(raw && (raw.close ?? raw.price), 1_000_000, `${ticker} price`);
+    const source = String(raw && raw.source || '').slice(0, 100);
+    const key = `${ticker}:${priceDate}`;
+    if (!ticker || !appendedCalendarDates.includes(priceDate) || priceKeys.has(key) ||
+        !(priceMicros > 0) || source !== existing.priceSource) {
+      throw rawTapeError(`第 ${index + 1} 筆延伸 raw-close 價格無效或重複`);
+    }
+    priceKeys.add(key);
+    return {
+      price_tape_id: existing.priceTapeId,
+      ticker,
+      price_date: priceDate,
+      price_micros: priceMicros,
+      source,
+      source_ref: String(raw.sourceRef || raw.source_ref || '').slice(0, 240) || null,
+      observed_at: timestamp,
+    };
+  }).sort((left, right) => left.ticker.localeCompare(right.ticker) ||
+    left.price_date.localeCompare(right.price_date));
+  const appendedTickers = normalizedTapeTickers(appendedRows.map(row => row.ticker));
+  if (appendedTickers.some(ticker => !existing.requiredTickers.includes(ticker)) ||
+      existing.priceRows.length + appendedRows.length > MAX_RAW_PRICE_TAPE_ROWS) {
+    throw rawTapeError('延伸 raw-close 價格包含未知 ticker 或行數過大');
+  }
+
+  const combinedCalendarDates = [...existing.calendarDates, ...appendedCalendarDates];
+  const existingCanonicalRows = existing.priceRows.map(row => ({
+    ticker: row.ticker,
+    price_date: row.date,
+    price_micros: Math.round(Number(row.price) * 1_000_000),
+    source: row.source,
+    source_ref: row.sourceRef || null,
+  }));
+  const combinedRows = [...existingCanonicalRows, ...appendedRows]
+    .sort((left, right) => left.ticker.localeCompare(right.ticker) ||
+      left.price_date.localeCompare(right.price_date));
+  const nextHash = await rawTapeHash({
+    portfolio,
+    ledgerRevision,
+    tapeFrom: existing.tapeFrom,
+    tapeThrough,
+    calendarFrom: existing.calendarFrom,
+    calendarDates: combinedCalendarDates,
+    requiredTickers: existing.requiredTickers,
+    priceSource: existing.priceSource,
+    calendarSource: existing.calendarSource,
+    calendarSourceRef: existing.calendarSourceRef,
+    parentPriceTapeId: existing.parentPriceTapeId,
+    inheritedThrough: existing.inheritedThrough,
+    priceRows: combinedRows,
+  });
+  const guardId = makeId('ltg');
+  const statements = [db.prepare(`
+    INSERT INTO ledger_transaction_guards (
+      guard_id, pending_id, expected_pending_version,
+      portfolio_id, expected_ledger_revision, created_at
+    ) VALUES (
+      ?, ?, 1,
+      (SELECT portfolio_id FROM ledger_portfolios
+       WHERE portfolio_id = ? AND ledger_revision = ?
+         AND EXISTS (
+           SELECT 1 FROM ledger_price_tapes
+           WHERE price_tape_id = ? AND portfolio_id = ? AND ledger_revision = ?
+             AND tape_through = ? AND price_tape_hash = ?
+         )),
+      ?, ?
+    )
+  `).bind(
+    guardId, `extend-price-tape:${portfolio}:${ledgerRevision}`,
+    portfolio, ledgerRevision,
+    existing.priceTapeId, portfolio, ledgerRevision,
+    existing.tapeThrough, existing.priceTapeHash,
+    ledgerRevision, timestamp,
+  )];
+  for (let offset = 0; offset < appendedRows.length; offset += RAW_PRICE_TAPE_CHUNK_ROWS) {
+    const chunk = appendedRows.slice(offset, offset + RAW_PRICE_TAPE_CHUNK_ROWS);
+    statements.push(db.prepare(`
+      INSERT INTO ledger_price_tape_rows (
+        price_tape_id, ticker, price_date, price_micros,
+        source, source_ref, observed_at
+      )
+      SELECT
+        json_extract(value, '$.price_tape_id'), json_extract(value, '$.ticker'),
+        json_extract(value, '$.price_date'), json_extract(value, '$.price_micros'),
+        json_extract(value, '$.source'), json_extract(value, '$.source_ref'),
+        json_extract(value, '$.observed_at')
+      FROM json_each(?) ORDER BY CAST(key AS INTEGER)
+    `).bind(stableJson(chunk)));
+  }
+  statements.push(
+    db.prepare(`
+      UPDATE ledger_price_tapes
+      SET tape_through = ?, calendar_dates_json = ?, price_tape_hash = ?,
+        price_row_count = ?
+      WHERE price_tape_id = ? AND portfolio_id = ? AND ledger_revision = ?
+        AND tape_through = ? AND price_tape_hash = ?
+    `).bind(
+      tapeThrough, stableJson(combinedCalendarDates), nextHash, combinedRows.length,
+      existing.priceTapeId, portfolio, ledgerRevision,
+      existing.tapeThrough, existing.priceTapeHash,
+    ),
+    db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+  );
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    const currentRevision = await portfolioRow(db, portfolio)
+      .then(row => Number(row.ledger_revision))
+      .catch(() => null);
+    if (currentRevision !== null && currentRevision !== ledgerRevision) {
+      throw rawTapeError(
+        'raw-close 價格帶延伸時 ledger revision 已變更',
+        'LEDGER_REVISION_CHANGED',
+      );
+    }
+    const raced = await loadFrozenLedgerPriceTape(env, portfolio, ledgerRevision, {
+      priceTapeId: existing.priceTapeId,
+      requiredTickers: existing.requiredTickers,
+      priceSource: existing.priceSource,
+    }).catch(() => null);
+    if (raced && raced.priceTapeHash === nextHash && raced.tapeThrough === tapeThrough) return raced;
+    throw rawTapeError(
+      'raw-close 價格帶延伸與另一寫入衝突',
+      'HISTORICAL_NAV_PRICE_TAPE_IMMUTABLE_CONFLICT',
+    );
+  }
+  return loadFrozenLedgerPriceTape(env, portfolio, ledgerRevision, {
+    tapeThrough,
+    priceTapeId: existing.priceTapeId,
+    requiredTickers: existing.requiredTickers,
+    priceSource: existing.priceSource,
+  });
+}
+
+function enrichProjectionPrices(projection, priceRows, options = {}) {
   if (!projection || !Array.isArray(projection.positions)) return projection;
   const prices = new Map((priceRows || []).map(row => [row.ticker, row]));
-  const active = projection.positions.filter(row => Number(row.quantity ?? row.qty ?? 0) > 0.001)
+  const active = projection.positions.filter(row =>
+    Number(row.quantity ?? row.qty ?? 0) > ACTIVE_POSITION_EPSILON)
     .map(row => {
       const quantity = Number(row.quantity ?? row.qty ?? 0);
-      const observation = prices.get(String(row.ticker || '').toUpperCase());
-      const price = Number((observation && observation.price) ?? row.reference_price ?? row.fallback_price ?? row.price ?? 0);
+      const ticker = String(row.ticker || '').toUpperCase();
+      const observation = prices.get(ticker);
+      const valuation = observation && observation.valuation || {};
+      const priceBasis = String(valuation.priceBasis || '').toLowerCase();
+      const price = Number(observation && observation.price);
+      if (!observation || !(price > 0) || valuation.adjusted !== false ||
+          !['raw_close', 'raw_counter'].includes(priceBasis) ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(String(observation.date || '')) ||
+          options.requiredDate && observation.date !== options.requiredDate) {
+        throw rawTapeError(
+          `${ticker || '未知 ticker'} 缺少本次估值日的 raw counter/raw-close 價格`,
+          'RAW_NAV_PRICE_MISSING',
+        );
+      }
       const marketValue = quantity * price;
       const buyCost = Number(row.total_buy_cost ?? row.buy_cost ?? 0);
       const sellProceeds = Number(row.total_sell_proceeds ?? row.sell_proceeds ?? 0);
@@ -745,7 +1657,11 @@ function enrichProjectionPrices(projection, priceRows) {
         nominal_return: Math.abs(averageCost) > 0.001 ? (price - averageCost) / Math.abs(averageCost) : null,
         exposure_return: buyCost ? totalPnl / Math.abs(buyCost) : null,
         price_date: observation && observation.date || null,
-        price_source: observation && observation.source || row.fallback_price_source || 'ledger-fallback',
+        price_source: observation.source,
+        price_source_ref: observation.sourceRef || null,
+        price_basis: valuation.priceBasis,
+        price_adjusted: valuation.adjusted,
+        price_tape_id: valuation.priceTapeId || null,
       };
     });
   const totalMarketValue = active.reduce((sum, row) => sum + Number(row.market_value || 0), 0);
@@ -753,8 +1669,114 @@ function enrichProjectionPrices(projection, priceRows) {
     ...row,
     weight: totalMarketValue ? Number(row.market_value) / totalMarketValue : 0,
   }));
-  projection.as_of = (priceRows || []).map(row => row.date).filter(Boolean).sort().at(-1) || null;
+  projection.as_of = options.valuationDate ||
+    (priceRows || []).map(row => row.date).filter(Boolean).sort().at(-1) || null;
   return projection;
+}
+
+async function replayWithStoredValuationPrices(
+  env,
+  portfolio,
+  ledgerRevision,
+  events,
+  navRows,
+  livePriceRows,
+  livePriceHistory,
+  options = {},
+) {
+  // A current-revision raw tape is authoritative for historical replay.
+  // Mutable ledger_prices may be used only for one verified current-session
+  // row after the frozen EOD tape; there is never a book/reference fallback.
+  const tape = await loadFrozenLedgerPriceTape(env, portfolio, ledgerRevision);
+  const latestNavDate = (Array.isArray(navRows) ? navRows : [])
+    .map(row => String(row && row.date || '').slice(0, 10))
+    .filter(Boolean)
+    .sort()
+    .at(-1) || null;
+  const projection = replay(events, portfolio, {
+    corporateActionPrices: tape ? tape.priceRows : livePriceHistory,
+  });
+  if (!tape) {
+    if (ledgerRevision > 0 || events.length) {
+      throw rawTapeError(
+        '當前 ledger revision 缺少凍結 raw-close 價格帶',
+        'CURRENT_REVISION_RAW_TAPE_MISSING',
+      );
+    }
+    return {
+      projection: enrichProjectionPrices(projection, livePriceRows),
+      priceRows: livePriceRows,
+      priceTape: null,
+      rawTapeValuation: false,
+    };
+  }
+  if (latestNavDate && latestNavDate > tape.tapeThrough) {
+    const postTapeRows = (Array.isArray(navRows) ? navRows : [])
+      .filter(row => row.date > tape.tapeThrough);
+    const latestNav = postTapeRows.at(-1);
+    const latestValuation = latestNav && latestNav.valuation || {};
+    const latestBasis = String(latestValuation.priceBasis || '').toLowerCase();
+    const verifiedCurrentDate = String(options.currentDate || currentPortfolioDate(portfolio)).slice(0, 10);
+    const hasActivePositions = (projection.positions || []).some(row =>
+      Number(row.quantity ?? row.qty ?? 0) > ACTIVE_POSITION_EPSILON);
+    const verifiedCashOnly = latestBasis === 'cash_only' && !hasActivePositions &&
+      latestValuation.sessionVerified === true &&
+      String(latestValuation.quoteDate || '').slice(0, 10) === latestNavDate &&
+      String(latestValuation.source || '').trim().length > 0;
+    const verifiedRawPrice = ['raw_close', 'raw_counter'].includes(latestBasis);
+    if (postTapeRows.length !== 1 || latestNavDate !== verifiedCurrentDate ||
+        Number(latestNav && latestNav.ledgerRevision) !== ledgerRevision ||
+        latestValuation.adjusted !== false ||
+        (!verifiedRawPrice && !verifiedCashOnly)) {
+      throw rawTapeError(
+        '價格帶之後只允許一筆當日、同 revision 的 raw counter/raw-close；零持倉可用已核驗 cash-only NAV',
+        'RAW_NAV_CURRENT_SESSION_INVALID',
+      );
+    }
+    return {
+      projection: enrichProjectionPrices(projection, livePriceRows, {
+        requiredDate: latestNavDate,
+        valuationDate: latestNavDate,
+      }),
+      priceRows: livePriceRows,
+      priceTape: tape,
+      rawTapeValuation: false,
+    };
+  }
+
+  const valuationDate = latestNavDate || tape.tapeThrough;
+  const latestByTicker = new Map();
+  for (const row of tape.priceRows) {
+    if (row.date > valuationDate) continue;
+    const current = latestByTicker.get(row.ticker);
+    if (!current || current.date < row.date) latestByTicker.set(row.ticker, row);
+  }
+  const activeTickers = (projection.positions || [])
+    .filter(row => Number(row.quantity ?? row.qty ?? 0) > ACTIVE_POSITION_EPSILON)
+    .map(row => String(row.ticker || '').trim().toUpperCase())
+    .filter(Boolean);
+  const missing = [...new Set(activeTickers)]
+    .filter(ticker => !latestByTicker.has(ticker))
+    .sort();
+  if (missing.length) {
+    throw rawTapeError(
+      `raw-close 價格帶在 ${valuationDate} 缺少持倉價格：${missing.join(',')}`,
+      'HISTORICAL_NAV_PRICE_TAPE_GAP',
+    );
+  }
+  const effectiveRows = [...latestByTicker.values()]
+    .sort((left, right) => left.ticker.localeCompare(right.ticker));
+  const enriched = enrichProjectionPrices(projection, effectiveRows, { valuationDate });
+  enriched.price_basis = 'raw_close';
+  enriched.price_adjusted = false;
+  enriched.price_tape_id = tape.priceTapeId;
+  enriched.as_of = valuationDate;
+  return {
+    projection: enriched,
+    priceRows: effectiveRows,
+    priceTape: tape,
+    rawTapeValuation: true,
+  };
 }
 
 function fundActionAdjustmentByDate(items) {
@@ -848,7 +1870,13 @@ export async function persistLedgerValuation(
     valuation: rawSnapshot.valuation || {},
     warnings: rawSnapshot.warnings || [],
   }, portfolio, 0);
-  row.source = 'TUSHARE';
+  const inferredSources = [...new Set((Array.isArray(rawPrices) ? rawPrices : [])
+    .map(price => String(price && price.source || '').trim())
+    .filter(Boolean))];
+  row.source = String(rawSnapshot.source ||
+    (inferredSources.length === 1 ? inferredSources[0] : 'UNKNOWN_RAW_PRICE_SOURCE'))
+    .trim().slice(0, 100);
+  if (!row.source) row.source = 'UNKNOWN_RAW_PRICE_SOURCE';
   row.sourceRef = String(rawSnapshot.sourceRef || 'portfolio-eod').slice(0, 240);
   row.sourceWorkbookSha256 = null;
   row.sourceRow = null;
@@ -991,12 +2019,13 @@ export async function persistLedgerValuationBatch(
   const batch = rawBatch && typeof rawBatch === 'object' ? rawBatch : {};
   const replaceFrom = String(batch.replaceFrom || '').slice(0, 10);
   const replaceThrough = String(batch.replaceThrough || '').slice(0, 10);
+  const pruneAfter = batch.pruneAfter === true;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(replaceFrom) ||
       !/^\d{4}-\d{2}-\d{2}$/.test(replaceThrough) || replaceFrom > replaceThrough) {
     throw new LedgerHttpError(422, '歷史 NAV 替換日期範圍無效');
   }
   const rawRows = Array.isArray(batch.navRows) ? batch.navRows : [];
-  if (!rawRows.length || rawRows.length > MAX_NAV_SEED_ROWS) {
+  if (!rawRows.length || rawRows.length > MAX_NAV_BATCH_ROWS) {
     throw new LedgerHttpError(422, '歷史 NAV 重建行數無效');
   }
   const timestamp = now();
@@ -1062,6 +2091,15 @@ export async function persistLedgerValuationBatch(
       WHERE portfolio_id = ? AND nav_date >= ? AND nav_date <= ?
     `).bind(portfolio, replaceFrom, replaceThrough),
   ];
+  if (pruneAfter) {
+    // A stale live/intraday row after the frozen EOD target must not leak into
+    // historical publication. It is derived state and the counter refresh can
+    // rebuild it after this revision-fenced replay completes.
+    statements.push(db.prepare(`
+      DELETE FROM ledger_nav_snapshots
+      WHERE portfolio_id = ? AND nav_date > ? AND ledger_revision <= ?
+    `).bind(portfolio, replaceThrough, revision));
+  }
   if (priceRows.length) {
     statements.push(db.prepare(`
       INSERT INTO ledger_prices (
@@ -1134,6 +2172,7 @@ export async function persistLedgerValuationBatch(
     ledgerRevision: revision,
     replaceFrom,
     replaceThrough,
+    prunedAfter: pruneAfter ? replaceThrough : null,
     navRowCount: navRows.length,
     priceRowCount: priceRows.length,
   };
@@ -1153,7 +2192,14 @@ async function confirmPending(db, env, body, actor) {
   const portfolioState = await portfolioRow(db, portfolio);
   const event = canonicalEvent(parseJson(current.payload_json, {}), portfolio);
   event.status = 'confirmed';
-  if (event.trade_date > currentHongKongDate()) {
+  const taxStatus = upper(event.tax_status);
+  if (event.tax_review_required === true ||
+      taxStatus === 'PENDING_RECONFIRMATION' || taxStatus === 'UNKNOWN_LEGACY') {
+    throw new LedgerHttpError(422,
+      '稅項尚未確認；請先在 Pending 修改 gross / tax / fees 並保存，再 Confirm。',
+      { code: 'TAX_REVIEW_REQUIRED' });
+  }
+  if (event.trade_date > currentPortfolioDate(portfolio)) {
     throw new LedgerHttpError(422, '未到生效日期的事件必須保留在 Pending，不能提前確認');
   }
   const [beforeItems, corporateActionPrices] = await Promise.all([
@@ -1187,8 +2233,8 @@ async function confirmPending(db, env, body, actor) {
   if (fatal.length) {
     throw new LedgerHttpError(422, '確認後賬本校驗失敗', fatal.map(problemMessage));
   }
-  // Match the Python manager exactly: negative cash is a visible warning from
-  // replay, never an additional confirmation blocker.
+  // Negative cash remains part of the exact cash arithmetic but is not a
+  // warning or confirmation blocker.
   const timestamp = now();
   const guardId = makeId('ltg');
   const payload = stableJson(event);
@@ -1245,9 +2291,9 @@ async function confirmPending(db, env, body, actor) {
         makeId('lau'), portfolio, actor, eventId,
         stableJson(pendingItem(current)),
         stableJson({ eventId, lineageId, eventVersion, ledgerRevision: revision, event }),
-        stableJson({ reason, negativeCashWarningOnly: true, baseEventId }), timestamp
+        stableJson({ reason, negativeCashIgnored: true, baseEventId }), timestamp
       ),
-      ...['REBUILD_KV', 'REBUILD_EXCEL', 'RECALC_NAV'].map(kind => db.prepare(`
+      ...['RECALC_NAV', 'REBUILD_KV', 'REBUILD_EXCEL'].map(kind => db.prepare(`
         INSERT INTO ledger_outbox (
           outbox_id, portfolio_id, ledger_revision, kind, payload_json,
           status, attempts, available_at, created_at
@@ -1259,7 +2305,6 @@ async function confirmPending(db, env, body, actor) {
     if (error instanceof LedgerHttpError) throw error;
     throw new LedgerHttpError(409, '確認時賬本已改變，請刷新後重試');
   }
-  await materializeLedgerKv(env, portfolio).catch(error => console.error('ledger_kv_materialize_failed', portfolio, error));
   return {
     item: eventItem(await dbFirst(db, 'SELECT * FROM ledger_events WHERE event_id = ?', [eventId])),
     ledgerRevision: revision,
@@ -1267,18 +2312,58 @@ async function confirmPending(db, env, body, actor) {
   };
 }
 
-async function createExport(db, portfolio, actor) {
+async function createExport(env, db, portfolio, actor) {
   const state = await portfolioRow(db, portfolio);
   const ledgerRevision = Number(state.ledger_revision);
+  const derivation = await portfolioDerivationState(env, portfolio);
+  if (derivation.ledgerRevision !== ledgerRevision || derivation.derivedWorkPending) {
+    throw new LedgerHttpError(
+      409,
+      '當前 revision 的現金、持倉或 NAV 尚未重算完成，Excel 暫不可導出',
+      { code: 'DERIVED_WORK_PENDING', pendingCount: derivation.pendingCount },
+    );
+  }
   const [events, navRows, priceRows, priceHistory] = await Promise.all([
     activeEvents(db, portfolio, ledgerRevision),
     loadNavSnapshots(db, portfolio, ledgerRevision),
     loadLatestPrices(db, portfolio, ledgerRevision),
     loadPriceHistory(db, portfolio, ledgerRevision),
   ]);
-  const projection = enrichProjectionPrices(replay(events, portfolio, {
-    corporateActionPrices: priceHistory,
-  }), priceRows);
+  const valued = await replayWithStoredValuationPrices(
+    env, portfolio, ledgerRevision, events, navRows, priceRows, priceHistory,
+  );
+  const projection = valued.projection;
+  if (ledgerRevision > 0) {
+    const tape = valued.priceTape;
+    const navByDate = new Map(navRows.map(row => [row.date, row]));
+    const coverageReady = !!tape && tape.calendarDates.every(date => navByDate.has(date));
+    const noDirtyRows = navRows.every(row => row.recalculationRequired !== true);
+    const latestNav = navRows.at(-1);
+    const postTapeRows = tape ? navRows.filter(row => row.date > tape.tapeThrough) : [];
+    const exactTarget = !!tape && !!latestNav &&
+      (latestNav.date === tape.tapeThrough ||
+        postTapeRows.length === 1 && latestNav.date === currentPortfolioDate(portfolio)) &&
+      Number(navByDate.get(tape.tapeThrough)?.ledgerRevision) === ledgerRevision;
+    if (!coverageReady || !noDirtyRows || !exactTarget) {
+      throw new LedgerHttpError(
+        409,
+        'raw-close 歷史 NAV 還未完整對齊當前 revision，Excel 暫不可導出',
+        { code: 'RAW_NAV_NOT_READY' },
+      );
+    }
+  }
+  const unsafeValuation = (projection.positions || []).some(position => {
+    const basis = String(position.price_basis || '').toLowerCase();
+    return position.price_source === 'ledger-fallback' || position.price_adjusted !== false ||
+      (basis !== 'raw_close' && basis !== 'raw_counter');
+  });
+  if (unsafeValuation) {
+    throw new LedgerHttpError(
+      409,
+      'raw counter／raw-close 估值尚未完成，Excel 暫不可導出',
+      { code: 'RAW_NAV_NOT_READY' },
+    );
+  }
   projection.nav_rows = navRows;
   const exportId = makeId('lex');
   const syncToken = makeId('lst');
@@ -1316,7 +2401,7 @@ async function createExport(db, portfolio, actor) {
     ledgerRevision,
     events,
     navRows,
-    priceRows,
+    priceRows: valued.priceRows,
     projection,
     exportId,
     syncToken,
@@ -1428,6 +2513,15 @@ async function previewImport(db, body, actor) {
       operations.push({ operationId, operation: 'CONFLICT', reason: 'UNKNOWN_OR_INACTIVE_EVENT_ID', sheetName, rowNumber, lineageId, excel: event });
       continue;
     }
+    if (event.event_type !== current.eventType) {
+      operations.push({
+        operationId, operation: 'ERROR', reason: 'EVENT_TYPE_IMMUTABLE',
+        error: 'Excel 不可把已有事件改成另一類；請保留原事件類型。',
+        sheetName, rowNumber, eventId: current.eventId, lineageId,
+        current: current.event, excel: event,
+      });
+      continue;
+    }
     const currentHash = await canonicalHash(current.event);
     const baseHash = base && base.hash || String(row.baseHash || row.__yi_base_hash || '') || null;
     let operation = 'CONFLICT';
@@ -1436,10 +2530,11 @@ async function previewImport(db, body, actor) {
     else if (baseHash && currentHash === baseHash) { operation = 'UPDATE'; reason = null; }
     else if (baseHash && excelHash === baseHash) { operation = 'NOOP'; reason = 'DATABASE_CHANGED_EXCEL_UNCHANGED'; }
     else if (!baseHash) { reason = 'MISSING_BASE_SNAPSHOT'; }
+    const stagedEvent = markExcelTaxReview(current.event, event);
     operations.push({
       operationId, operation, reason, sheetName, rowNumber,
       eventId: current.eventId, lineageId, baseEventVersion: current.eventVersion,
-      base: base && base.event || null, current: current.event, excel: event,
+      base: base && base.event || null, current: current.event, excel: stagedEvent,
       baseHash, currentHash, excelHash,
     });
   }
@@ -1556,6 +2651,13 @@ async function confirmImport(db, body, actor) {
     const event = canonicalEvent(parseJson(row.excel_json, {}), batch.portfolio_id);
     event.status = 'pending';
     const current = row.event_id ? currentById.get(row.event_id) || null : null;
+    if (row.operation === 'CREATE' && !MANUAL_EVENT_TYPES.has(event.event_type)) {
+      throw new LedgerHttpError(422, 'Excel CREATE 只允許 BUY、SELL 或 CAPITAL。');
+    }
+    if (row.operation === 'UPDATE' &&
+        (!current || event.event_type !== current.event_type)) {
+      throw new LedgerHttpError(422, 'Excel UPDATE 事件類型不可變更。');
+    }
     const pendingId = makeId('lpd');
     pendingIds.push(pendingId);
     const lineageId = current && current.lineage_id || null;
@@ -1602,6 +2704,10 @@ async function ingestSourceRecord(db, body, actor) {
   const sourceEventId = String(body.sourceEventId || '').trim().slice(0, 200);
   if (!sourceSystem || !sourceEventId) throw new LedgerHttpError(422, 'sourceSystem/sourceEventId 不能為空');
   const event = canonicalEvent(body.event, portfolio);
+  if (!AUTOMATION_EVENT_TYPES.has(event.event_type)) {
+    throw new LedgerHttpError(422,
+      '自動 source record 只允許 DIVIDEND、CORPORATE_ACTION、LIABILITY 或 FUND_ACTION。');
+  }
   const rawPayload = body.rawPayload && typeof body.rawPayload === 'object' ? body.rawPayload : body.event;
   const contentSha = await sha256Hex(stableJson(rawPayload));
   const existing = await dbFirst(db, `
@@ -1718,27 +2824,16 @@ async function previewLegacyMigration(db, body, actor) {
   if (rawEvents.length > 120) throw new LedgerHttpError(413, '單一基金歷史事件不能超過 120 筆');
   const rawNavRows = body.historicalNavRows ?? body.historical_nav_rows ?? [];
   if (!Array.isArray(rawNavRows)) throw new LedgerHttpError(422, 'historical_nav_rows 必須是陣列');
-  if (rawNavRows.length > MAX_NAV_SEED_ROWS) throw new LedgerHttpError(413, '歷史 NAV 行數過多');
-  const historicalNavRows = rawNavRows.map((row, index) => canonicalNavSeedRow({
-    ...row,
-    source_workbook_sha256: sourceWorkbookSha256,
-  }, portfolio, index)).sort((left, right) => left.date.localeCompare(right.date));
-  const navDates = new Set();
-  for (const row of historicalNavRows) {
-    if (navDates.has(row.date)) throw new LedgerHttpError(422, `歷史 NAV 日期重複：${row.date}`);
-    navDates.add(row.date);
-  }
+  if (rawNavRows.length) throw new LedgerHttpError(422,
+    'historical_nav_rows 必須為空；NAV Statement 只可離線核驗，不得成為數據庫 seed。',
+    { code: 'LEGACY_DERIVED_SEED_FORBIDDEN' });
+  const historicalNavRows = [];
   const rawPriceRows = body.historicalPriceRows ?? body.historical_price_rows ?? [];
   if (!Array.isArray(rawPriceRows)) throw new LedgerHttpError(422, 'historical_price_rows 必須是陣列');
-  if (rawPriceRows.length > MAX_PRICE_SEED_ROWS) throw new LedgerHttpError(413, '歷史價格種子行數過多');
-  const historicalPriceRows = rawPriceRows.map((row, index) =>
-    canonicalPriceSeedRow(row, portfolio, index, sourceWorkbookSha256));
-  const priceKeys = new Set();
-  for (const row of historicalPriceRows) {
-    const key = `${row.ticker}:${row.date}`;
-    if (priceKeys.has(key)) throw new LedgerHttpError(422, `歷史價格重複：${key}`);
-    priceKeys.add(key);
-  }
+  if (rawPriceRows.length) throw new LedgerHttpError(422,
+    'historical_price_rows 必須為空；Asset Position 只可離線核驗，不得成為價格 seed。',
+    { code: 'LEGACY_DERIVED_SEED_FORBIDDEN' });
+  const historicalPriceRows = [];
   const ids = new Set();
   const canonical = rawEvents.map((source, index) => {
     const raw = source && source.payload && typeof source.payload === 'object'
@@ -1851,20 +2946,18 @@ async function confirmLegacyMigration(db, env, body, actor) {
   if (String(acknowledgement.phrase || '').trim().toUpperCase() !== expectedPhrase) {
     throw new LedgerHttpError(422, `請輸入 ${expectedPhrase}`);
   }
-  if (preview.lowestCashMinor < 0 && acknowledgement.negativeCash !== true) {
-    throw new LedgerHttpError(422, '必須明確確認保留歷史負現金');
-  }
   if (preview.exactDuplicates.length && acknowledgement.duplicates !== true) {
     throw new LedgerHttpError(422, '必須明確確認保留完全重複事件');
   }
   if (preview.unknownTaxEvents && acknowledgement.unknownTax !== true) {
     throw new LedgerHttpError(422, '必須明確確認歷史稅項維持 UNKNOWN_LEGACY');
   }
-  if (preview.historicalNavRowCount && acknowledgement.historicalNav !== true) {
-    throw new LedgerHttpError(422, '必須明確確認 NAV Statement 僅作為只讀歷史估值種子');
-  }
-  if (preview.historicalPriceRowCount && acknowledgement.historicalPrices !== true) {
-    throw new LedgerHttpError(422, '必須明確確認 Asset Position 僅作為只讀價格種子');
+  if (Number(preview.historicalNavRowCount || 0) !== 0 ||
+      Number(preview.historicalPriceRowCount || 0) !== 0 ||
+      (preview.historicalNavRows || []).length || (preview.historicalPriceRows || []).length) {
+    throw new LedgerHttpError(409,
+      '此舊 Preview 含有派生 NAV/價格 seed，已永久禁止；請以只含事件的 package 重新 Preview。',
+      { code: 'LEGACY_DERIVED_SEED_FORBIDDEN' });
   }
   const state = await portfolioRow(db, portfolio);
   if (Number(state.ledger_revision) !== 0) throw new LedgerHttpError(409, '賬本已改變，不能執行首次遷移');
@@ -1909,23 +3002,8 @@ async function confirmLegacyMigration(db, env, body, actor) {
       confirmed_at: timestamp,
     };
   });
-  const navRows = (preview.historicalNavRows || []).map(row => ({
-    ...row,
-    portfolio_id: portfolio,
-    ledger_revision: canonical.length,
-    calculated_at: timestamp,
-    source_workbook_sha256: preview.sourceWorkbookSha256,
-    valuation_json: stableJson(row.valuation || {}),
-    warnings_json: stableJson(row.warnings || []),
-  }));
-  const priceRows = (preview.historicalPriceRows || []).map(row => ({
-    ...row,
-    portfolio_id: portfolio,
-    ledger_revision: canonical.length,
-    source_workbook_sha256: preview.sourceWorkbookSha256,
-    valuation_json: stableJson(row.valuation || {}),
-    observed_at: timestamp,
-  }));
+  const navRows = [];
+  const priceRows = [];
   const statements = [
     guard,
     db.prepare(`
@@ -2017,7 +3095,7 @@ async function confirmLegacyMigration(db, env, body, actor) {
         priceSeedHash: preview.priceSeedHash,
       }), timestamp
     ),
-    ...['REBUILD_KV', 'REBUILD_EXCEL', 'RECALC_NAV'].map(kind => db.prepare(`
+    ...['RECALC_NAV', 'REBUILD_KV', 'REBUILD_EXCEL'].map(kind => db.prepare(`
       INSERT INTO ledger_outbox (
         outbox_id, portfolio_id, ledger_revision, kind, payload_json,
         status, attempts, available_at, created_at
@@ -2032,8 +3110,6 @@ async function confirmLegacyMigration(db, env, body, actor) {
   try { await db.batch(statements); } catch (error) {
     throw new LedgerHttpError(409, '歷史遷移提交失敗或賬本已改變');
   }
-  await materializeLedgerKv(env, portfolio).catch(error =>
-    console.error('legacy_migration_kv_materialize_failed', portfolio, error));
   return {
     ok: true, portfolio, eventCount: canonical.length,
     historicalNavRowCount: navRows.length,
@@ -2054,7 +3130,7 @@ function projectionPositions(projection) {
     t: String(row.ticker || row.t || row.symbol || '').slice(0, 16),
     n: String(row.name || row.n || row.ticker || row.t || '').slice(0, 100),
     q: Number(row.quantity ?? row.qty ?? row.q ?? row.shares ?? 0),
-    p: Number(row.price ?? row.p ?? row.reference_price ?? 0),
+    p: Number(row.price ?? row.p ?? 0),
     mv: projectionNumber(row.market_value ?? row.mv, row.market_value_minor),
     netCost: projectionNumber(row.net_cost ?? row.netCost, row.net_cost_minor),
     buyCost: projectionNumber(row.total_buy_cost ?? row.buyCost, row.total_buy_cost_minor),
@@ -2063,7 +3139,11 @@ function projectionPositions(projection) {
     pnl: projectionNumber(row.total_pnl ?? row.pnl, row.total_pnl_minor),
     priceDate: row.price_date || null,
     priceSource: row.price_source || null,
-  })).filter(row => row.t && row.q > 0.001);
+    priceSourceRef: row.price_source_ref || null,
+    priceBasis: row.price_basis || null,
+    priceAdjusted: row.price_adjusted == null ? null : row.price_adjusted === true,
+    priceTapeId: row.price_tape_id || null,
+  })).filter(row => row.t && row.q > ACTIVE_POSITION_EPSILON);
 }
 function finalCash(projection) {
   const chain = projection && (projection.cash_chain || projection.cashChain) || [];
@@ -2096,6 +3176,85 @@ function finalUnits(projection) {
     return Number(units.total_units ?? units.total ?? units.balance ?? units.total_units_decimal ?? 0);
   }
   return Number(projection && (projection.total_units ?? projection.units_total) || 0);
+}
+
+/**
+ * Read the immutable D1 event facts needed to start a NAV replay before a
+ * current-revision KV ledger exists. This intentionally contains no prices or
+ * valuation fallback; the replay must build and freeze its raw-close tape.
+ */
+export async function loadLedgerReplayInput(env, requestedPortfolio, expectedLedgerRevision = null) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const state = await portfolioRow(db, portfolio);
+  const ledgerRevision = Number(state.ledger_revision);
+  if (expectedLedgerRevision != null && ledgerRevision !== Number(expectedLedgerRevision)) {
+    throw new LedgerHttpError(
+      409,
+      'NAV replay ledger revision 已變更',
+      { code: 'LEDGER_REVISION_CHANGED' },
+    );
+  }
+  const [events, navRows] = await Promise.all([
+    activeEvents(db, portfolio, ledgerRevision),
+    loadNavSnapshots(db, portfolio, ledgerRevision),
+  ]);
+  if (ledgerRevision > 0 && !events.length) {
+    throw new LedgerHttpError(
+      409,
+      '當前 ledger revision 沒有 confirmed active event',
+      { code: 'CURRENT_REVISION_EVENTS_MISSING' },
+    );
+  }
+  const sourceDate = events.reduce(
+    (date, item) => item.tradeDate > date ? item.tradeDate : date,
+    '',
+  );
+  const latestNav = navRows.at(-1) || null;
+  // Replay current D1 facts without any valuation price. This supplies the
+  // exact post-confirm cash, holdings, liabilities and fund units needed by
+  // the counter-price step while the prior-revision KV is necessarily stale.
+  const projection = replay(events, portfolio, {
+    asOfDate: sourceDate || currentPortfolioDate(portfolio),
+  });
+  const positions = projectionPositions(projection);
+  const cash = finalCash(projection);
+  const liability = finalLiability(projection);
+  const units = finalUnits(projection);
+  const fundActionAdjustments = fundActionAdjustmentByDate(events);
+  const fundDividends = fundDividendByDate(events);
+  const baseNetValue = latestNav
+    ? Number(latestNav.netValue)
+    : cash - liability;
+  return {
+    market: portfolio,
+    portfolio,
+    currency: PORTFOLIOS[portfolio].currency,
+    positions,
+    confirmedEvents: engineEvents(events),
+    navRows,
+    sourceHoldings: positions,
+    cash,
+    liability,
+    units,
+    baseMarketValue: 0,
+    baseTotalAssets: cash,
+    baseNetValue,
+    baseMV: baseNetValue,
+    history: historyFromNav(navRows, events),
+    fundActionAdjustments,
+    fundDividends,
+    navRecalculationRequired: navRows
+      .filter(row => row.recalculationRequired === true)
+      .map(row => row.date),
+    corporateActionPricePending: [],
+    sourceDate,
+    lastDate: latestNav && latestNav.date || sourceDate,
+    lastUnitNav: latestNav && Number(latestNav.unitNav ?? latestNav.nav) || 0,
+    ledgerRevision,
+    valuationReady: false,
+    source: 'd1-confirmed-event-replay-input',
+  };
 }
 
 async function requeueLatestKv(db, portfolio, ledgerRevision, reason) {
@@ -2136,10 +3295,17 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
     loadLatestPrices(db, portfolio, capturedRevision),
     loadPriceHistory(db, portfolio, capturedRevision),
   ]);
-  const projection = enrichProjectionPrices(replay(events, portfolio, {
-    corporateActionPrices: priceHistory,
-  }), priceRows);
+  const valued = await replayWithStoredValuationPrices(
+    env, portfolio, capturedRevision, events, navRows, priceRows, priceHistory,
+    { currentDate: options.currentDate },
+  );
+  const projection = valued.projection;
   const positions = projectionPositions(projection);
+  const valuationReady = positions.every(row => {
+    const basis = String(row.priceBasis || '').toLowerCase();
+    return row.priceAdjusted === false &&
+      (basis === 'raw_close' || basis === 'raw_counter');
+  });
   const cash = finalCash(projection);
   const liability = finalLiability(projection);
   const units = finalUnits(projection);
@@ -2168,9 +3334,12 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
     sourceHoldings: positions.map(row => ({
       t: row.t, n: row.n, q: row.q, price: row.p,
       marketValue: row.mv || row.q * row.p, date: row.priceDate || sourceDate,
+      priceSource: row.priceSource, priceBasis: row.priceBasis,
+      adjusted: row.priceAdjusted, priceTapeId: row.priceTapeId,
       buyCost: row.buyCost, sellProceeds: row.sellProceeds,
       dividend: row.dividend, netCost: row.netCost, pnl: row.pnl,
     })),
+    valuationReady,
     cash,
     liability,
     units,
@@ -2371,12 +3540,12 @@ async function claimNextOutbox(db, portfolio, allowNav) {
           AND newer.ledger_revision > o.ledger_revision AND newer.status != 'DONE'
       )
       AND (
-        o.kind = 'REBUILD_KV'
-        OR (o.kind = 'RECALC_NAV' AND NOT EXISTS (
+        o.kind = 'RECALC_NAV'
+        OR (o.kind = 'REBUILD_KV' AND NOT EXISTS (
           SELECT 1 FROM ledger_outbox dependency
           WHERE dependency.portfolio_id = o.portfolio_id
             AND dependency.ledger_revision = o.ledger_revision
-            AND dependency.kind = 'REBUILD_KV' AND dependency.status != 'DONE'
+            AND dependency.kind = 'RECALC_NAV' AND dependency.status != 'DONE'
         ))
         OR (o.kind = 'REBUILD_EXCEL' AND NOT EXISTS (
           SELECT 1 FROM ledger_outbox dependency
@@ -2386,7 +3555,7 @@ async function claimNextOutbox(db, portfolio, allowNav) {
             AND dependency.status != 'DONE'
         ))
       )
-    ORDER BY CASE o.kind WHEN 'REBUILD_KV' THEN 0 WHEN 'RECALC_NAV' THEN 1 ELSE 2 END,
+    ORDER BY CASE o.kind WHEN 'RECALC_NAV' THEN 0 WHEN 'REBUILD_KV' THEN 1 ELSE 2 END,
       o.created_at, o.outbox_id
     LIMIT 1
   `, portfolio ? [claimedAt, claimedAt, portfolio] : [claimedAt, claimedAt]);
@@ -2416,12 +3585,12 @@ async function claimNextOutbox(db, portfolio, allowNav) {
           AND newer.status != 'DONE'
       )
       AND (
-        kind = 'REBUILD_KV'
-        OR (kind = 'RECALC_NAV' AND NOT EXISTS (
+        kind = 'RECALC_NAV'
+        OR (kind = 'REBUILD_KV' AND NOT EXISTS (
           SELECT 1 FROM ledger_outbox dependency
           WHERE dependency.portfolio_id = ledger_outbox.portfolio_id
             AND dependency.ledger_revision = ledger_outbox.ledger_revision
-            AND dependency.kind = 'REBUILD_KV' AND dependency.status != 'DONE'
+            AND dependency.kind = 'RECALC_NAV' AND dependency.status != 'DONE'
         ))
         OR (kind = 'REBUILD_EXCEL' AND NOT EXISTS (
           SELECT 1 FROM ledger_outbox dependency
@@ -2734,16 +3903,105 @@ export async function ledgerHealth(env) {
         'ledger_portfolios', 'ledger_source_records', 'ledger_pending',
         'ledger_transaction_guards', 'ledger_events', 'ledger_audit_log',
         'ledger_exports', 'ledger_imports', 'ledger_import_rows',
-        'ledger_outbox', 'ledger_prices', 'ledger_nav_snapshots'
+        'ledger_outbox', 'ledger_prices', 'ledger_nav_snapshots',
+        'ledger_price_tapes', 'ledger_price_tape_rows'
       )
     `);
     const outbox = await dbFirst(db, `
       SELECT COUNT(*) AS pending FROM ledger_outbox
       WHERE status IN ('PENDING', 'FAILED', 'PROCESSING')
     `).catch(() => ({ pending: 0 }));
-    return { ready: Number(row && row.count || 0) === 12, outboxPending: Number(outbox && outbox.pending || 0) };
+    const ready = Number(row && row.count || 0) === 14;
+    const rawNavPortfolios = {};
+    if (ready) {
+      const portfolios = await dbAll(db, `
+        SELECT portfolio_id, ledger_revision FROM ledger_portfolios ORDER BY portfolio_id
+      `);
+      for (const state of portfolios) {
+        const portfolio = state.portfolio_id;
+        const revision = Number(state.ledger_revision);
+        if (!(revision > 0)) {
+          rawNavPortfolios[portfolio] = {
+            ledgerRevision: revision,
+            required: false,
+            ready: true,
+            reason: null,
+          };
+          continue;
+        }
+        try {
+          const [tape, navRows, recalcOutbox] = await Promise.all([
+            loadFrozenLedgerPriceTape(env, portfolio, revision),
+            loadNavSnapshots(db, portfolio, revision),
+            dbFirst(db, `
+              SELECT COUNT(*) AS pending FROM ledger_outbox
+              WHERE portfolio_id = ? AND ledger_revision = ? AND kind = 'RECALC_NAV'
+                AND status IN ('PENDING', 'FAILED', 'PROCESSING')
+            `, [portfolio, revision]),
+          ]);
+          const navByDate = new Map(navRows.map(item => [item.date, item]));
+          const coverageReady = !!tape && tape.calendarDates.every(date => navByDate.has(date));
+          const noDirtyRows = navRows.every(item => item.recalculationRequired !== true);
+          const last = navRows.at(-1);
+          const postTapeRows = tape
+            ? navRows.filter(item => item.date > tape.tapeThrough)
+            : [];
+          const currentCounterReady = postTapeRows.length <= 1 && postTapeRows.every(item => {
+            const basis = String(item.valuation && item.valuation.priceBasis || '').toLowerCase();
+            const verifiedCashOnly = basis === 'cash_only' &&
+              item.valuation && item.valuation.sessionVerified === true &&
+              String(item.valuation.quoteDate || '').slice(0, 10) === item.date;
+            return Number(item.ledgerRevision) === revision &&
+              item.valuation && item.valuation.adjusted === false &&
+              (basis === 'raw_counter' || basis === 'raw_close' || verifiedCashOnly) &&
+              String(item.valuation.source || '').trim().length > 0;
+          });
+          const exactTarget = !!tape && !!last &&
+            (last.date === tape.tapeThrough || currentCounterReady && postTapeRows.length === 1) &&
+            Number(navByDate.get(tape.tapeThrough)?.ledgerRevision) === revision;
+          const noPendingRecalc = Number(recalcOutbox && recalcOutbox.pending || 0) === 0;
+          const portfolioReady = !!tape && coverageReady && noDirtyRows && exactTarget && noPendingRecalc;
+          rawNavPortfolios[portfolio] = {
+            ledgerRevision: revision,
+            required: true,
+            ready: portfolioReady,
+            tapeThrough: tape && tape.tapeThrough || null,
+            latestNavDate: last && last.date || null,
+            currentCounterAfterTape: currentCounterReady && postTapeRows.length === 1,
+            priceTapeId: tape && tape.priceTapeId || null,
+            priceBasis: tape ? 'raw_close' : null,
+            adjusted: tape ? false : null,
+            reason: portfolioReady ? null
+              : !tape ? 'CURRENT_REVISION_RAW_TAPE_MISSING'
+                : !coverageReady ? 'NAV_CALENDAR_COVERAGE_MISSING'
+                  : !noDirtyRows ? 'NAV_RECALCULATION_REQUIRED'
+                    : !exactTarget ? 'NAV_TARGET_MISMATCH'
+                      : 'RECALC_NAV_OUTBOX_PENDING',
+          };
+        } catch (error) {
+          rawNavPortfolios[portfolio] = {
+            ledgerRevision: revision,
+            required: true,
+            ready: false,
+            reason: String(error && (error.code || error.message) || 'RAW_NAV_HEALTH_FAILED'),
+          };
+        }
+      }
+    }
+    const rawNavReady = ready && Object.values(rawNavPortfolios).every(item => item.ready);
+    return {
+      ready,
+      outboxPending: Number(outbox && outbox.pending || 0),
+      rawNavReady,
+      rawNavPortfolios,
+    };
   } catch (error) {
-    return { ready: false, outboxPending: null };
+    return {
+      ready: false,
+      outboxPending: null,
+      rawNavReady: false,
+      rawNavPortfolios: {},
+    };
   }
 }
 
@@ -2778,21 +4036,27 @@ export async function handleLedgerAdminRequest(request, env, context = {}) {
         loadLatestPrices(db, portfolio, Number(state.ledger_revision)),
         loadPriceHistory(db, portfolio, Number(state.ledger_revision)),
       ]);
-      const projection = events.length ? enrichProjectionPrices(replay(events, portfolio, {
-        corporateActionPrices: priceHistory,
-      }), priceRows) : null;
+      const valued = events.length
+        ? await replayWithStoredValuationPrices(
+          env, portfolio, Number(state.ledger_revision), events, navRows, priceRows, priceHistory,
+        )
+        : null;
+      const projection = valued && valued.projection;
       if (projection) projection.nav_rows = navRows;
       return respond({
         ok: true, portfolio, currency: PORTFOLIOS[portfolio].currency,
         ledgerRevision: Number(state.ledger_revision),
-        pending: pendingRows.map(pendingItem), events, navRows, priceRows, projection,
+        pending: pendingRows.map(pendingItem), events, navRows,
+        priceRows: valued ? valued.priceRows : priceRows, projection,
       });
     }
     if (path === '/api/admin/ledger/pending' && request.method === 'POST') {
       const body = await readJson(request);
       const portfolio = portfolioId(body.portfolio);
       const created = await createPending(db, portfolio, body.event, actor, {
-        source: body.source || 'MANUAL',
+        // This admin route is the manual fact boundary. Automation must use
+        // the immutable /source endpoint, never a caller-supplied source flag.
+        source: 'MANUAL',
         idempotencyKey: body.idempotencyKey,
         sourceRef: body.sourceRef,
       });
@@ -2815,7 +4079,10 @@ export async function handleLedgerAdminRequest(request, env, context = {}) {
       return respond({ ok: true, ...confirmed });
     }
     if (path === '/api/admin/ledger/export' && request.method === 'GET') {
-      return respond({ ok: true, ...await createExport(db, portfolioId(url.searchParams.get('portfolio')), actor) });
+      return respond({
+        ok: true,
+        ...await createExport(env, db, portfolioId(url.searchParams.get('portfolio')), actor),
+      });
     }
     if (path === '/api/admin/ledger/import/preview' && request.method === 'POST') {
       return respond(await previewImport(db, await readJson(request), actor));
@@ -2838,6 +4105,16 @@ export async function handleLedgerAdminRequest(request, env, context = {}) {
         }).catch(error => console.error('ledger_migration_outbox_failed', error)));
       }
       return respond(confirmed);
+    }
+    if (path === '/api/admin/ledger/rebuild' && request.method === 'POST') {
+      const queued = await requestDerivedRebuild(db, await readJson(request), actor);
+      if (typeof context.defer === 'function' && typeof context.refreshPortfolio === 'function') {
+        context.defer(drainLedgerOutbox(env, {
+          portfolio: queued.portfolio,
+          refreshPortfolio: context.refreshPortfolio,
+        }).catch(error => console.error('ledger_derived_rebuild_outbox_failed', error)));
+      }
+      return respond(queued);
     }
     if (path === '/api/admin/ledger/outbox' && request.method === 'POST') {
       const body = await readJson(request);
