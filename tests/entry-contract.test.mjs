@@ -138,7 +138,7 @@ test('all member surfaces load the current account-center release', async () => 
     'cn/index.html', 'cn/about.html', 'cn/insights.html', 'cn/forum.html', 'cn/portfolios.html',
     'en/index.html', 'en/about.html', 'en/insights.html', 'en/forum.html', 'en/portfolios.html',
   ];
-  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.0/);
+  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.1/);
 });
 
 test('Google verification uses persistent signing-key resilience', async () => {

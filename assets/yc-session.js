@@ -57,6 +57,7 @@
       subscribe: '一鍵訂閱', subscribing: '訂閱中…', subscribed: '已訂閱',
       idHelp: '2–24 位中英文、數字、_ 或 -；全站不可重複。',
       photoReady: '新頭像已準備好，儲存後生效。',
+      adminRole: '管理員安全帳號', adminManaged: '這是獨立的管理員安全身份，登入名稱與憑證由安全配置管理。客戶個人資料、Google／郵箱綁定及 Insights 偏好請使用普通會員帳號管理。',
     },
     cn: {
       guest: 'Guest 访客', guestRole: '访客模式', signIn: '登录 / 注册',
@@ -93,6 +94,7 @@
       subscribe: '一键订阅', subscribing: '订阅中…', subscribed: '已订阅',
       idHelp: '2–24 位中英文、数字、_ 或 -；全站不可重复。',
       photoReady: '新头像已准备好，保存后生效。',
+      adminRole: '管理员安全账号', adminManaged: '这是独立的管理员安全身份，登录名称与凭证由安全配置管理。客户个人资料、Google／邮箱绑定及 Insights 偏好请使用普通会员账号管理。',
     },
     en: {
       guest: 'Guest', guestRole: 'Guest access', signIn: 'Sign in / Register',
@@ -129,6 +131,7 @@
       subscribe: 'Subscribe', subscribing: 'Subscribing…', subscribed: 'Subscribed',
       idHelp: '2–24 Chinese/English characters, numbers, _ or -. Unique across YiCapital.',
       photoReady: 'Your new avatar is ready. Save to apply it.',
+      adminRole: 'Administrator security account', adminManaged: 'This is a separate administrator identity managed by secure configuration. Use a regular member account for customer profile details, Google/email connections and Insights preferences.',
     },
   }[locale];
 
@@ -271,7 +274,7 @@
     avatarButton.title = profile.displayName || profile.username;
     identityBox.innerHTML = avatarMarkup('yc-avatar') +
       '<div class="yc-menu-identity-copy"><b>' + esc(profile.displayName || profile.username) + '</b>' +
-      '<span>' + esc(profile.email || profile.username) + '</span></div>';
+      '<span>' + esc(profile.email || (profile.role === 'admin' ? L.adminRole : profile.username)) + '</span></div>';
   }
 
   function menuItem(section, icon, label, future) {
@@ -439,6 +442,13 @@
     if (!profileLoaded) {
       main.innerHTML = pageHeading(L.accountKicker, L.accountTitle, L.accountIntro) +
         '<div class="yc-empty-panel"><div class="yc-empty-card"><p>' + esc(L.loading) + '</p></div></div>';
+      return;
+    }
+    if (profile.role === 'admin') {
+      main.innerHTML = pageHeading(L.accountKicker, L.accountTitle, L.accountIntro) +
+        '<div class="yc-profile-hero">' + avatarMarkup('yc-avatar-lg') +
+        '<div class="yc-profile-hero-copy"><b>' + esc(profile.displayName) + '</b><span>' + esc(L.adminRole) + '</span></div></div>' +
+        '<div class="yc-empty-card"><p>' + esc(L.adminManaged) + '</p></div>';
       return;
     }
     main.innerHTML =
