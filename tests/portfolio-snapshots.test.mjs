@@ -1413,22 +1413,45 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
   const health = await ledgerHealth(env);
   assert.equal(health.rawNavReady, true, JSON.stringify(health.rawNavPortfolios));
   assert.equal(health.rawNavPortfolios.us.priceBasis, 'raw_close');
-  await persistLedgerValuation(env, 'us', {
+  const verifiedCounter = {
     date: '2026-07-31', cash: 900, marketValue: 130, totalAssets: 1030,
     liability: 0, netValue: 1030, units: 1000, unitNav: 1.03,
     sourceRef: 'rt:raw-counter',
     valuation: {
       source: 'tushare', priceBasis: 'raw_counter', adjusted: false,
-      quoteDate: '2026-07-31',
+      quoteDate: '2026-07-31', sessionVerified: true,
     },
     warnings: [],
-  }, [{
+  };
+  const verifiedCounterPrices = [{
     ticker: 'AAA', date: '2026-07-31', close: 13, source: 'TUSHARE',
-    sourceRef: 'rt:AAA', valuation: { priceBasis: 'raw_counter', adjusted: false },
-  }], 2);
+    sourceRef: 'rt:AAA', valuation: {
+      priceBasis: 'raw_counter', adjusted: false,
+      quoteDate: '2026-07-31', sessionVerified: true,
+    },
+  }];
+  await persistLedgerValuation(env, 'us', verifiedCounter, verifiedCounterPrices, 2);
   const counterHealth = await ledgerHealth(env);
   assert.equal(counterHealth.rawNavReady, true);
   assert.equal(counterHealth.rawNavPortfolios.us.currentCounterAfterTape, true);
+  assert.equal(counterHealth.rawNavPortfolios.us.expectedCompletedSession, '2026-07-31');
+
+  // Reproduce the production A-share race: the verified price/session remains
+  // in D1, but a historical publish has lost the matching NAV row.
+  database.database.prepare(`
+    DELETE FROM ledger_nav_snapshots
+    WHERE portfolio_id = 'us' AND nav_date = '2026-07-31'
+  `).run();
+  const knownSessionGap = await ledgerHealth(env);
+  assert.equal(knownSessionGap.rawNavReady, false);
+  assert.equal(
+    knownSessionGap.rawNavPortfolios.us.reason,
+    'RAW_NAV_COMPLETED_SESSION_STALE',
+  );
+  assert.equal(knownSessionGap.rawNavPortfolios.us.expectedCompletedSession, '2026-07-31');
+  assert.equal(knownSessionGap.rawNavPortfolios.us.latestNavDate, '2026-07-30');
+  await persistLedgerValuation(env, 'us', verifiedCounter, verifiedCounterPrices, 2);
+
   await persistLedgerValuation(env, 'us', {
     date: '2026-08-01', cash: 900, marketValue: 140, totalAssets: 1040,
     liability: 0, netValue: 1040, units: 1000, unitNav: 1.04,

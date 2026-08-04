@@ -848,7 +848,8 @@ test('admin derived rebuild requeues the current revision idempotently without c
   assert.ok(resetRows.every(row => row.processed_at === null));
   for (const row of resetRows) {
     assert.deepEqual(JSON.parse(row.payload_json), {
-      affectedFrom: '2026-02-01', reason: 'raw price tape repair',
+      affectedFrom: '2026-02-01', probeEod: true,
+      reason: 'raw price tape repair',
     });
   }
 
@@ -874,6 +875,7 @@ test('admin derived rebuild requeues the current revision idempotently without c
   assert.deepEqual(afterOutbox.map(row => row.outbox_id), originalIds.map(row => row.outbox_id));
   assert.ok(afterOutbox.every(row => row.status === 'PENDING' && row.attempts === 0));
   assert.ok(afterOutbox.every(row => row.last_error === null && row.processed_at === null));
+  assert.ok(afterOutbox.every(row => JSON.parse(row.payload_json).probeEod === true));
   assert.ok(afterOutbox.every(row => JSON.parse(row.payload_json).reason === 'repeat safely'));
 
   const audits = database.prepare(`
