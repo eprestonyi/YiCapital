@@ -563,7 +563,8 @@ test('historical NAV rejects an empty market calendar and never fabricates busin
     rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
       adapter, now, affectedFrom: '2026-07-20', ledgerRevision: 1,
     }),
-    error => error && error.code === 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE',
+    error => error && error.code === 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE' &&
+      error.message.includes('portfolio_calendar_tape_incomplete:2026-07-20'),
   );
   assert.equal(adapter.calls.length, 1);
   assert.doesNotMatch(await readFile(path.join(ROOT, 'worker/worker.js'), 'utf8'),

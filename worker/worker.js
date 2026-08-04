@@ -2307,7 +2307,13 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
         nowFn(),
       );
     } catch (cause) {
-      const error = new Error('historical_nav_calendar_unavailable');
+      const causeCode = String(cause && cause.code || 'CALENDAR_QUERY_FAILED')
+        .replace(/[^A-Z0-9_:-]/gi, '_').slice(0, 96);
+      const causeMessage = String(cause && cause.message || 'calendar query failed')
+        .replace(/[\r\n\t]+/g, ' ').slice(0, 300);
+      const error = new Error(
+        `historical_nav_calendar_unavailable:${causeCode}:${causeMessage}`,
+      );
       error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
       error.cause = cause;
       throw error;
