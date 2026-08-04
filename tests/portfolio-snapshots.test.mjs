@@ -452,10 +452,10 @@ test('historical NAV replay fails closed when any ticker history request fails',
     if (dataset === 'us_tradecal') {
       return officialCalendar(request, ['20260720', '20260721', '20260730']);
     }
-    if (request.params.ts_code === 'SPY') return { data: [
-      { ts_code: 'SPY', trade_date: '20260720', close: 600 },
-      { ts_code: 'SPY', trade_date: '20260721', close: 601 },
-      { ts_code: 'SPY', trade_date: '20260730', close: 610 },
+    if (request.params.ts_code === 'AAPL') return { data: [
+      { ts_code: 'AAPL', trade_date: '20260720', close: 600 },
+      { ts_code: 'AAPL', trade_date: '20260721', close: 601 },
+      { ts_code: 'AAPL', trade_date: '20260730', close: 610 },
     ] };
     if (request.params.ts_code === 'AAA') throw new Error('temporary upstream failure');
     return { data: [] };
@@ -486,8 +486,8 @@ test('historical NAV rejects a successful empty raw-close response instead of us
   };
   const adapter = adapterWith(async (dataset, request) => {
     if (dataset === 'us_tradecal') return officialCalendar(request, ['20260720']);
-    if (request.params.ts_code === 'SPY') {
-      return { data: [{ ts_code: 'SPY', trade_date: '20260720', close: 600 }] };
+    if (request.params.ts_code === 'AAPL') {
+      return { data: [{ ts_code: 'AAPL', trade_date: '20260720', close: 600 }] };
     }
     return { data: [] };
   });
@@ -524,8 +524,8 @@ test('a dividend-only ticker that was never held does not require a price tape r
   };
   const adapter = adapterWith(async (dataset, request) => {
     if (dataset === 'us_tradecal') return officialCalendar(request, ['20260720']);
-    assert.equal(request.params.ts_code, 'SPY');
-    return { data: [{ ts_code: 'SPY', trade_date: '20260720', close: 600 }] };
+    assert.equal(request.params.ts_code, 'AAPL');
+    return { data: [{ ts_code: 'AAPL', trade_date: '20260720', close: 600 }] };
   });
 
   const replay = await rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
@@ -563,7 +563,8 @@ test('historical NAV rejects an empty market calendar and never fabricates busin
     rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
       adapter, now, affectedFrom: '2026-07-20', ledgerRevision: 1,
     }),
-    error => error && error.code === 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE',
+    error => error && error.code === 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE' &&
+      error.message.includes('portfolio_calendar_tape_incomplete:2026-07-20'),
   );
   assert.equal(adapter.calls.length, 1);
   assert.doesNotMatch(await readFile(path.join(ROOT, 'worker/worker.js'), 'utf8'),
@@ -589,9 +590,9 @@ test('official calendar proves a closed weekend but rejects an incomplete future
       if (request.params.end_date === '20260727') return { data: [] };
       return officialCalendar(request, ['20260723', '20260724']);
     }
-    if (request.params.ts_code === 'SPY') return { data: [
-      { ts_code: 'SPY', trade_date: '20260723', close: 600 },
-      { ts_code: 'SPY', trade_date: '20260724', close: 601 },
+    if (request.params.ts_code === 'AAPL') return { data: [
+      { ts_code: 'AAPL', trade_date: '20260723', close: 600 },
+      { ts_code: 'AAPL', trade_date: '20260724', close: 601 },
     ] };
     return { data: [
       { ts_code: 'AAA', trade_date: '20260723', close: 10 },
@@ -644,9 +645,9 @@ test('intraday replay stops at the raw EOD watermark and still rejects older gap
     if (dataset === 'us_tradecal') {
       return officialCalendar(request, ['20260723', '20260724']);
     }
-    if (request.params.ts_code === 'SPY') return { data: [
-      { ts_code: 'SPY', trade_date: '20260723', close: 600 },
-      ...(eodAvailable ? [{ ts_code: 'SPY', trade_date: '20260724', close: 601 }] : []),
+    if (request.params.ts_code === 'AAPL') return { data: [
+      { ts_code: 'AAPL', trade_date: '20260723', close: 600 },
+      ...(eodAvailable ? [{ ts_code: 'AAPL', trade_date: '20260724', close: 601 }] : []),
     ] };
     return { data: [
       { ts_code: 'AAA', trade_date: '20260723', close: 10 },
@@ -716,9 +717,9 @@ test('historical NAV fails closed on an as-of tape gap and writes no book-value 
     if (dataset === 'us_tradecal') {
       return officialCalendar(request, ['20260720', '20260721']);
     }
-    if (request.params.ts_code === 'SPY') return { data: [
-      { ts_code: 'SPY', trade_date: '20260720', close: 600 },
-      { ts_code: 'SPY', trade_date: '20260721', close: 601 },
+    if (request.params.ts_code === 'AAPL') return { data: [
+      { ts_code: 'AAPL', trade_date: '20260720', close: 600 },
+      { ts_code: 'AAPL', trade_date: '20260721', close: 601 },
     ] };
     return { data: [{ ts_code: 'AAA', trade_date: '20260721', close: 12 }] };
   });
@@ -746,7 +747,7 @@ test('a back-dated revision may prepend raw history but cannot revise the parent
     requiredTickers: ['AAA'],
     priceSource: 'tushare:us_daily',
     calendarSource: 'tushare:us_tradecal+us_daily',
-    calendarSourceRef: 'us_tradecal:is_open+us_daily:SPY:eod-watermark',
+    calendarSourceRef: 'us_tradecal:is_open+us_daily:AAPL:eod-watermark',
     priceBasis: 'raw_close',
     adjusted: false,
   };
@@ -834,13 +835,13 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
           : extension ? ['20260722', '20260723'] : ['20260720', '20260721'],
       );
     }
-    if (request.params.ts_code === 'SPY') {
+    if (request.params.ts_code === 'AAPL') {
       const tradeDates = nextRevision
         ? ['20260720', '20260721', '20260722', '20260723', '20260724']
         : extensionTarget ? ['20260720', '20260721', '20260722', '20260723']
           : ['20260720', '20260721'];
       return { data: tradeDates.map((trade_date, index) => ({
-        ts_code: 'SPY', trade_date, close: 600 + index,
+        ts_code: 'AAPL', trade_date, close: 600 + index,
       })) };
     }
     if (supplierRevisedOldHistory && request.params.start_date < '20260724') {
@@ -1007,7 +1008,7 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
   assert.deepEqual(childPrefix, extendedRows);
   const crossRevisionCalls = adapter.calls.slice(crossRevisionCallStart);
   assert.ok(crossRevisionCalls
-    .filter(call => call.request.params.ts_code && call.request.params.ts_code !== 'SPY')
+    .filter(call => call.request.params.ts_code && call.request.params.ts_code !== 'AAPL')
     .every(call => call.request.params.start_date === '20260724'));
   assert.equal(database.database.prepare(`
     SELECT price_micros FROM ledger_price_tape_rows
@@ -1081,10 +1082,10 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
       return officialCalendar(request, ['20260720', '20260721', '20260730']);
     }
     assert.equal(dataset, 'us_daily');
-    if (request.params.ts_code === 'SPY') return { data: [
-      { ts_code: 'SPY', trade_date: '20260720', close: 600 },
-      { ts_code: 'SPY', trade_date: '20260721', close: 601 },
-      { ts_code: 'SPY', trade_date: '20260730', close: 610 },
+    if (request.params.ts_code === 'AAPL') return { data: [
+      { ts_code: 'AAPL', trade_date: '20260720', close: 600 },
+      { ts_code: 'AAPL', trade_date: '20260721', close: 601 },
+      { ts_code: 'AAPL', trade_date: '20260730', close: 610 },
     ] };
     assert.equal(request.params.ts_code, 'AAA');
     return {
