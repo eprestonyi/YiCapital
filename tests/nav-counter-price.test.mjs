@@ -220,12 +220,14 @@ async function assertSameDayCounterRefresh({
 
   let counterClose = 10;
   let officialEodClose = null;
+  let sessionDate = '2026-07-30';
+  const compactSessionDate = () => sessionDate.replaceAll('-', '');
   const adapter = {
     async query(dataset, request) {
       if (dataset === sessionCalendarDataset) {
         if (dataset === 'trade_cal') assert.equal(request.params.exchange, 'SSE');
         return {
-          ...officialCalendar(request, ['20260730']),
+          ...officialCalendar(request, [compactSessionDate()]),
           freshness_class: 'static',
           fetched_at: '2026-07-30T07:00:00.000Z',
         };
@@ -236,7 +238,7 @@ async function assertSameDayCounterRefresh({
         return {
           data: [{
             ts_code: requestTicker, close: counterClose,
-            ...(portfolio === 'hk' ? {} : { trade_time: '2026-07-30 14:00:00' }),
+            ...(portfolio === 'hk' ? {} : { trade_time: `${sessionDate} 14:00:00` }),
           }],
           freshness_class: 'intraday_snapshot',
           fetched_at: '2026-07-30T07:00:00.000Z',
@@ -248,7 +250,7 @@ async function assertSameDayCounterRefresh({
         return {
           data: [{
             ts_code: requestTicker, close: officialEodClose,
-            trade_date: '20260730',
+            trade_date: compactSessionDate(),
           }],
           freshness_class: 'eod',
           fetched_at: '2026-07-30T10:00:00.000Z',
@@ -257,7 +259,7 @@ async function assertSameDayCounterRefresh({
       assert.equal(dataset, calendarDataset);
       assert.equal(request.params.ts_code, calendarTicker);
       return {
-        data: [{ ts_code: calendarTicker, trade_date: '20260730', close: 4000 }],
+        data: [{ ts_code: calendarTicker, trade_date: compactSessionDate(), close: 4000 }],
         freshness_class: 'eod',
         fetched_at: '2026-07-30T08:00:00.000Z',
       };
@@ -349,6 +351,32 @@ async function assertSameDayCounterRefresh({
   const publishedLive = JSON.parse(env.YC_KV.values.get(`live:${portfolio}`));
   assert.equal(publishedLive.holdings[0].priceBasis, 'raw_close');
   assert.equal(publishedLive.holdings[0].adjusted, false);
+
+  sessionDate = '2026-07-31';
+  counterClose = 14;
+  officialEodClose = null;
+  nowValue = Date.parse('2026-07-31T06:00:00.000Z');
+  const nextSession = await updatePortfolioNav(env, portfolio, { adapter, now });
+  assert.equal(nextSession.appended, '2026-07-31');
+  assert.equal(nextSession.marketValue, 140);
+  assert.equal(nextSession.netValue, 1040);
+  const nextCache = JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`));
+  assert.deepEqual(nextCache.navRows.at(-1), {
+    date: '2026-07-31', nav: 1.04, ret: 0.0097087379,
+    unitNav: 1.04, units: 1000, marketValue: 140, cash: 900,
+    liability: 0, totalAssets: 1040, netValue: 1040,
+    mv: 1040, divPerUnit: 0,
+  });
+
+  // Losing the mutable live key must not prevent the cached intraday row from
+  // being replaced by the verified official raw close for the same session.
+  env.YC_KV.values.delete(`live:${portfolio}`);
+  officialEodClose = 15;
+  nowValue = Date.parse('2026-07-31T10:00:00.000Z');
+  const nextOfficialClose = await updatePortfolioNav(env, portfolio, { adapter, now });
+  assert.equal(nextOfficialClose.appended, '2026-07-31');
+  assert.equal(nextOfficialClose.priceBasis, 'raw_close');
+  assert.equal(nextOfficialClose.netValue, 1050);
 }
 
 test('A/HK counter quotes overwrite only the current market-date NAV on every realtime refresh', async () => {
