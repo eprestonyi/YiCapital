@@ -564,6 +564,87 @@ function yahooUsSymbol(ticker) {
   return String(ticker || '').trim().toUpperCase().replace(/\.US$/, '').replaceAll('.', '-');
 }
 
+const US_RAW_HISTORY_SOURCE = 'us-raw-close:yahoo+chartexchange';
+const CHARTEXCHANGE_INACTIVE_US_SYMBOLS = Object.freeze({
+  XHYH: 'nyse-xhyh',
+});
+
+function htmlText(value) {
+  return String(value || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .trim();
+}
+
+async function chartExchangeInactiveUsHistory(
+  ticker,
+  startDate,
+  endDate,
+  now = Date.now,
+  options = {},
+) {
+  const normalized = String(ticker || '').trim().toUpperCase().replace(/\.US$/, '');
+  const slug = CHARTEXCHANGE_INACTIVE_US_SYMBOLS[normalized];
+  if (!slug) return { ticker: normalized, rows: [] };
+  const fetchFn = options.fetch || globalThis.fetch;
+  if (typeof fetchFn !== 'function') throw new Error('chartexchange_history_fetch_unavailable');
+  const url = `https://chartexchange.com/symbol/${slug}/historical/`;
+  let html = null;
+  let lastFetchError = null;
+  for (let attempt = 0; attempt < 2 && !html; attempt += 1) {
+    try {
+      const timeoutSignal = typeof AbortSignal !== 'undefined' &&
+        typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(15000)
+        : undefined;
+      const response = await fetchFn(url, {
+        headers: { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 YiCapital/1.0' },
+        ...(timeoutSignal ? { signal: timeoutSignal } : {}),
+      });
+      if (!response || response.ok !== true || typeof response.text !== 'function') {
+        throw new Error('chartexchange_history_http_unavailable');
+      }
+      html = await response.text();
+    } catch (error) {
+      lastFetchError = error;
+    }
+  }
+  if (!html) {
+    const error = new Error('chartexchange_history_http_unavailable');
+    error.cause = lastFetchError;
+    throw error;
+  }
+  const fetchedAt = new Date(now()).toISOString();
+  const rows = [];
+  const tableRows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  for (const rowHtml of tableRows) {
+    const dateMatch = rowHtml.match(/<a\s+name="(\d{4}-\d{2}-\d{2})"/i);
+    if (!dateMatch) continue;
+    const date = dateMatch[1];
+    if (date < startDate || date > endDate) continue;
+    const cells = [...rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)]
+      .map(match => htmlText(match[1]));
+    const close = Number(String(cells[4] || '').replaceAll(',', ''));
+    if (!(close > 0)) continue;
+    rows.push({
+      ticker: normalized,
+      date,
+      price: close,
+      close,
+      source: US_RAW_HISTORY_SOURCE,
+      sourceRef: `${url}:close:raw-unadjusted`,
+      valuation: { priceBasis: 'raw_close', adjusted: false },
+      fetchedAt,
+    });
+  }
+  return {
+    ticker: normalized,
+    rows: [...new Map(rows.map(row => [row.date, row])).values()]
+      .sort((left, right) => left.date.localeCompare(right.date)),
+  };
+}
+
 function yahooSplitRatio(event) {
   const numerator = Number(event && event.numerator);
   const denominator = Number(event && event.denominator);
@@ -1715,9 +1796,31 @@ async function portfolioHistoricalPrices(
   historyFetch,
 ) {
   if (market === 'us' && typeof historyFetch === 'function') {
-    return yahooUsPortfolioHistory(ticker, startDate, endDate, nowFn, {
+    const yahoo = await yahooUsPortfolioHistory(ticker, startDate, endDate, nowFn, {
       fetch: historyFetch,
     });
+    let rows = yahoo.rows;
+    const needsInactivePrefix = !rows.some(row => row.date <= startDate) &&
+      Object.hasOwn(
+        CHARTEXCHANGE_INACTIVE_US_SYMBOLS,
+        String(ticker || '').trim().toUpperCase().replace(/\.US$/, ''),
+      );
+    if (needsInactivePrefix) {
+      const inactive = await chartExchangeInactiveUsHistory(
+        ticker,
+        startDate,
+        endDate,
+        nowFn,
+        { fetch: historyFetch },
+      );
+      const byDate = new Map(inactive.rows.map(row => [row.date, row]));
+      for (const row of rows) byDate.set(row.date, row);
+      rows = [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+    }
+    return {
+      ticker: yahoo.ticker,
+      rows: rows.map(row => ({ ...row, source: US_RAW_HISTORY_SOURCE })),
+    };
   }
   return tusharePortfolioHistory(adapter, ticker, market, startDate, endDate, nowFn);
 }
@@ -2012,10 +2115,10 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
   const tickers = portfolioHistoricalTickers(events);
   const historyFetch = typeof options.historyFetch === 'function' ? options.historyFetch : null;
   const priceSource = market === 'us' && historyFetch
-    ? 'yahoo:query2-chart'
+    ? US_RAW_HISTORY_SOURCE
     : `tushare:${portfolioDataset(market)}`;
   const historicalSource = market === 'us' && historyFetch
-    ? 'yahoo:query2-chart+tushare:us_tradecal'
+    ? 'yahoo:query2-chart+chartexchange:inactive-history+tushare:us_tradecal'
     : 'tushare';
   const priorFrozenTape = ledgerRevision > 0
     ? await loadPriorFrozenLedgerPriceTape(env, pf, ledgerRevision)
@@ -2453,7 +2556,11 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
             nowFn,
             historyFetch,
           );
-          return { ...plan, rows: result.rows, error: plan.requireRows && !result.rows.length };
+          return {
+            ...plan,
+            rows: result.rows,
+            error: plan.requireRows && !result.rows.some(row => row.date <= plan.from),
+          };
         } catch (error) {
           return {
             ...plan,
@@ -2541,9 +2648,10 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
           nowFn,
           historyFetch,
         );
-        return result.rows.length
+        if (!result.rows.length) return { ...result, error: 'empty_raw_close_rows' };
+        return result.rows.some(row => row.date <= firstHoldingDate)
           ? result
-          : { ...result, error: 'empty_raw_close_rows' };
+          : { ...result, error: 'raw_close_missing_at_first_holding' };
       } catch (error) {
         return {
           ticker,
@@ -2552,6 +2660,16 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
         };
       }
     });
+    const firstHoldingGap = fetched.find(item =>
+      item.error === 'raw_close_missing_at_first_holding');
+    if (firstHoldingGap) {
+      const firstHoldingDate = tickerFirstDates.get(firstHoldingGap.ticker) || historyStart;
+      const error = new Error(
+        `historical_nav_price_tape_gap:${firstHoldingDate}:${firstHoldingGap.ticker}`,
+      );
+      error.code = 'HISTORICAL_NAV_PRICE_TAPE_GAP';
+      throw error;
+    }
     const unavailableHistory = fetched.filter(item => item.error).map(item => item.ticker);
     if (unavailableHistory.length) {
       const error = new Error(`historical_nav_price_history_unavailable:${unavailableHistory.join(',')}`);
