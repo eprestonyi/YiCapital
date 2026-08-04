@@ -3915,6 +3915,7 @@ export default {
           await warmGoogleSigningKeys({ keyCache: env.YC_KV });
           return J(env, { ok: true, mode: 'local' }, 200, { 'Cache-Control': 'no-store' });
         } catch (error) {
+          console.error('google_jwks_readiness_failed', error && error.name, error && error.message);
           if (await probeGoogleTokenInfo()) {
             return J(env, { ok: true, mode: 'remote-fallback' }, 200, {
               'Cache-Control': 'no-store',

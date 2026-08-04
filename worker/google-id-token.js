@@ -447,8 +447,11 @@ export async function probeGoogleTokenInfo(options = {}) {
       redirect: 'error',
       signal: controller.signal,
     });
-    return !!response && (response.status === 400 || response.status === 401);
+    const reachable = !!response && (response.status === 400 || response.status === 401);
+    if (!reachable) console.error('google_tokeninfo_probe_unexpected_status', response && response.status);
+    return reachable;
   } catch (error) {
+    console.error('google_tokeninfo_probe_request_failed', error && error.name);
     return false;
   } finally {
     clearTimeout(timer);
