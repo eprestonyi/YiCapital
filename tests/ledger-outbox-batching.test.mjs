@@ -300,7 +300,7 @@ test('canonical liability ratio keeps Python parity for non-positive assets', as
   });
 });
 
-test('NAV outbox defaults to a CPU-bounded five-session continuation', async () => {
+test('automated NAV outbox defaults to one CPU-bounded session', async () => {
   const env = await setup();
   env.FEEDBACK_DB.database.prepare(`
     UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
@@ -312,7 +312,7 @@ test('NAV outbox defaults to a CPU-bounded five-session continuation', async () 
     refreshPortfolio: async (runtimeEnv, portfolio, options) => {
       assert.equal(runtimeEnv, env);
       assert.equal(portfolio, 'us');
-      assert.equal(options.batchSize, 5);
+      assert.equal(options.batchSize, 1);
       return {
         pf: portfolio,
         ledgerRevision: 1,
@@ -326,6 +326,42 @@ test('NAV outbox defaults to a CPU-bounded five-session continuation', async () 
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.pending, false, JSON.stringify(result));
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-1').status, 'DONE');
+});
+
+test('interactive admin outbox keeps a bounded five-session continuation', async () => {
+  const env = await setup();
+  env.FEEDBACK_DB.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  insertOutbox(env, { id: 'nav-1', revision: 1, kind: 'RECALC_NAV' });
+
+  const response = await handleLedgerAdminRequest(
+    new Request('https://ledger.test/api/admin/ledger/outbox', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ portfolio: 'us' }),
+    }),
+    env,
+    {
+      actor: 'test-admin',
+      refreshPortfolio: async (runtimeEnv, portfolio, options) => {
+        assert.equal(runtimeEnv, env);
+        assert.equal(portfolio, 'us');
+        assert.equal(options.batchSize, 5);
+        return {
+          pf: portfolio,
+          ledgerRevision: 1,
+          complete: true,
+          historicalReplay: true,
+          fallback: false,
+        };
+      },
+    },
+  );
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.pending, false, JSON.stringify(result));
 });
 
 test('daily EOD scheduling requeues DONE and attaches intent to unfinished checkpoints', async () => {
@@ -868,7 +904,7 @@ test('admin rebuild probes and appends a newer official EOD session', async () =
     UPDATE ledger_outbox SET available_at = 0
     WHERE portfolio_id = 'us' AND kind = 'RECALC_NAV'
   `).run();
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 10; index += 1) {
     drained = await drainLedgerOutbox(env, {
       portfolio: 'us',
       refreshPortfolio: (runtimeEnv, portfolio, options) =>
