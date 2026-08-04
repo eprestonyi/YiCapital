@@ -7,8 +7,14 @@ import { createTerminalWarehouseAdapter } from './warehouse.js';
 import {
   assertLedgerRevision,
   drainLedgerOutbox,
+  enqueueDailyNavReplay,
+  extendLedgerPriceTape,
+  freezeLedgerPriceTape,
   handleLedgerAdminRequest,
   ledgerHealth,
+  loadLedgerReplayInput,
+  loadFrozenLedgerPriceTape,
+  loadPriorFrozenLedgerPriceTape,
   materializeLedgerKv,
   persistLedgerValuation,
   persistLedgerValuationBatch,
@@ -40,7 +46,7 @@ import { replayPortfolioLedger } from './portfolio-ledger.js';
      GET  /api/users            [admin]
      POST /api/users/update     [admin] disable/enable/delete/resetpw
      POST /api/publish          [admin] 淨值表 → GitHub
-     POST /api/ledger           [admin] 舊快照入口（預設停用；僅遷移回退）
+     POST /api/ledger           [admin] 舊快照入口（永久 410）
      /api/admin/ledger/*        [admin] D1 事件賬本、Pending/Confirm、Excel 雙向同步
      GET  /api/content          公開：研報庫+研究觀點條目（僅啟用項）
      GET  /api/content/all      [admin] 全部條目（含停用）
@@ -449,10 +455,155 @@ function portfolioMarketDate(now, market) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-function realtimeQuoteDate(row, market, now) {
+function realtimeQuoteDate(row) {
   const raw = String(row && (row.trade_time || row.trade_date || row.date) || '');
   const match = raw.match(/(\d{4})[-/]?(\d{2})[-/]?(\d{2})/);
-  return match ? `${match[1]}-${match[2]}-${match[3]}` : portfolioMarketDate(now, market);
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+}
+
+function asiaRealtimeQuoteTimestamp(row, verifiedSessionDate) {
+  const raw = String(row && row.trade_time || '').trim();
+  if (!raw) return null;
+  const full = raw.match(/(\d{4})[-/]?(\d{2})[-/]?(\d{2})[^\d]?(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (full) {
+    return Date.parse(
+      `${full[1]}-${full[2]}-${full[3]}T${full[4]}:${full[5]}:${full[6] || '00'}+08:00`,
+    );
+  }
+  const time = raw.match(/(?:^|\s)(\d{2}):(\d{2})(?::(\d{2}))?(?:$|\s)/);
+  if (!time || !/^\d{4}-\d{2}-\d{2}$/.test(String(verifiedSessionDate || ''))) return null;
+  return Date.parse(
+    `${verifiedSessionDate}T${time[1]}:${time[2]}:${time[3] || '00'}+08:00`,
+  );
+}
+
+function marketLocalMinute(nowValue, market) {
+  const timeZone = market === 'us' ? 'America/New_York' : 'Asia/Hong_Kong';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(nowValue));
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return Number(values.hour) * 60 + Number(values.minute);
+}
+
+function marketLocalWeekday(nowValue, market) {
+  const timeZone = market === 'us' ? 'America/New_York' : 'Asia/Hong_Kong';
+  return new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' })
+    .format(new Date(nowValue));
+}
+
+function portfolioRealtimeWindowOpen(nowValue, market) {
+  const weekday = marketLocalWeekday(nowValue, market);
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  const minute = marketLocalMinute(nowValue, market);
+  if (market === 'us') return minute >= 9 * 60 + 30 && minute < 16 * 60;
+  if (market === 'a') {
+    return minute >= 9 * 60 + 30 && minute < 11 * 60 + 30 ||
+      minute >= 13 * 60 && minute < 15 * 60;
+  }
+  if (market === 'hk') {
+    return minute >= 9 * 60 + 30 && minute < 12 * 60 ||
+      minute >= 13 * 60 && minute < 16 * 60;
+  }
+  return false;
+}
+
+async function tusharePortfolioVerifiedSession(adapter, market, now = Date.now) {
+  const request = {
+    us: { dataset: 'us_tradecal' },
+    hk: { dataset: 'hk_tradecal' },
+    a: { dataset: 'trade_cal', exchange: 'SSE' },
+  }[market];
+  if (!request) throw new Error('portfolio_market_unsupported');
+  const nowValue = now();
+  const currentDate = portfolioMarketDate(nowValue, market);
+  const startDate = addIsoDays(currentDate, -14);
+  const result = await adapter.query(request.dataset, {
+    params: {
+      ...(request.exchange ? { exchange: request.exchange } : {}),
+      start_date: compactIsoDate(startDate),
+      end_date: compactIsoDate(currentDate),
+    },
+    fields: 'cal_date,is_open',
+  });
+  const rows = (Array.isArray(result.data) ? result.data : [])
+    .map(row => ({ date: isoTradeDate(row.cal_date), isOpen: Number(row.is_open) === 1 }))
+    .filter(row => row.date && row.date >= startDate && row.date <= currentDate)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const byDate = new Map(rows.map(row => [row.date, row]));
+  for (let date = startDate; date <= currentDate; date = addIsoDays(date, 1)) {
+    if (!byDate.has(date)) throw new Error(`portfolio_verified_session_incomplete:${date}`);
+  }
+  const verifiedDate = rows.filter(row => row.isOpen).map(row => row.date).at(-1) || null;
+  if (!verifiedDate) throw new Error('portfolio_verified_session_unavailable');
+  const currentIsOpen = byDate.get(currentDate).isOpen;
+  const minute = marketLocalMinute(nowValue, market);
+  const regularCloseMinute = market === 'a' ? 15 * 60 : 16 * 60;
+  const intraday = currentIsOpen && verifiedDate === currentDate &&
+    minute >= 9 * 60 + 30 && minute < regularCloseMinute;
+  return {
+    date: verifiedDate,
+    currentDate,
+    currentIsOpen,
+    intraday,
+    source: `tushare:${request.dataset}`,
+    source_endpoint: request.dataset,
+    fetched_at: result.fetched_at || result.retrieved_at || new Date(nowValue).toISOString(),
+  };
+}
+
+function yahooUsSymbol(ticker) {
+  return String(ticker || '').trim().toUpperCase().replace(/\.US$/, '').replaceAll('.', '-');
+}
+
+async function yahooUsCounterQuote(ticker, now = Date.now, options = {}) {
+  const fetchFn = options.fetch || globalThis.fetch;
+  if (typeof fetchFn !== 'function') throw new Error('yahoo_counter_fetch_unavailable');
+  const symbol = yahooUsSymbol(ticker);
+  if (!symbol) throw new Error('yahoo_counter_symbol_invalid');
+  const nowValue = now();
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+    '?interval=1m&range=1d&includePrePost=false&events=div%2Csplits';
+  const timeoutSignal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(5000)
+    : undefined;
+  const response = await fetchFn(url, {
+    headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 YiCapital/1.0' },
+    ...(timeoutSignal ? { signal: timeoutSignal } : {}),
+  });
+  if (!response || response.ok !== true || typeof response.json !== 'function') {
+    throw new Error('yahoo_counter_http_unavailable');
+  }
+  const payload = await response.json();
+  const meta = payload && payload.chart && Array.isArray(payload.chart.result) &&
+    payload.chart.result[0] && payload.chart.result[0].meta;
+  const close = Number(meta && meta.regularMarketPrice);
+  const quoteSeconds = Number(meta && meta.regularMarketTime);
+  const quoteAgeMs = nowValue - quoteSeconds * 1000;
+  if (!(close > 0) || !Number.isFinite(quoteSeconds) || quoteSeconds <= 0 ||
+      quoteAgeMs < -5 * 60 * 1000 || quoteAgeMs > 15 * 60 * 1000) {
+    throw new Error('yahoo_counter_payload_invalid');
+  }
+  const date = portfolioMarketDate(quoteSeconds * 1000, 'us');
+  return {
+    date,
+    close,
+    source: 'yahoo:query2-chart',
+    source_endpoint: 'query2.finance.yahoo.com/v8/finance/chart',
+    fetched_at: new Date(nowValue).toISOString(),
+    as_of: new Date(quoteSeconds * 1000).toISOString(),
+    freshness_class: 'intraday_snapshot',
+    quote_mode: 'realtime',
+    session_verified: false,
+    regular_market_time: quoteSeconds,
+    market_state: String(meta && meta.marketState || '').toUpperCase() || null,
+    price_basis: 'raw_counter',
+    adjusted: false,
+    fallback: null,
+  };
 }
 
 async function tushareSeries(adapter, request, now = Date.now) {
@@ -481,11 +632,15 @@ async function tushareSeries(adapter, request, now = Date.now) {
   };
 }
 
-async function tusharePortfolioQuote(adapter, ticker, market, now = Date.now) {
+async function tusharePortfolioQuote(adapter, ticker, market, now = Date.now, options = {}) {
   const dataset = portfolioDataset(market);
   if (!dataset) throw new Error('portfolio_market_unsupported');
-  const realtimeDataset = portfolioRealtimeDataset(market);
+  const configuredRealtimeDataset = portfolioRealtimeDataset(market);
+  const realtimeDataset = options.skipRealtime ? null : configuredRealtimeDataset;
   const symbol = tusharePortfolioSymbol(ticker, market);
+  const verifiedSessionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.verifiedSessionDate || ''))
+    ? String(options.verifiedSessionDate)
+    : null;
   let realtimeFailure = null;
   if (realtimeDataset) {
     try {
@@ -493,14 +648,34 @@ async function tusharePortfolioQuote(adapter, ticker, market, now = Date.now) {
         params: { ts_code: symbol },
         fields: realtimeDataset === 'rt_k'
           ? 'ts_code,close,trade_time'
-          : 'ts_code,close',
+          : 'ts_code,close,trade_date,trade_time',
       });
       const realtime = (Array.isArray(realtimeResult.data) ? realtimeResult.data : [])
-        .map(row => ({
-          date: realtimeQuoteDate(row, market, now()),
-          close: Number(row.close),
-        }))
-        .find(point => point.date && Number.isFinite(point.close) && point.close > 0);
+        .map(row => {
+          const observedDate = realtimeQuoteDate(row);
+          // rt_hk_k commonly omits the quote date. It may only be bound to a
+          // market session independently verified for the current HK date;
+          // otherwise realtime is rejected and the raw EOD path is tried.
+          const sessionDate = !observedDate && market === 'hk' &&
+            verifiedSessionDate === portfolioMarketDate(now(), market)
+            ? verifiedSessionDate
+            : null;
+          const quoteTimestamp = asiaRealtimeQuoteTimestamp(
+            row,
+            observedDate || sessionDate || verifiedSessionDate,
+          );
+          const quoteAgeMs = Number.isFinite(quoteTimestamp) ? now() - quoteTimestamp : null;
+          return {
+            date: observedDate || sessionDate,
+            close: Number(row.close),
+            session_bound: Boolean(sessionDate),
+            quote_timestamp: quoteTimestamp,
+            quote_age_ms: quoteAgeMs,
+          };
+        })
+        .find(point => point.date && Number.isFinite(point.close) && point.close > 0 &&
+          (!options.requireFreshRealtime || point.quote_age_ms == null ||
+            point.quote_age_ms >= -5 * 60 * 1000 && point.quote_age_ms <= 15 * 60 * 1000));
       if (!realtime) throw new Error('tushare_realtime_quote_unavailable');
       return {
         ...realtime,
@@ -510,6 +685,9 @@ async function tusharePortfolioQuote(adapter, ticker, market, now = Date.now) {
         as_of: realtime.date,
         freshness_class: realtimeResult.freshness_class || 'intraday_snapshot',
         quote_mode: 'realtime',
+        session_verified: realtime.session_bound,
+        price_basis: 'raw_counter',
+        adjusted: false,
         fallback: null,
       };
     } catch (error) {
@@ -538,9 +716,74 @@ async function tusharePortfolioQuote(adapter, ticker, market, now = Date.now) {
     fetched_at: result.fetched_at || result.retrieved_at || new Date(now()).toISOString(),
     as_of: latest.date,
     freshness_class: result.freshness_class || 'eod',
-    quote_mode: realtimeDataset ? 'eod_fallback' : 'eod',
-    fallback: realtimeDataset ? 'latest_eod_snapshot' : null,
-    realtime_failure: realtimeDataset ? realtimeFailure : null,
+    quote_mode: configuredRealtimeDataset ? 'eod_fallback' : 'eod',
+    price_basis: 'raw_close',
+    adjusted: false,
+    fallback: configuredRealtimeDataset ? 'latest_eod_snapshot' : null,
+    realtime_failure: configuredRealtimeDataset
+      ? realtimeFailure || options.realtimeFailure || null
+      : null,
+  };
+}
+
+async function tushareSessionBoundQuote(adapter, ticker, market, session, now = Date.now) {
+  if (!session || !isoDatePattern.test(String(session.date || ''))) {
+    throw new Error('verified_session_unavailable');
+  }
+  const quote = await tusharePortfolioQuote(adapter, ticker, market, now, {
+    verifiedSessionDate: session.date,
+    requireFreshRealtime: session.intraday === true,
+  });
+  if (quote.quote_mode === 'realtime') {
+    if (session.intraday && session.date === session.currentDate &&
+        quote.date === session.currentDate) {
+      return { ...quote, session_verified: true, verified_session_date: session.date };
+    }
+    const eod = await tusharePortfolioQuote(adapter, ticker, market, now, {
+      skipRealtime: true,
+      realtimeFailure: 'realtime_outside_current_verified_session',
+    });
+    return { ...eod, session_verified: true, verified_session_date: session.date };
+  }
+  return { ...quote, session_verified: true, verified_session_date: session.date };
+}
+
+async function usPortfolioQuote(adapter, ticker, session, now = Date.now, options = {}) {
+  if (!session || !isoDatePattern.test(String(session.date || ''))) {
+    throw new Error('us_verified_session_unavailable');
+  }
+  if (session.intraday) {
+    try {
+      const quote = await yahooUsCounterQuote(ticker, now, { fetch: options.fetch });
+      if (quote.date !== session.date || session.date !== session.currentDate) {
+        throw new Error('yahoo_counter_session_mismatch');
+      }
+      return {
+        ...quote,
+        session_verified: true,
+        verified_session_date: session.date,
+      };
+    } catch (cause) {
+      const error = new Error('us_intraday_counter_unavailable');
+      error.code = 'US_INTRADAY_COUNTER_UNAVAILABLE';
+      error.cause = String(cause && (cause.code || cause.message) || 'yahoo_counter_unavailable');
+      throw error;
+    }
+  }
+  // Weekends, holidays, premarket and after-close never reuse Yahoo's stale
+  // last-trade value as realtime. Only the raw EOD row for the verified
+  // session is eligible, otherwise the valuation fails closed.
+  const eod = await tusharePortfolioQuote(adapter, ticker, 'us', now);
+  if (eod.date !== session.date || eod.price_basis !== 'raw_close' || eod.adjusted !== false) {
+    throw new Error('us_eod_session_mismatch');
+  }
+  return {
+    ...eod,
+    quote_mode: 'eod_fallback',
+    fallback: 'latest_eod_snapshot',
+    realtime_failure: 'outside_current_regular_session',
+    session_verified: true,
+    verified_session_date: session.date,
   };
 }
 
@@ -1251,15 +1494,44 @@ const eventKind = event => String(event && (event.event_type || event.type) || '
 function portfolioHistoricalTickers(events) {
   const tickers = new Set();
   for (const event of events || []) {
+    const type = eventKind(event);
     const ticker = String(event.ticker || '').trim().toUpperCase();
-    if (ticker) tickers.add(ticker);
-    const outputs = Array.isArray(event.outputs) ? event.outputs : [];
-    for (const output of outputs) {
-      const value = String(output && (output.ticker || output.symbol) || '').trim().toUpperCase();
-      if (value) tickers.add(value);
+    if (type === 'BUY' && Number(event.quantity ?? event.qty ?? event.shares ?? 0) > 0 && ticker) {
+      tickers.add(ticker);
+    }
+    if (type === 'CORPORATE_ACTION') {
+      if (ticker) tickers.add(ticker);
+      const outputs = Array.isArray(event.outputs) ? event.outputs : [];
+      for (const output of outputs) {
+        const value = String(output && (output.ticker || output.symbol) || '').trim().toUpperCase();
+        if (value) tickers.add(value);
+      }
     }
   }
   return [...tickers].sort();
+}
+
+function portfolioTickerFirstHoldingDates(events) {
+  const dates = new Map();
+  const remember = (ticker, date) => {
+    const normalized = String(ticker || '').trim().toUpperCase();
+    if (!normalized || !isoDatePattern.test(date)) return;
+    if (!dates.has(normalized) || date < dates.get(normalized)) dates.set(normalized, date);
+  };
+  for (const event of events || []) {
+    const type = eventKind(event);
+    const date = eventEffectiveDate(event);
+    if (type === 'BUY' && Number(event.quantity ?? event.qty ?? event.shares ?? 0) > 0) {
+      remember(event.ticker, date);
+    }
+    if (type === 'CORPORATE_ACTION') {
+      remember(event.ticker, date);
+      for (const output of Array.isArray(event.outputs) ? event.outputs : []) {
+        remember(output && (output.ticker || output.symbol), date);
+      }
+    }
+  }
+  return dates;
 }
 
 async function tusharePortfolioHistory(adapter, ticker, market, startDate, endDate, nowFn = Date.now) {
@@ -1282,11 +1554,79 @@ async function tusharePortfolioHistory(adapter, ticker, market, startDate, endDa
         price: Number(row.close),
         close: Number(row.close),
         source: `tushare:${dataset}`,
-        sourceRef: dataset,
+        sourceRef: `${dataset}:close:raw-unadjusted`,
+        valuation: { priceBasis: 'raw_close', adjusted: false },
         fetchedAt: result.fetched_at || result.retrieved_at || new Date(nowFn()).toISOString(),
       }))
       .filter(row => row.date && Number.isFinite(row.price) && row.price > 0)
       .sort((left, right) => left.date.localeCompare(right.date)),
+  };
+}
+
+async function tusharePortfolioCalendarTape(
+  adapter,
+  market,
+  startDate,
+  endDate,
+  nowValue = Date.now(),
+) {
+  const request = {
+    us: { dataset: 'us_tradecal', watermarkDataset: 'us_daily', watermarkTicker: 'SPY' },
+    hk: { dataset: 'hk_tradecal', watermarkDataset: 'index_global', watermarkTicker: 'HSI' },
+    a: {
+      dataset: 'trade_cal', exchange: 'SSE',
+      watermarkDataset: 'index_daily', watermarkTicker: '000300.SH',
+    },
+  }[market];
+  if (!request) throw new Error('portfolio_market_unsupported');
+  const result = await adapter.query(request.dataset, {
+    params: {
+      ...(request.exchange ? { exchange: request.exchange } : {}),
+      start_date: compactIsoDate(startDate),
+      end_date: compactIsoDate(endDate),
+    },
+    fields: 'cal_date,is_open',
+  });
+  const rows = (Array.isArray(result.data) ? result.data : [])
+    .map(row => ({
+      date: isoTradeDate(row.cal_date),
+      isOpen: Number(row.is_open) === 1,
+    }))
+    .filter(row => row.date && row.date >= startDate && row.date <= endDate);
+  const observedDates = new Set(rows.map(row => row.date));
+  for (let date = startDate; date <= endDate; date = addIsoDays(date, 1)) {
+    if (!observedDates.has(date)) {
+      const error = new Error(`portfolio_calendar_tape_incomplete:${date}`);
+      error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
+      throw error;
+    }
+  }
+  const dates = rows.filter(row => row.isOpen).map(row => row.date);
+  const watermarkResult = await adapter.query(request.watermarkDataset, {
+    params: {
+      ts_code: request.watermarkTicker,
+      start_date: compactIsoDate(addIsoDays(startDate, -14)),
+      end_date: compactIsoDate(endDate),
+    },
+    fields: 'ts_code,trade_date,close',
+  });
+  const watermark = (Array.isArray(watermarkResult.data) ? watermarkResult.data : [])
+    .map(row => isoTradeDate(row.trade_date))
+    .filter(date => date && date <= endDate)
+    .sort()
+    .at(-1) || null;
+  const localToday = portfolioMarketDate(nowValue, market);
+  const unavailableCompletedSession = dates.find(date => !watermark || date > watermark) || null;
+  if (unavailableCompletedSession && unavailableCompletedSession <= localToday) {
+    const error = new Error(`portfolio_eod_watermark_incomplete:${unavailableCompletedSession}`);
+    error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
+    throw error;
+  }
+  const completedDates = watermark ? dates.filter(date => date <= watermark) : [];
+  return {
+    dates: [...new Set(completedDates)].sort(),
+    source: `tushare:${request.dataset}+${request.watermarkDataset}`,
+    sourceRef: `${request.dataset}:is_open+${request.watermarkDataset}:${request.watermarkTicker}:eod-watermark`,
   };
 }
 
@@ -1301,14 +1641,13 @@ async function tusharePortfolioCalendar(adapter, market, startDate, endDate) {
     params: {
       ts_code: request.tsCode,
       start_date: compactIsoDate(startDate),
-      end_date: compactIsoDate(addIsoDays(endDate, 5)),
+      end_date: compactIsoDate(endDate),
     },
     fields: 'ts_code,trade_date,close',
   });
-  const dates = (Array.isArray(result.data) ? result.data : [])
+  return [...new Set((Array.isArray(result.data) ? result.data : [])
     .map(row => isoTradeDate(row.trade_date))
-    .filter(date => date && date >= startDate && date <= endDate);
-  return [...new Set(dates)].sort();
+    .filter(date => date && date >= startDate && date <= endDate))].sort();
 }
 
 async function tusharePortfolioCalendarQuote(adapter, market, nowFn = Date.now) {
@@ -1327,15 +1666,6 @@ async function tusharePortfolioCalendarQuote(adapter, market, nowFn = Date.now) 
     quote_mode: 'calendar',
     fallback: null,
   };
-}
-
-function businessDates(startDate, endDate) {
-  const dates = [];
-  for (let date = startDate; date <= endDate; date = addIsoDays(date, 1)) {
-    const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
-    if (weekday !== 0 && weekday !== 6) dates.push(date);
-  }
-  return dates;
 }
 
 function priceAsOf(rows, date) {
@@ -1359,31 +1689,6 @@ function fundCashOnDate(events, date) {
     if (!type.includes('FEE') && !type.includes('管理')) dividend += -cash;
   }
   return { adjustment, dividend };
-}
-
-function compactReplayPrices(events, priceMap, currentProjection, throughDate) {
-  const selected = new Map();
-  const add = row => {
-    if (row) selected.set(`${row.ticker}:${row.date}`, row);
-  };
-  for (const position of currentProjection.positions || []) {
-    if (Number(position.quantity) <= 0.001) continue;
-    add(priceAsOf(priceMap.get(position.ticker) || [], throughDate));
-  }
-  for (const event of events || []) {
-    if (eventKind(event) !== 'CORPORATE_ACTION') continue;
-    const start = eventEffectiveDate(event);
-    const end = addIsoDays(start, 7);
-    const sourceTicker = String(event.ticker || '').toUpperCase();
-    add(priceAsOf(priceMap.get(sourceTicker) || [], addIsoDays(start, -1)));
-    for (const output of Array.isArray(event.outputs) ? event.outputs : []) {
-      const ticker = String(output.ticker || '').toUpperCase();
-      const row = (priceMap.get(ticker) || []).find(item => item.date >= start && item.date <= end);
-      add(row);
-    }
-  }
-  return [...selected.values()].sort((left, right) =>
-    left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker));
 }
 
 function corporateActionReplayPrices(events, priceMap) {
@@ -1413,8 +1718,10 @@ function historicalNavBatchSize(value) {
 }
 
 async function materializedHistoricalReplayTarget(
-  adapter,
+  env,
+  portfolio,
   market,
+  events,
   affectedFrom,
   materializedThrough,
   navRows,
@@ -1424,22 +1731,34 @@ async function materializedHistoricalReplayTarget(
     .filter(row => row && isoDatePattern.test(String(row.date || '').slice(0, 10)))
     .sort((left, right) => String(left.date).localeCompare(String(right.date)));
   if (!rows.length || rows.some(row => Number(row.ledgerRevision) !== ledgerRevision)) return null;
-  let tradingDays;
+  const eventDates = (Array.isArray(events) ? events : [])
+    .map(eventEffectiveDate).filter(date => isoDatePattern.test(date)).sort();
+  if (!eventDates.length) return null;
+  let tape;
   try {
-    tradingDays = await tusharePortfolioCalendar(adapter, market, affectedFrom, materializedThrough);
+    tape = await loadFrozenLedgerPriceTape(env, portfolio, ledgerRevision, {
+      tapeFrom: eventDates[0],
+      tapeThrough: materializedThrough,
+      calendarFrom: eventDates[0],
+      requiredTickers: portfolioHistoricalTickers(events),
+      priceSource: `tushare:${portfolioDataset(market)}`,
+    });
   } catch {
     return null;
   }
+  if (!tape) return null;
+  const tradingDays = tape.calendarDates;
   const targetThrough = tradingDays.at(-1) || null;
   if (!targetThrough || rows.at(-1).date !== targetThrough) return null;
+  const replayDays = tradingDays.filter(date => date >= affectedFrom && date <= targetThrough);
   const rebuiltDates = rows
     .map(row => String(row.date).slice(0, 10))
     .filter(date => date >= affectedFrom && date <= targetThrough);
-  if (rebuiltDates.length !== tradingDays.length ||
-      rebuiltDates.some((date, index) => date !== tradingDays[index])) {
+  if (rebuiltDates.length !== replayDays.length ||
+      rebuiltDates.some((date, index) => date !== replayDays[index])) {
     return null;
   }
-  return targetThrough;
+  return { targetThrough, priceTapeId: tape.priceTapeId };
 }
 
 function materializedReplayRangeCurrent(navRows, affectedFrom, targetThrough, ledgerRevision) {
@@ -1452,31 +1771,26 @@ function materializedReplayRangeCurrent(navRows, affectedFrom, targetThrough, le
       row.recalculationRequired !== true);
 }
 
-async function historicalReplayMissingSession(
-  adapter,
-  market,
+function historicalReplayMissingSession(
+  tradingDays,
   affectedFrom,
   targetThrough,
   navRows,
   ledgerRevision,
 ) {
-  const tradingDays = await tusharePortfolioCalendar(
-    adapter,
-    market,
-    affectedFrom,
-    targetThrough,
-  );
-  if (!tradingDays.length || tradingDays.at(-1) !== targetThrough) {
+  const replayDays = (Array.isArray(tradingDays) ? tradingDays : [])
+    .filter(date => date >= affectedFrom && date <= targetThrough);
+  if (!replayDays.length || replayDays.at(-1) !== targetThrough) {
     throw new Error('historical_nav_coverage_calendar_incomplete');
   }
   const currentRows = new Map((Array.isArray(navRows) ? navRows : []).map(row => [row.date, row]));
-  const missingIndex = tradingDays.findIndex(date => {
+  const missingIndex = replayDays.findIndex(date => {
     const row = currentRows.get(date);
     return !row || Number(row.ledgerRevision) !== ledgerRevision ||
       row.recalculationRequired === true;
   });
   if (missingIndex < 0) return null;
-  const missingDate = tradingDays[missingIndex];
+  const missingDate = replayDays[missingIndex];
   const priorRows = (Array.isArray(navRows) ? navRows : [])
     .filter(row => row && row.date < missingDate)
     .sort((left, right) => left.date.localeCompare(right.date));
@@ -1495,14 +1809,33 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
   const adapter = options.adapter || createTushareAdapter(env, options);
   const ledgerRevision = Number(options.ledgerRevision ?? led.ledgerRevision);
   const phase = String(options.phase || 'replay').toLowerCase();
+  const prepareTapeOnly = options.prepareTapeOnly === true;
   if (!['replay', 'materialize', 'publish'].includes(phase)) {
     throw new Error('historical_nav_replay_phase_invalid');
+  }
+  if (prepareTapeOnly && phase !== 'replay') {
+    throw new Error('historical_nav_price_tape_prepare_phase_invalid');
   }
   const events = Array.isArray(led.confirmedEvents) ? led.confirmedEvents : [];
   if (!events.length || !Number.isInteger(ledgerRevision) || ledgerRevision < 0) {
     throw new Error('historical_nav_replay_inputs_missing');
   }
   const eventDates = events.map(eventEffectiveDate).filter(date => isoDatePattern.test(date)).sort();
+  const historyStart = eventDates[0];
+  const tickers = portfolioHistoricalTickers(events);
+  const priceSource = `tushare:${portfolioDataset(market)}`;
+  const priorFrozenTape = ledgerRevision > 0
+    ? await loadPriorFrozenLedgerPriceTape(env, pf, ledgerRevision)
+    : null;
+  // A brand-new ledger whose first event is after the prior revision's EOD
+  // still needs a valid child tape before today's counter row can be written.
+  // In that no-overlap case retain the parent's tape/calendar start; replay
+  // itself remains bounded by affectedFrom, so no pre-event NAV is invented.
+  const noEventOverlapWithParent = priorFrozenTape && historyStart > priorFrozenTape.tapeThrough;
+  const priceTapeFrom = noEventOverlapWithParent ? priorFrozenTape.tapeFrom : historyStart;
+  const priceCalendarFrom = noEventOverlapWithParent
+    ? priorFrozenTape.calendarFrom
+    : historyStart;
   const affectedFrom = String(options.affectedFrom || eventDates[0] || '').slice(0, 10);
   if (!isoDatePattern.test(affectedFrom)) throw new Error('historical_nav_replay_start_invalid');
   const cursor = String(options.cursor || '').slice(0, 10);
@@ -1520,7 +1853,8 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     throw new Error('historical_nav_replay_target_invalid');
   }
   const endTarget = frozenTarget || calculatedEndTarget;
-  if (!isoDatePattern.test(endTarget) || (phase === 'replay' && requestedFrom > endTarget)) {
+  if (!isoDatePattern.test(endTarget) ||
+      (phase === 'replay' && !prepareTapeOnly && requestedFrom > endTarget)) {
     throw new Error('historical_nav_replay_range_invalid');
   }
   if (phase !== 'replay' && !frozenTarget) {
@@ -1536,16 +1870,31 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       phaseLastNavDate >= cursor || !Number.isFinite(phaseLastUnitNav))) {
     throw new Error('historical_nav_replay_checkpoint_invalid');
   }
+  const requireFrozenTape = async targetThrough => {
+    const tape = await loadFrozenLedgerPriceTape(env, pf, ledgerRevision, {
+      tapeFrom: priceTapeFrom,
+      tapeThrough: targetThrough,
+      calendarFrom: priceCalendarFrom,
+      requiredTickers: tickers,
+      priceSource,
+    });
+    if (!tape) {
+      const error = new Error('historical_nav_price_tape_unavailable');
+      error.code = 'HISTORICAL_NAV_PRICE_TAPE_UNAVAILABLE';
+      throw error;
+    }
+    return tape;
+  };
   if (phase === 'materialize') {
+    const tape = await requireFrozenTape(endTarget);
     const freshLedger = await materializeLedgerKv(env, pf, {
       expectedLedgerRevision: ledgerRevision,
     });
     const freshNavRows = Array.isArray(freshLedger.navRows) ? freshLedger.navRows : [];
     const freshLast = freshNavRows.length ? freshNavRows.at(-1) : null;
     const freshTarget = freshNavRows.find(row => row.date === endTarget);
-    const missingSession = await historicalReplayMissingSession(
-      adapter,
-      market,
+    const missingSession = historicalReplayMissingSession(
+      tape.calendarDates,
       affectedFrom,
       endTarget,
       freshNavRows,
@@ -1573,6 +1922,8 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
         lastUnitNav: missingSession.lastUnitNav,
         navRows: 0,
         priceRows: 0,
+        priceTapeId: tape.priceTapeId,
+        priceTapeRows: tape.priceRows.length,
         unavailable: [],
         calendarFallback: false,
         fallback: false,
@@ -1584,7 +1935,8 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       affectedFrom,
       endTarget,
       ledgerRevision,
-    )) {
+    ) || freshLast.date !== endTarget ||
+        freshNavRows.some(row => row.recalculationRequired === true)) {
       throw new Error('historical_nav_materialization_incomplete');
     }
     return {
@@ -1608,12 +1960,15 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       lastUnitNav: Number(freshTarget.unitNav ?? freshTarget.nav),
       navRows: 0,
       priceRows: 0,
+      priceTapeId: tape.priceTapeId,
+      priceTapeRows: tape.priceRows.length,
       unavailable: [],
       calendarFallback: false,
       fallback: false,
     };
   }
   if (phase === 'publish') {
+    const tape = await requireFrozenTape(endTarget);
     const materializedRows = Array.isArray(led.navRows) ? led.navRows : [];
     const materializedLast = materializedRows.length ? materializedRows.at(-1) : null;
     if (Number(led.ledgerRevision) !== ledgerRevision) {
@@ -1621,13 +1976,24 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       error.code = 'LEDGER_REVISION_CHANGED';
       throw error;
     }
-    if (!materializedLast || !materializedReplayRangeCurrent(
+    if (!materializedLast || materializedLast.date !== endTarget ||
+        materializedRows.some(row => row.recalculationRequired === true) ||
+        !materializedReplayRangeCurrent(
       materializedRows,
       affectedFrom,
       endTarget,
       ledgerRevision,
     )) {
       throw new Error('historical_nav_publish_materialization_missing');
+    }
+    if (historicalReplayMissingSession(
+      tape.calendarDates,
+      affectedFrom,
+      endTarget,
+      materializedRows,
+      ledgerRevision,
+    )) {
+      throw new Error('historical_nav_publish_calendar_coverage_missing');
     }
     const publishedThrough = materializedLast.date;
     const live = {
@@ -1638,10 +2004,13 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       ledgerRevision,
       sourceMeta: {
         source: 'tushare',
-        source_endpoint: 'historical-nav-replay',
+        source_endpoint: 'historical-nav-replay:raw-close',
         as_of: publishedThrough,
         fetched_at: new Date(nowFn()).toISOString(),
         freshness_class: 'eod',
+        price_basis: 'raw_close',
+        adjusted: false,
+        price_tape_id: tape.priceTapeId,
       },
     };
     const status = {
@@ -1665,6 +2034,8 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       lastUnitNav: Number(materializedLast.unitNav ?? materializedLast.nav),
       navRows: materializedRows.length,
       priceRows: 0,
+      priceTapeId: tape.priceTapeId,
+      priceTapeRows: tape.priceRows.length,
       unavailable: [],
       calendarFallback: false,
       fallback: false,
@@ -1692,38 +2063,330 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     }
     return status;
   }
-  const historyStart = eventDates[0];
-  const tickers = portfolioHistoricalTickers(events);
-  const fetched = await Promise.all(tickers.map(async ticker => {
-    try {
-      return await tusharePortfolioHistory(adapter, ticker, market, historyStart, endTarget, nowFn);
-    } catch (error) {
-      return { ticker, rows: [], error: String(error && (error.code || error.message) || 'unavailable') };
-    }
-  }));
-  const unavailableHistory = fetched.filter(item => item.error).map(item => item.ticker);
-  if (unavailableHistory.length) {
-    const error = new Error(`historical_nav_price_history_unavailable:${unavailableHistory.join(',')}`);
-    error.code = 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE';
+  let tape = await loadFrozenLedgerPriceTape(env, pf, ledgerRevision, {
+    tapeFrom: priceTapeFrom,
+    ...(frozenTarget ? { tapeThrough: frozenTarget } : {}),
+    calendarFrom: priceCalendarFrom,
+    requiredTickers: tickers,
+    priceSource,
+  });
+  if (tape && tape.tapeThrough > endTarget) {
+    const error = new Error('historical_nav_price_tape_target_invalid');
+    error.code = 'HISTORICAL_NAV_PRICE_TAPE_INVALID';
     throw error;
   }
-  const priceMap = new Map(fetched.map(item => [item.ticker, item.rows]));
-  let tradingDays;
-  let calendarFallback = false;
-  const calendarFrom = cursor ? phaseLastNavDate : requestedFrom;
-  try {
-    tradingDays = await tusharePortfolioCalendar(adapter, market, calendarFrom, endTarget);
-    if (!tradingDays.length) throw new Error('calendar_empty');
-  } catch (error) {
-    if (cursor) throw new Error('historical_nav_resume_calendar_unavailable');
-    calendarFallback = true;
-    tradingDays = businessDates(calendarFrom, endTarget);
+  if (tape && !cursor && !frozenTarget && tape.tapeThrough < endTarget) {
+    let calendarExtension;
+    const extensionFrom = addIsoDays(tape.tapeThrough, 1);
+    try {
+      calendarExtension = await tusharePortfolioCalendarTape(
+        adapter,
+        market,
+        extensionFrom,
+        endTarget,
+        nowFn(),
+      );
+    } catch (cause) {
+      const error = new Error('historical_nav_calendar_extension_unavailable');
+      error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
+      error.cause = cause;
+      throw error;
+    }
+    if (calendarExtension.dates.length) {
+      const extensionThrough = calendarExtension.dates.at(-1);
+      const fetchedExtension = await Promise.all(tickers.map(async ticker => {
+        try {
+          const result = await tusharePortfolioHistory(
+            adapter,
+            ticker,
+            market,
+            addIsoDays(tape.tapeThrough, 1),
+            extensionThrough,
+            nowFn,
+          );
+          // A sold/delisted or temporarily suspended ticker can legitimately
+          // have no new counter print. Its previously frozen raw close remains
+          // available to priceAsOf; active holdings still fail below if no
+          // as-of price exists in the combined tape.
+          return result;
+        } catch (error) {
+          return {
+            ticker,
+            rows: [],
+            error: String(error && (error.code || error.message) || 'unavailable'),
+          };
+        }
+      }));
+      const unavailableExtension = fetchedExtension
+        .filter(item => item.error).map(item => item.ticker);
+      if (unavailableExtension.length) {
+        const error = new Error(
+          `historical_nav_price_history_extension_unavailable:${unavailableExtension.join(',')}`,
+        );
+        error.code = 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE';
+        throw error;
+      }
+      tape = await extendLedgerPriceTape(env, pf, {
+        priceTapeId: tape.priceTapeId,
+        expectedPriceTapeHash: tape.priceTapeHash,
+        requiredTickers: tickers,
+        priceSource,
+        calendarDates: calendarExtension.dates,
+        calendarSource: calendarExtension.source,
+        calendarSourceRef: calendarExtension.sourceRef,
+        priceRows: fetchedExtension.flatMap(item => item.rows),
+      }, ledgerRevision);
+    }
   }
-  const observedThrough = tradingDays.at(-1);
-  if (!observedThrough || frozenTarget && observedThrough !== frozenTarget) {
-    throw new Error('historical_nav_trading_days_incomplete');
+  if (!tape && !cursor && (!frozenTarget || prepareTapeOnly)) {
+    const priorTape = priorFrozenTape;
+    // Every later revision inherits the immediately preceding frozen tape.
+    // The overlap may be empty when the new ledger begins later, but the
+    // parent lineage is still mandatory so a revision can never silently
+    // switch historical price truth.
+    const parentTape = priorTape;
+    if (parentTape) {
+      const tickerFirstDates = portfolioTickerFirstHoldingDates(events);
+      const commonTickers = new Set(
+        tickers.filter(ticker => parentTape.requiredTickers.includes(ticker)),
+      );
+      const newTickers = tickers.filter(ticker => !commonTickers.has(ticker));
+      if (endTarget < parentTape.tapeThrough) {
+        const error = new Error('historical_nav_parent_tape_newer_than_target');
+        error.code = 'HISTORICAL_NAV_PRICE_TAPE_PARENT_REQUIRED';
+        throw error;
+      }
+      const inheritedThrough = parentTape.tapeThrough;
+      const calendarDates = parentTape.calendarDates
+        .filter(date => date >= priceCalendarFrom && date <= inheritedThrough);
+      const inheritedRows = parentTape.priceRows
+        .filter(row => commonTickers.has(row.ticker) && row.date >= priceTapeFrom &&
+          row.date <= inheritedThrough);
+      const calendarSegments = [];
+      if (priceCalendarFrom < parentTape.calendarFrom) {
+        calendarSegments.push({
+          from: priceCalendarFrom,
+          through: addIsoDays(parentTape.calendarFrom, -1),
+          kind: 'prefix',
+        });
+      }
+      if (endTarget > parentTape.tapeThrough) {
+        const futureFrom = historyStart > addIsoDays(parentTape.tapeThrough, 1)
+          ? historyStart
+          : addIsoDays(parentTape.tapeThrough, 1);
+        calendarSegments.push({
+          from: futureFrom,
+          through: endTarget,
+          kind: 'future',
+        });
+      }
+      const segmentTapes = [];
+      for (const segment of calendarSegments) {
+        try {
+          const segmentTape = await tusharePortfolioCalendarTape(
+            adapter,
+            market,
+            segment.from,
+            segment.through,
+            nowFn(),
+          );
+          if (segmentTape.source !== parentTape.calendarSource ||
+              segmentTape.sourceRef !== parentTape.calendarSourceRef) {
+            const error = new Error('historical_nav_parent_calendar_source_changed');
+            error.code = 'HISTORICAL_NAV_PRICE_TAPE_IMMUTABLE_CONFLICT';
+            throw error;
+          }
+          segmentTapes.push({ ...segment, tape: segmentTape });
+          calendarDates.push(...segmentTape.dates);
+        } catch (cause) {
+          const error = new Error(`historical_nav_inherited_calendar_${segment.kind}_unavailable`);
+          error.code = cause && cause.code || 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
+          error.cause = cause;
+          throw error;
+        }
+      }
+      const combinedCalendarDates = [...new Set(calendarDates)].sort();
+      const targetThrough = combinedCalendarDates.at(-1);
+      if (!targetThrough) {
+        const error = new Error('historical_nav_inherited_calendar_empty');
+        error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
+        throw error;
+      }
+
+      const fetchPlans = [];
+      for (const ticker of newTickers) {
+        const firstHoldingDate = tickerFirstDates.get(ticker) || historyStart;
+        if (firstHoldingDate > targetThrough) continue;
+        fetchPlans.push({
+          ticker,
+          from: firstHoldingDate,
+          through: targetThrough,
+          requireRows: true,
+        });
+      }
+      for (const ticker of commonTickers) {
+        for (const segment of segmentTapes) {
+          const segmentThrough = segment.tape.dates.at(-1);
+          if (!segmentThrough) continue;
+          fetchPlans.push({
+            ticker,
+            from: segment.from,
+            through: segmentThrough,
+            requireRows: false,
+          });
+        }
+      }
+      const fetchedSegments = await Promise.all(fetchPlans.map(async plan => {
+        try {
+          const result = await tusharePortfolioHistory(
+            adapter,
+            plan.ticker,
+            market,
+            plan.from,
+            plan.through,
+            nowFn,
+          );
+          return { ...plan, rows: result.rows, error: plan.requireRows && !result.rows.length };
+        } catch (error) {
+          return {
+            ...plan,
+            rows: [],
+            error: String(error && (error.code || error.message) || 'unavailable'),
+          };
+        }
+      }));
+      const unavailable = fetchedSegments.filter(item => item.error).map(item => item.ticker);
+      if (unavailable.length) {
+        const error = new Error(
+          `historical_nav_inherited_price_history_unavailable:${[...new Set(unavailable)].sort().join(',')}`,
+        );
+        error.code = 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE';
+        throw error;
+      }
+      const combinedRowsByKey = new Map();
+      for (const row of [...inheritedRows, ...fetchedSegments.flatMap(item => item.rows)]) {
+        if (row.date > targetThrough || !tickers.includes(row.ticker)) continue;
+        combinedRowsByKey.set(`${row.ticker}:${row.date}`, row);
+      }
+      tape = await freezeLedgerPriceTape(env, pf, {
+        tapeFrom: priceTapeFrom,
+        tapeThrough: targetThrough,
+        calendarFrom: priceCalendarFrom,
+        calendarDates: combinedCalendarDates.filter(date => date <= targetThrough),
+        calendarSource: parentTape.calendarSource,
+        calendarSourceRef: parentTape.calendarSourceRef,
+        parentPriceTapeId: parentTape.priceTapeId,
+        inheritedThrough,
+        requiredTickers: tickers,
+        priceSource,
+        priceBasis: 'raw_close',
+        adjusted: false,
+        priceRows: [...combinedRowsByKey.values()],
+      }, ledgerRevision);
+    }
   }
-  const targetThrough = frozenTarget || observedThrough;
+  if (!tape && (cursor || frozenTarget) && !prepareTapeOnly) {
+    const error = new Error('historical_nav_frozen_price_tape_missing');
+    error.code = 'HISTORICAL_NAV_PRICE_TAPE_UNAVAILABLE';
+    throw error;
+  }
+  if (!tape) {
+    let calendarTape;
+    try {
+      calendarTape = await tusharePortfolioCalendarTape(
+        adapter,
+        market,
+        priceCalendarFrom,
+        endTarget,
+        nowFn(),
+      );
+    } catch (cause) {
+      const error = new Error('historical_nav_calendar_unavailable');
+      error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
+      error.cause = cause;
+      throw error;
+    }
+    const targetThrough = calendarTape.dates.at(-1);
+    if (!targetThrough) {
+      const error = new Error('historical_nav_calendar_empty');
+      error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
+      throw error;
+    }
+    const tickerFirstDates = portfolioTickerFirstHoldingDates(events);
+    const fetched = await Promise.all(tickers.map(async ticker => {
+      const firstHoldingDate = tickerFirstDates.get(ticker) || historyStart;
+      if (firstHoldingDate > targetThrough) {
+        return { ticker, rows: [], futureHolding: true };
+      }
+      try {
+        const result = await tusharePortfolioHistory(
+          adapter,
+          ticker,
+          market,
+          firstHoldingDate,
+          targetThrough,
+          nowFn,
+        );
+        return result.rows.length
+          ? result
+          : { ...result, error: 'empty_raw_close_rows' };
+      } catch (error) {
+        return {
+          ticker,
+          rows: [],
+          error: String(error && (error.code || error.message) || 'unavailable'),
+        };
+      }
+    }));
+    const unavailableHistory = fetched.filter(item => item.error).map(item => item.ticker);
+    if (unavailableHistory.length) {
+      const error = new Error(`historical_nav_price_history_unavailable:${unavailableHistory.join(',')}`);
+      error.code = 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE';
+      throw error;
+    }
+    tape = await freezeLedgerPriceTape(env, pf, {
+      tapeFrom: priceTapeFrom,
+      tapeThrough: targetThrough,
+      calendarFrom: priceCalendarFrom,
+      calendarDates: calendarTape.dates,
+      calendarSource: calendarTape.source,
+      calendarSourceRef: calendarTape.sourceRef,
+      requiredTickers: tickers,
+      priceSource,
+      priceBasis: 'raw_close',
+      adjusted: false,
+      priceRows: fetched.flatMap(item => item.rows),
+    }, ledgerRevision);
+  }
+  const targetThrough = tape.tapeThrough;
+  if (prepareTapeOnly) {
+    return {
+      pf,
+      ranAt: new Date(nowFn()).toISOString(),
+      source: 'tushare',
+      freshness_class: 'eod',
+      historicalReplay: true,
+      complete: true,
+      phase: 'prepare-tape',
+      nextPhase: null,
+      ledgerRevision,
+      rebuiltFrom: affectedFrom,
+      appended: null,
+      as_of: targetThrough,
+      targetThrough,
+      priceTapeId: tape.priceTapeId,
+      priceTapeRows: tape.priceRows.length,
+      preparedTapeOnly: true,
+      adjusted: false,
+      priceBasis: 'raw_close',
+      fallback: false,
+    };
+  }
+  const tradingDays = tape.calendarDates.filter(date => date >= affectedFrom);
+  const priceMap = new Map(tickers.map(ticker => [
+    ticker,
+    tape.priceRows.filter(row => row.ticker === ticker),
+  ]));
   const remainingTradingDays = cursor
     ? tradingDays.filter(date => date > phaseLastNavDate)
     : tradingDays;
@@ -1749,7 +2412,6 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     eventEffectiveDate(left).localeCompare(eventEffectiveDate(right)));
   const cutoffEvents = [];
   let eventIndex = 0;
-  let latestProjection = null;
   for (const date of batchDays) {
     while (eventIndex < orderedEvents.length && eventEffectiveDate(orderedEvents[eventIndex]) <= date) {
       cutoffEvents.push(orderedEvents[eventIndex]);
@@ -1762,16 +2424,21 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       corporate_action_prices: replayPrices,
       as_of_date: date,
     });
-    latestProjection = projection;
     let marketValue = 0;
     const missing = [];
     for (const position of projection.positions || []) {
       const quantity = Number(position.quantity || 0);
-      if (!(quantity > 0.001)) continue;
+      if (!(quantity > 1e-12)) continue;
       const quote = priceAsOf(priceMap.get(position.ticker) || [], date);
-      const price = quote ? quote.price : Number(position.fallback_price || 0);
       if (!quote) missing.push(position.ticker);
-      marketValue += quantity * price;
+      else marketValue += quantity * quote.price;
+    }
+    if (missing.length) {
+      const error = new Error(
+        `historical_nav_price_tape_gap:${date}:${[...new Set(missing)].sort().join(',')}`,
+      );
+      error.code = 'HISTORICAL_NAV_PRICE_TAPE_GAP';
+      throw error;
     }
     const cash = Number(projection.cash && projection.cash.amount || 0);
     const liability = Number(projection.liability && projection.liability.amount || 0);
@@ -1785,8 +2452,6 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       ? (unitNav + divPerUnit) / previousUnitNav - 1
       : null;
     const warnings = [];
-    if (missing.length) warnings.push({ code: 'BOOK_VALUE_FALLBACK', tickers: missing });
-    if (calendarFallback) warnings.push({ code: 'BUSINESS_DAY_CALENDAR_FALLBACK' });
     if (Number.isFinite(dailyReturn) && Math.abs(dailyReturn) > 0.10) {
       warnings.push({ code: 'NAV_CHANGE_WARNING', return: dailyReturn });
     }
@@ -1802,23 +2467,26 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       units,
       unit_nav: unitNav,
       fund_action_adjustment: fund.adjustment,
-      sourceRef: 'python-parity-historical-replay',
+      sourceRef: 'python-parity-historical-replay:raw-close',
       valuation: {
         source: 'tushare',
         calendar: market === 'us' ? 'SPY' : market === 'hk' ? 'HSI' : '000300.SH',
-        calendarFallback,
+        calendarFallback: false,
+        priceBasis: 'raw_close',
+        adjusted: false,
+        priceTapeId: tape.priceTapeId,
         as_of: date,
       },
       warnings,
     });
     previousUnitNav = unitNav;
   }
-  const compactPrices = compactReplayPrices(events, priceMap, latestProjection, batchThrough);
   await persistLedgerValuationBatch(env, pf, {
     replaceFrom: batchFrom,
     replaceThrough: batchThrough,
+    pruneAfter: complete,
     navRows,
-    priceRows: compactPrices,
+    priceRows: [],
   }, ledgerRevision);
   const baseStatus = {
     pf,
@@ -1840,9 +2508,11 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     lastNavDate: batchThrough,
     lastUnitNav: previousUnitNav,
     navRows: navRows.length,
-    priceRows: compactPrices.length,
-    unavailable: fetched.filter(item => item.error).map(item => item.ticker),
-    calendarFallback,
+    priceRows: 0,
+    priceTapeId: tape.priceTapeId,
+    priceTapeRows: tape.priceRows.length,
+    unavailable: [],
+    calendarFallback: false,
     fallback: false,
   };
   return baseStatus;
@@ -1901,8 +2571,26 @@ async function updatePortfolioNav(env, pf, options = {}) {
     source: 'tushare',
     freshness_class: 'eod',
   };
+  const affectedFrom = String(options.affectedFrom || '').slice(0, 10);
+  const continuationRequested = Boolean(options.phase) || isoDatePattern.test(affectedFrom);
   const ledRaw = await env.YC_KV.get('ledger:' + pf);
-  if (!ledRaw) {
+  const cachedLedger = ledRaw ? JSON.parse(ledRaw) : null;
+  let led = cachedLedger;
+  if (continuationRequested && (env.LEDGER_DB || env.FEEDBACK_DB)) {
+    // Confirm necessarily advances D1 before KV. A continuation must therefore
+    // derive from current-revision D1 facts; the previous KV may contribute
+    // presentation-only metadata but never events, cash, positions or units.
+    const replayInput = await loadLedgerReplayInput(env, pf, options.ledgerRevision);
+    led = cachedLedger && portfolioCacheMatchesRevision(cachedLedger, replayInput.ledgerRevision)
+      ? {
+        ...cachedLedger,
+        ...replayInput,
+        sourceMetrics: cachedLedger.sourceMetrics || {},
+        snap: cachedLedger.snap || null,
+      }
+      : replayInput;
+  }
+  if (!led) {
     st.skip = 'no-ledger';
     await Promise.all([
       env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)),
@@ -1924,9 +2612,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
     ]);
     return st;
   }
-  const led = JSON.parse(ledRaw), market = led.market || pf;
-  const affectedFrom = String(options.affectedFrom || '').slice(0, 10);
-  const continuationRequested = Boolean(options.phase) || isoDatePattern.test(affectedFrom);
+  const market = led.market || pf;
   if (!continuationRequested && (env.LEDGER_DB || env.FEEDBACK_DB)) {
     let derivation;
     try {
@@ -1958,10 +2644,14 @@ async function updatePortfolioNav(env, pf, options = {}) {
       });
     }
   }
-  const liveRaw = await env.YC_KV.get('live:' + pf), live = liveRaw ? JSON.parse(liveRaw) : { rows: [] };
+  const liveRaw = await env.YC_KV.get('live:' + pf);
+  let live = liveRaw ? JSON.parse(liveRaw) : { rows: [] };
   const lastPxRaw = await env.YC_KV.get('lastpx:' + pf), lastPx = lastPxRaw ? JSON.parse(lastPxRaw) : {};
   const adapter = options.adapter || createTushareAdapter(env, options);
   const ledgerRevision = Number(options.ledgerRevision ?? led.ledgerRevision);
+  if (live && live.ledgerRevision != null && Number(live.ledgerRevision) !== ledgerRevision) {
+    live = { rows: [], holdings: [], ledgerRevision };
+  }
   st.ledgerRevision = ledgerRevision;
   const dirtyNavDates = Array.isArray(led.navRecalculationRequired)
     ? led.navRecalculationRequired
@@ -1989,8 +2679,10 @@ async function updatePortfolioNav(env, pf, options = {}) {
       dirtyNavDates.length === 0 && recentCorporateActionDates.length === 0 &&
       Number(led.ledgerRevision) === ledgerRevision && materializedLast
       ? await materializedHistoricalReplayTarget(
-        adapter,
+        env,
+        pf,
         market,
+        led.confirmedEvents,
         replayFrom,
         materializedLast.date,
         materializedRows,
@@ -2005,24 +2697,131 @@ async function updatePortfolioNav(env, pf, options = {}) {
       dirtyNavDates,
       ...(recoverPublishedTarget ? {
         phase: 'publish',
-        targetThrough: recoverPublishedTarget,
+        targetThrough: recoverPublishedTarget.targetThrough,
         lastNavDate: materializedLast.date,
         previousUnitNav: Number(materializedLast.unitNav ?? materializedLast.nav),
       } : {}),
     });
   }
-  const fetched = await Promise.all(led.positions.map(async p => ({
+
+  if (continuationRequested && ledgerRevision > 0 &&
+      (env.LEDGER_DB || env.FEEDBACK_DB)) {
+    let currentTape = await loadFrozenLedgerPriceTape(env, pf, ledgerRevision);
+    if (!currentTape) {
+      const priorTape = await loadPriorFrozenLedgerPriceTape(env, pf, ledgerRevision);
+      if (!priorTape) {
+        return writePortfolioAttempt(env, pf, {
+          ...st,
+          skip: 'current-revision-parent-tape-unavailable',
+          reason: 'historical_raw_close_rebuild_required_before_realtime',
+          fallback: true,
+        });
+      }
+      await rebuildPortfolioNavHistory(env, pf, led, {
+        ...options,
+        phase: 'replay',
+        cursor: null,
+        targetThrough: priorTape.tapeThrough,
+        affectedFrom: isoDatePattern.test(affectedFrom) ? affectedFrom : led.sourceDate,
+        prepareTapeOnly: true,
+        adapter,
+        ledgerRevision,
+      });
+      currentTape = await loadFrozenLedgerPriceTape(env, pf, ledgerRevision);
+      if (!currentTape) {
+        throw new Error('current_revision_raw_tape_bootstrap_incomplete');
+      }
+    }
+  }
+  const activePositions = (Array.isArray(led.positions) ? led.positions : [])
+    .filter(position => position && position.t && Number(position.q) > 1e-12);
+  // Every live holding quote is bound to an independent official market
+  // calendar. Missing session truth fails the whole refresh.
+  const verifiedSession = await tusharePortfolioVerifiedSession(adapter, market, nowFn)
+    .catch(() => null);
+  if (!verifiedSession) {
+    return writePortfolioAttempt(env, pf, {
+      ...st,
+      skip: 'valuation-session-unavailable',
+      reason: 'latest_tushare_request_failed',
+      failure_code: 'verified_market_session_unavailable',
+      unavailable: activePositions.map(position => position.t),
+      fallback: true,
+    });
+  }
+  const fetched = await Promise.all(activePositions.map(async p => ({
     p,
-    q: await tusharePortfolioQuote(adapter, p.t, market, nowFn).catch(() => null),
+    q: await (market === 'us'
+      ? usPortfolioQuote(adapter, p.t, verifiedSession, nowFn, { fetch: options.fetch })
+      : tushareSessionBoundQuote(adapter, p.t, market, verifiedSession, nowFn))
+      .catch(() => null),
   })));
-  const calendarQuote = await tusharePortfolioCalendarQuote(adapter, market, nowFn).catch(() => null);
-  const valuationQuotes = [
-    ...fetched.map(item => item.q).filter(Boolean),
-    ...(calendarQuote ? [calendarQuote] : []),
-  ];
   const unavailable = fetched.filter(item => !item.q).map(item => item.p.t);
-  const freshDates = valuationQuotes.filter(quote => quote.date).map(quote => quote.date).sort();
-  if (!freshDates.length) {
+  // A live valuation is all-or-nothing. Each active holding must have a quote
+  // obtained by this refresh (realtime, or tusharePortfolioQuote's matching
+  // raw EOD fallback). Never value a missing holding from D1/KV lastPx or the
+  // ledger's reference/book price.
+  if (unavailable.length) {
+    return writePortfolioAttempt(env, pf, {
+      ...st,
+      skip: 'valuation-price-unavailable',
+      reason: 'latest_tushare_request_failed',
+      failure_code: 'active_holding_quote_unavailable',
+      unavailable,
+      fallback: true,
+    });
+  }
+  const calendarQuote = fetched.length ? null : {
+    date: verifiedSession.date,
+    close: 1,
+    source: verifiedSession.source,
+    source_endpoint: verifiedSession.source_endpoint,
+    fetched_at: verifiedSession.fetched_at || now.toISOString(),
+    freshness_class: verifiedSession.intraday ? 'intraday_snapshot' : 'eod',
+    quote_mode: 'verified_session_cash_only',
+    price_basis: 'cash_only',
+    adjusted: false,
+    session_verified: true,
+    verified_session_date: verifiedSession.date,
+    fallback: null,
+  };
+  const holdingQuoteDates = fetched.map(item => String(item.q && item.q.date || '').slice(0, 10));
+  const distinctHoldingDates = [...new Set(holdingQuoteDates)].sort();
+  if (fetched.length && (distinctHoldingDates.length !== 1 ||
+      !isoDatePattern.test(distinctHoldingDates[0]))) {
+    return writePortfolioAttempt(env, pf, {
+      ...st,
+      skip: 'valuation-date-mismatch',
+      reason: 'active_holding_quote_dates_mixed',
+      failure_code: 'active_holding_quote_dates_mixed',
+      quote_dates: fetched.map((item, index) => ({
+        ticker: item.p.t,
+        date: holdingQuoteDates[index] || null,
+      })),
+      fallback: true,
+    });
+  }
+  if (fetched.length && verifiedSession && distinctHoldingDates[0] !== verifiedSession.date) {
+    return writePortfolioAttempt(env, pf, {
+      ...st,
+      skip: 'valuation-session-mismatch',
+      reason: 'active_holding_quote_session_mismatch',
+      failure_code: 'active_holding_quote_session_mismatch',
+      verified_session_date: verifiedSession.date,
+      quote_dates: fetched.map((item, index) => ({
+        ticker: item.p.t,
+        date: holdingQuoteDates[index] || null,
+      })),
+      fallback: true,
+    });
+  }
+  const valuationQuotes = fetched.length
+    ? fetched.map(item => item.q)
+    : calendarQuote ? [calendarQuote] : [];
+  const marketDate = fetched.length
+    ? distinctHoldingDates[0]
+    : calendarQuote && calendarQuote.date;
+  if (!marketDate || !isoDatePattern.test(marketDate)) {
     return writePortfolioAttempt(env, pf, {
       ...st,
       skip: 'latest-source-unavailable',
@@ -2030,17 +2829,46 @@ async function updatePortfolioNav(env, pf, options = {}) {
       fallback: true,
     });
   }
-  const marketDate = freshDates[freshDates.length - 1];
+  if (isoDatePattern.test(affectedFrom) && marketDate < affectedFrom) {
+    return writePortfolioAttempt(env, pf, {
+      ...st,
+      skip: 'valuation-session-precedes-confirmed-event',
+      reason: 'verified_market_session_has_not_reached_event_date',
+      eventDate: affectedFrom,
+      marketDate,
+      fallback: true,
+    });
+  }
   const pricingFreshness = valuationQuotes.every(quote =>
     quote.freshness_class === 'intraday_snapshot')
     ? 'intraday_snapshot'
     : 'eod';
   const pricingFallback = valuationQuotes.some(quote =>
     quote.fallback === 'latest_eod_snapshot');
+  const valuationSource = [...new Set(valuationQuotes.map(quote => quote.source).filter(Boolean))]
+    .join(',') || 'portfolio-ledger';
+  const priceBases = [...new Set(fetched.map(item => item.q.price_basis).filter(Boolean))];
+  const valuationPriceBasis = fetched.length
+    ? priceBases.length === 1 ? priceBases[0] : 'mixed_raw_counter_raw_close'
+    : 'cash_only';
+  const quoteAudit = fetched.map(item => ({
+    ticker: item.p.t,
+    date: item.q.date,
+    source: item.q.source,
+    sourceEndpoint: item.q.source_endpoint,
+    quoteMode: item.q.quote_mode,
+    priceBasis: item.q.price_basis,
+    adjusted: false,
+    sessionVerified: item.q.session_verified === true,
+  }));
   Object.assign(st, {
+    source: valuationSource,
     freshness_class: pricingFreshness,
     source_endpoint: [...new Set(valuationQuotes.map(quote => quote.source_endpoint))].join(','),
     pricing_fallback: pricingFallback ? 'latest_eod_snapshot' : null,
+    priceBasis: valuationPriceBasis,
+    adjusted: false,
+    quoteDate: marketDate,
   });
   const lastDate = live.rows.length ? live.rows[live.rows.length - 1].date : led.lastDate;
   if (lastDate && marketDate < lastDate) {
@@ -2050,7 +2878,26 @@ async function updatePortfolioNav(env, pf, options = {}) {
     st.reason = 'latest_realtime_unavailable_eod_not_newer';
     return writePortfolioAttempt(env, pf, st);
   }
-  const recalculateMarketDate = marketDate === lastDate && affectedFrom === marketDate;
+  // Counter prices overwrite the current session on every realtime refresh.
+  // Once every holding has the same official raw EOD date, that close is also
+  // allowed to replace the earlier intraday row for that same date.
+  const sameDayRealtimeRefresh = marketDate === lastDate && marketDate === marketToday &&
+    verifiedSession && verifiedSession.intraday && verifiedSession.date === marketToday &&
+    fetched.some(item => item.q && item.q.quote_mode === 'realtime');
+  const priorMarketRow = [
+    ...(Array.isArray(led.navRows) ? led.navRows : []),
+    ...(Array.isArray(live.rows) ? live.rows : []),
+  ].filter(row => row && row.date === marketDate).at(-1) || null;
+  const priorMarketFreshness = priorMarketRow && priorMarketRow.valuation &&
+    priorMarketRow.valuation.freshness_class ||
+    (live.marketDate === marketDate && live.sourceMeta && live.sourceMeta.freshness_class) || null;
+  const sameDayOfficialEodRefresh = marketDate === lastDate && fetched.length > 0 &&
+    priorMarketFreshness === 'intraday_snapshot' &&
+    fetched.every(item => item.q && item.q.date === marketDate &&
+      ['eod', 'eod_fallback'].includes(item.q.quote_mode) &&
+      item.q.source_endpoint === portfolioDataset(market));
+  const recalculateMarketDate = marketDate === lastDate &&
+    (affectedFrom === marketDate || sameDayRealtimeRefresh || sameDayOfficialEodRefresh);
   if (lastDate && marketDate === lastDate && !recalculateMarketDate) {
     if (pricingFallback) {
       return writePortfolioAttempt(env, pf, {
@@ -2083,41 +2930,21 @@ async function updatePortfolioNav(env, pf, options = {}) {
     live.rows = (live.rows || []).filter(row => row.date !== marketDate);
   }
 
-  const stale = [], holdings = [];
+  const stale = [], holdings = [], exactMarketValues = [];
   for (const item of fetched) {
     const p = item.p;
-    const persisted = lastPx[p.t] && Number(lastPx[p.t].close) > 0 ? lastPx[p.t] : null;
-    const reference = Number(p.p ?? p.price ?? 0);
-    const q = item.q || (persisted ? {
-      ...persisted,
-      source: persisted.source || 'ledger-price-asof',
-      source_endpoint: persisted.source_endpoint || 'ledger-price-asof',
-      fallback: 'last_known_price',
-      persist: false,
-    } : reference > 0 ? {
-      close: reference,
-      date: p.priceDate || led.lastDate || marketDate,
-      source: p.priceSource || 'ledger-book-value',
-      source_endpoint: p.priceSource || 'ledger-book-value',
-      fallback: 'book_value',
-      persist: false,
-    } : null);
-    if (!q) {
-      return writePortfolioAttempt(env, pf, {
-        ...st,
-        skip: 'valuation-price-unavailable',
-        reason: 'price_and_book_value_unavailable',
-        unavailable: [p.t],
-        fallback: true,
-      });
-    }
+    const q = item.q;
     lastPx[p.t] = q;
     if (q.date && q.date < marketDate) stale.push(p.t);
     const mv = Number(p.q) * Number(q.close);
+    exactMarketValues.push(mv);
     const pnl = Number(p.pnl) + mv - Number(p.mv);
     holdings.push({
       t: p.t, n: p.n || p.t, q: Number(p.q), price: round(Number(q.close), 6),
       marketValue: round(mv, 2), date: q.date || marketDate,
+      priceBasis: q.price_basis, adjusted: false,
+      quoteSource: q.source, quoteSourceEndpoint: q.source_endpoint,
+      quoteMode: q.quote_mode, sessionVerified: q.session_verified === true,
       buyCost: Number(p.buyCost) || 0, sellProceeds: Number(p.sellProceeds) || 0,
       dividend: Number(p.dividend) || 0, netCost: Number(p.netCost) || 0,
       pnl: round(pnl, 2),
@@ -2125,8 +2952,14 @@ async function updatePortfolioNav(env, pf, options = {}) {
       weight: 0,
     });
   }
-  const marketValue = holdings.reduce((s, h) => s + h.marketValue, 0);
-  holdings.forEach(h => { h.weight = marketValue ? round(h.marketValue / marketValue * 100, 6) : 0; });
+  // Python parity: sum exact quantity * raw counter price first. Per-position
+  // rounding is display-only and must never feed NAV arithmetic.
+  const marketValue = exactMarketValues.reduce((sum, value) => sum + value, 0);
+  holdings.forEach((holding, index) => {
+    holding.weight = marketValue
+      ? round(exactMarketValues[index] / marketValue * 100, 6)
+      : 0;
+  });
   const cash = Number(led.cash) || 0, liability = Number(led.liability) || 0;
   const totalAssets = marketValue + cash, netValue = totalAssets - liability, units = Number(led.units) || 0;
   const previousRows = [
@@ -2137,7 +2970,9 @@ async function updatePortfolioNav(env, pf, options = {}) {
   const prev = previousRows.length
     ? previousRows[previousRows.length - 1]
     : { netValue: led.baseNetValue || led.baseMV, unitNav: led.lastUnitNav };
-  const unitNav = units > 0 ? netValue / units : (prev.unitNav && prev.netValue ? prev.unitNav * netValue / prev.netValue : 0);
+  const unitNav = units > 0
+    ? netValue / units
+    : (prev.unitNav && prev.netValue ? prev.unitNav * netValue / prev.netValue : 0);
   const fundActionAdjustment = Number(led.fundActionAdjustments && led.fundActionAdjustments[marketDate]) || 0;
   const fundDividend = Number(led.fundDividends && led.fundDividends[marketDate]) || 0;
   const divPerUnit = units > 0 ? fundDividend / units : 0;
@@ -2168,11 +3003,16 @@ async function updatePortfolioNav(env, pf, options = {}) {
   };
   live.holdings = holdings; live.updatedAt = now.toISOString(); live.marketDate = marketDate;
   live.sourceMeta = {
-    source: 'tushare',
+    source: valuationSource,
     source_endpoint: [...new Set(valuationQuotes.map(quote => quote.source_endpoint))].join(','),
     as_of: marketDate,
     fetched_at: maxText(valuationQuotes.map(quote => quote.fetched_at)) || now.toISOString(),
     freshness_class: pricingFreshness,
+    priceBasis: valuationPriceBasis,
+    adjusted: false,
+    quoteDate: marketDate,
+    sessionVerified: valuationQuotes.every(quote => quote.session_verified === true),
+    quoteSources: quoteAudit,
   };
   live.note = stale.length ? 'stale:' + stale.join(',') : null;
   Object.assign(st, {
@@ -2188,29 +3028,44 @@ async function updatePortfolioNav(env, pf, options = {}) {
   });
   await persistLedgerValuation(env, pf, {
     ...navRow,
+    source: valuationSource,
     sourceRef: live.sourceMeta.source_endpoint,
     valuation: {
-      source: 'tushare',
+      source: valuationSource,
       source_endpoint: live.sourceMeta.source_endpoint,
       as_of: marketDate,
       fetched_at: live.sourceMeta.fetched_at,
       freshness_class: pricingFreshness,
+      priceBasis: valuationPriceBasis,
+      adjusted: false,
+      quoteDate: marketDate,
+      sessionVerified: valuationQuotes.every(quote => quote.session_verified === true),
+      quoteSources: quoteAudit,
       stale_tickers: stale,
     },
     warnings: [
       ...(stale.length ? [{ code: 'STALE_PRICE', tickers: stale }] : []),
-      ...(unavailable.length ? [{ code: 'PRICE_FALLBACK', tickers: unavailable }] : []),
       ...navWarnings,
     ],
   }, fetched.filter(item => item.q && item.q.persist !== false).map(item => ({
     ticker: item.p.t,
     date: item.q.date || marketDate,
     close: item.q.close,
-    source: 'TUSHARE',
+    source: item.q.source,
     source_endpoint: item.q.source_endpoint,
+    valuation: {
+      priceBasis: item.q.price_basis,
+      adjusted: false,
+      quoteDate: item.q.date,
+      quoteSource: item.q.source,
+      quoteSourceEndpoint: item.q.source_endpoint,
+      quoteMode: item.q.quote_mode,
+      sessionVerified: item.q.session_verified === true,
+    },
   })), ledgerRevision);
   const freshLedger = await materializeLedgerKv(env, pf, {
     expectedLedgerRevision: ledgerRevision,
+    currentDate: marketDate,
   });
   // D1 snapshots are the complete derived history. Keep KV live rows empty so
   // the same NAV date is never maintained in two independent stores.
@@ -2294,8 +3149,10 @@ export {
   prewarmBenchmark,
   publicPortfolioSnapshot,
   tusharePortfolioQuote,
+  tusharePortfolioVerifiedSession,
   tusharePortfolioSymbol,
   updatePortfolioNav,
+  yahooUsCounterQuote,
 };
 
 export default {
@@ -2332,6 +3189,8 @@ export default {
           feedback: feedbackOk,
           ledger: ledger.ready,
           ledger_outbox_pending: ledger.outboxPending,
+          raw_nav_ready: ledger.rawNavReady,
+          raw_nav_portfolios: ledger.rawNavPortfolios,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
           tushare: !!env.TUSHARE_TOKEN,
           terminal_warehouse: !!env.YC_KV,
@@ -3140,87 +3999,13 @@ export default {
         return J(env, { ok: true, username });
       }
 
-      /* ════ 賬本：發布時前端自動提取持倉+現金，後端每日按收盤價自算淨值 ════ */
+      /* ════ 舊 Excel/KV 快照寫入邊界：永久退役 ════ */
       if (path === '/api/ledger' && request.method === 'POST') {
         const deny = needAdmin(); if (deny) return deny;
-        if (env.ALLOW_LEGACY_LEDGER_UPLOAD !== 'true') {
-          return J(env, {
-            error: '舊 Excel 快照入口已停用，請使用 Admin／事件賬本的 Pending、Confirm 與 Excel 雙向同步。',
-            replacement: '/api/admin/ledger',
-          }, 410);
-        }
-        const b = await request.json();
-        const pf = String(b.portfolio || 'us').toLowerCase();
-        if (!/^(us|hk|a)$/.test(pf)) return J(env, { error: 'portfolio 只支持 us/hk/a' }, 400);
-        if (!Array.isArray(b.positions) || !b.positions.length) return J(env, { error: 'positions 為空' }, 400);
-        const positions = b.positions.filter(p => p && p.t && isFinite(p.q)).map(p => ({
-          t: String(p.t).slice(0, 16), n: String(p.n || p.name || p.t).slice(0, 100), q: Number(p.q),
-          p: Number(p.p) || 0, mv: Number(p.mv) || 0, netCost: Number(p.netCost) || 0,
-          buyCost: Number(p.buyCost) || 0, sellProceeds: Number(p.sellProceeds) || 0,
-          dividend: Number(p.dividend) || 0, pnl: Number(p.pnl) || 0,
-        })).slice(0, 120);
-        const sourceDate = String(b.sourceDate || b.lastDate || '').slice(0, 10);
-        const baseNetValue = Number(b.baseNetValue ?? b.baseMV);
-        const units = Number(b.units) || 0;
-        const fingerprint = contentHash(JSON.stringify({
-          positions: positions.map(p => [p.t, p.q]).sort((a, z) => a[0].localeCompare(z[0])),
-          cash: Number(b.cash) || 0, liability: Number(b.liability) || 0, units,
-        }));
-        const sourceHoldings = positions.map(p => ({
-          t: p.t, n: p.n, q: p.q, price: p.p, marketValue: p.mv, date: sourceDate,
-          buyCost: p.buyCost, sellProceeds: p.sellProceeds, dividend: p.dividend,
-          netCost: p.netCost, pnl: p.pnl,
-          exposureReturn: p.buyCost ? round(p.pnl / p.buyCost * 100, 8) : null,
-        }));
-        const sourceMv = sourceHoldings.reduce((s, h) => s + h.marketValue, 0);
-        sourceHoldings.forEach(h => { h.weight = sourceMv ? round(h.marketValue / sourceMv * 100, 6) : 0; });
-        const history = normalizeHistory(b.history || b.rets);
-        const navRows = normalizeNavRows(b.navRows);
-        const sourceMetrics = cleanMetrics(b.metrics || b.statistics || b.snap);
-        const led = {
-          market: /^(us|hk|a)$/.test(String(b.market || '')) ? b.market : pf,
-          currency: String(b.currency || ({ us: 'USD', hk: 'HKD', a: 'CNY' }[pf])).slice(0, 3),
-          positions, sourceHoldings, cash: Number(b.cash) || 0, liability: Number(b.liability) || 0,
-          sourceDate, lastDate: sourceDate,
-          baseMarketValue: Number(b.baseMarketValue) || sourceMv,
-          baseTotalAssets: Number(b.baseTotalAssets) || sourceMv + (Number(b.cash) || 0),
-          baseNetValue, baseMV: baseNetValue,
-          lastUnitNav: Number(b.lastUnitNav) || (units > 0 ? baseNetValue / units : 0),
-          units, fingerprint, history, navRows, sourceMetrics,
-          snap: b.snap && typeof b.snap === 'object' ? {
-            totalRet: Number(b.snap.totalRet) || 0, annRet: Number(b.snap.annRet) || 0,
-            maxDD: Number(b.snap.maxDD) || 0, days: Number(b.snap.days) || 0,
-            start: String(b.snap.start || '').slice(0, 10), end: String(b.snap.end || '').slice(0, 10),
-            peakGrowth: Number(b.snap.peakGrowth) || 1, endGrowth: Number(b.snap.endGrowth) || 1,
-          } : null,
-          savedBy: sess.u, savedAt: new Date().toISOString(),
-        };
-        if (!led.lastDate || !isFinite(led.baseNetValue) || !(led.units > 0)) return J(env, { error: '缺 sourceDate / baseNetValue / units' }, 400);
-        const [oldLedRaw, oldLiveRaw] = await Promise.all([env.YC_KV.get('ledger:' + pf), env.YC_KV.get('live:' + pf)]);
-        const oldLed = oldLedRaw ? JSON.parse(oldLedRaw) : null;
-        const oldLive = oldLiveRaw ? JSON.parse(oldLiveRaw) : { rows: [] };
-        const sameSource = oldLed && oldLed.fingerprint === fingerprint;
-        if (!led.history.length && sameSource && oldLed.history) led.history = normalizeHistory(oldLed.history);
-        if (!led.navRows.length && sameSource && oldLed.navRows) led.navRows = normalizeNavRows(oldLed.navRows);
-        if (!Object.keys(led.sourceMetrics).length && sameSource && oldLed.sourceMetrics) led.sourceMetrics = cleanMetrics(oldLed.sourceMetrics);
-        // sourceDate 是新工作簿已覆蓋到的日期；只保留其後的自動日更，交易/份額改變則重置。
-        const rows = sameSource ? (oldLive.rows || []).filter(r => r.date > sourceDate) : [];
-        const live = {
-          rows, holdings: sameSource && oldLive.holdings ? oldLive.holdings : sourceHoldings,
-          updatedAt: new Date().toISOString(), marketDate: sameSource ? oldLive.marketDate || null : sourceDate,
-          reset: !sameSource,
-        };
-        const seedStatus = {
-          pf, seededAt: new Date().toISOString(), sourceDate,
-          historyPoints: led.history.length, preservedRows: rows.length, sourceChanged: !sameSource,
-        };
-        await env.YC_KV.put('ledger:' + pf, JSON.stringify(led));
-        await persistPortfolioCache(env, pf, led, live, seedStatus);
         return J(env, {
-          ok: true, portfolio: pf, positions: positions.length, cash: led.cash,
-          liability: led.liability, units: led.units, base: led.lastDate + ' / ' + led.baseNetValue,
-          historyPoints: led.history.length, preservedRows: rows.length, sourceChanged: !sameSource,
-        });
+          error: '舊 Excel 快照入口已永久移除；唯一事實入口是 D1 Pending → Confirm。',
+          replacement: '/api/admin/ledger',
+        }, 410);
       }
 
       if (path.startsWith('/api/nav/') && request.method === 'GET') {
@@ -3285,42 +4070,10 @@ export default {
 
       if (path === '/api/publish' && request.method === 'POST') {
         const deny = needAdmin(); if (deny) return deny;
-        if (env.ALLOW_LEGACY_LEDGER_UPLOAD !== 'true') {
-          return J(env, {
-            error: 'GitHub 工作簿輸入已停用；Excel 現在只能由 D1 賬本導出，反向修改必須經 Preview → Pending → Confirm。',
-            replacement: '/api/admin/ledger/export',
-          }, 410);
-        }
-        const { content_b64, message, portfolio } = await request.json();
-        if (!content_b64 || content_b64.length < 100) return J(env, { error: '文件內容為空' }, 400);
-        if (content_b64.length > 30 * 1024 * 1024) return J(env, { error: '文件過大' }, 413);
-        const pf = /^(us|hk|a)$/.test(String(portfolio || '').toLowerCase()) ? String(portfolio).toLowerCase() : 'us';
-        const paths = {
-          us: env.GH_PATH || 'assets/data/Yi_Capital_US.xlsx',
-          hk: env.GH_PATH_HK || 'assets/data/Yi_Capital_HK.xlsx',
-          a: env.GH_PATH_A || 'assets/data/Yi_Capital_A.xlsx',
-        };
-        const gh = 'https://api.github.com/repos/' + env.GH_OWNER + '/' + env.GH_REPO + '/contents/' + paths[pf];
-        const ghHeaders = {
-          'Authorization': 'Bearer ' + env.GH_TOKEN,
-          'Accept': 'application/vnd.github+json',
-          'User-Agent': 'yicapital-portal',
-          'X-GitHub-Api-Version': '2022-11-28',
-        };
-        let sha;
-        const r0 = await fetch(gh + '?ref=' + env.GH_BRANCH, { headers: ghHeaders });
-        if (r0.ok) sha = (await r0.json()).sha;
-        const body = { message: message || ('data: 更新 ' + pf.toUpperCase() + ' 基金來源工作簿（via Portal, ' + sess.u + '）'), content: content_b64, branch: env.GH_BRANCH };
-        if (sha) body.sha = sha;
-        const r1 = await fetch(gh, { method: 'PUT', headers: { ...ghHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        const j1 = await r1.json().catch(() => ({}));
-        if (!r1.ok) {
-          let hint = '';
-          if (r1.status === 403) hint = '｜提示：403 多為 Token 權限不足——fine-grained token 需勾選本倉庫並開 Contents: Read and write；classic token 需勾 repo 範圍。重生成後更新 Worker 變量 GH_TOKEN。';
-          if (r1.status === 404) hint = '｜提示：檢查 GH_OWNER / GH_REPO / GH_PATH 是否與倉庫一致，且 Token 有權訪問該倉庫。';
-          return J(env, { error: 'GitHub ' + r1.status + ' ' + (j1.message || '') + hint }, 502);
-        }
-        return J(env, { ok: true, portfolio: pf, path: paths[pf], commit: j1.commit && j1.commit.sha, url: j1.commit && j1.commit.html_url });
+        return J(env, {
+          error: 'GitHub/Excel 工作簿輸入已永久移除；Excel 只能導出可視化，反向修改必須經 Preview → Pending → Confirm。',
+          replacement: '/api/admin/ledger/export',
+        }, 410);
       }
 
       return J(env, { error: 'Not found' }, 404);
@@ -3338,10 +4091,32 @@ export default {
   async scheduled(event, env, ctx) {
     const cron = event.cron || '';
     if (cron === '* * * * *') {
-      ctx.waitUntil(drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
-        .catch(e => console.error('ledger_outbox_continuation_failed', e)));
+      ctx.waitUntil((async () => {
+        await drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
+          .catch(e => console.error('ledger_outbox_continuation_failed', e));
+        const nowValue = Date.now();
+        const realtimePortfolios = ['us', 'hk', 'a']
+          .filter(portfolio => portfolioRealtimeWindowOpen(nowValue, portfolio));
+        if (!realtimePortfolios.length) return;
+        const nav = await Promise.all(realtimePortfolios.map(portfolio =>
+          updatePortfolioNav(env, portfolio).catch(error => ({
+            pf: portfolio,
+            complete: false,
+            fallback: true,
+            reason: String(error && (error.code || error.message) || 'realtime_refresh_failed'),
+          }))));
+        await env.YC_KV.put('refresh:last:cron:realtime', JSON.stringify({
+          ok: nav.every(item => item && item.complete === true && item.fallback !== true),
+          trigger: 'cron:realtime',
+          ranAt: new Date(nowValue).toISOString(),
+          portfolios: realtimePortfolios,
+          nav,
+        }));
+      })());
     } else if (cron === '30 21 * * *') {
       ctx.waitUntil((async () => {
+        await enqueueDailyNavReplay(env, ['us'])
+          .catch(e => console.error('daily_raw_tape_queue_failed', e));
         await drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
           .catch(e => console.error('ledger_outbox_failed', e));
         await Promise.all([
@@ -3364,6 +4139,8 @@ export default {
       })());
     } else if (cron === '30 10 * * *') {
       ctx.waitUntil((async () => {
+        await enqueueDailyNavReplay(env, ['hk', 'a'])
+          .catch(e => console.error('daily_raw_tape_queue_failed', e));
         await drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
           .catch(e => console.error('ledger_outbox_failed', e));
         await Promise.all([

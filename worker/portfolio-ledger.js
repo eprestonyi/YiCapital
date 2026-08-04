@@ -336,50 +336,12 @@ function normalizeTicker(value) {
   return String(value ?? '').trim().toUpperCase();
 }
 
-function normalizeAllocation(rawAllocation, tickers, outputAllocations, issues) {
-  let weights = [];
-  if (Array.isArray(rawAllocation)) {
-    weights = rawAllocation.map(Number);
-  } else if (rawAllocation && typeof rawAllocation === 'object') {
-    weights = tickers.map(ticker => Number(rawAllocation[ticker] ?? rawAllocation[ticker.toLowerCase()]));
-  } else if (rawAllocation != null && rawAllocation !== '') {
-    weights = parseList(rawAllocation).map(Number);
-  } else if (outputAllocations.some(value => value != null && value !== '')) {
-    weights = outputAllocations.map(Number);
-  }
-
-  if (!weights.length) {
-    if (tickers.length === 1) return [1];
-    // The Python manager derives multi-output allocation from the first
-    // available post-action closes. Null keeps that calculation outside the
-    // input fact instead of asking the operator for an accounting allocation.
-    return tickers.map(() => null);
-  }
-  if (weights.length !== tickers.length || weights.some(value => !Number.isFinite(value) || value < 0)) {
-    issues.push(issue('INVALID_ALLOCATION', 'allocation',
-      'allocation must contain one non-negative weight per post ticker'));
-    return tickers.map((_, index) => index === 0 ? 1 : 0);
-  }
-  const total = weights.reduce((sum, value) => sum + value, 0);
-  if (!(total > 0)) {
-    issues.push(issue('INVALID_ALLOCATION', 'allocation', 'allocation weights must total more than zero'));
-    return tickers.map((_, index) => index === 0 ? 1 : 0);
-  }
-  const normalized = weights.map(value => roundNumber(value / total));
-  if (Math.abs(total - 1) > 1e-9 && Math.abs(total - 100) > 1e-9) {
-    issues.push(issue('ALLOCATION_NORMALIZED', 'allocation',
-      'allocation weights were normalized to one', 'warning', { supplied_total: total }));
-  }
-  return normalized;
-}
-
 function normalizeCorporateOutputs(raw, actionType, ticker, splitRatio, issues) {
   let outputs = [];
   if (Array.isArray(raw.outputs)) {
     outputs = raw.outputs.map(output => ({
       ticker: normalizeTicker(output?.ticker ?? output?.post_ticker),
       quantity: output?.quantity ?? output?.post_quantity,
-      allocation: output?.allocation,
       name: String(output?.name || '').trim(),
     }));
   } else {
@@ -389,7 +351,6 @@ function normalizeCorporateOutputs(raw, actionType, ticker, splitRatio, issues) 
     outputs = tickers.map((postTicker, index) => ({
       ticker: postTicker,
       quantity: quantities[index],
-      allocation: null,
       name: '',
     }));
     if (quantities.length && quantities.length !== tickers.length) {
@@ -399,11 +360,11 @@ function normalizeCorporateOutputs(raw, actionType, ticker, splitRatio, issues) 
   }
 
   if (!outputs.length && actionType === 'SPLIT' && splitRatio > 0) {
-    outputs = [{ ticker, quantity: null, allocation: 1, name: '' }];
+    outputs = [{ ticker, quantity: null, name: '' }];
   }
   if (!outputs.length && actionType === 'RENAME') {
     const target = normalizeTicker(firstPresent(raw, ['new_ticker', 'target_ticker']));
-    if (target) outputs = [{ ticker: target, quantity: null, allocation: 1, name: '' }];
+    if (target) outputs = [{ ticker: target, quantity: null, name: '' }];
   }
   if (!outputs.length) {
     issues.push(issue('CORPORATE_OUTPUT_REQUIRED', 'outputs',
@@ -415,23 +376,33 @@ function normalizeCorporateOutputs(raw, actionType, ticker, splitRatio, issues) 
   if (tickers.some(value => !value)) {
     issues.push(issue('TICKER_REQUIRED', 'outputs.ticker', 'every corporate output needs a ticker'));
   }
-  const outputAllocations = outputs.map(output => output.allocation);
-  const allocation = normalizeAllocation(raw.allocation, tickers, outputAllocations, issues);
+  const mayDeriveSingleOutputQuantity = outputs.length === 1 && (
+    actionType === 'RENAME' || (actionType === 'SPLIT' && splitRatio > 0)
+  );
   return outputs.map((output, index) => {
     let quantity = null;
-    if (output.quantity != null && output.quantity !== '') {
+    const hasExplicitQuantity = output.quantity != null &&
+      (typeof output.quantity !== 'string' || output.quantity.trim() !== '');
+    if (hasExplicitQuantity) {
       quantity = Number(output.quantity);
       if (!Number.isFinite(quantity) || quantity < 0) {
         issues.push(issue('INVALID_POST_QUANTITY', `outputs.${index}.quantity`,
           'post quantity must be a non-negative finite number'));
         quantity = 0;
       }
+    } else if (!mayDeriveSingleOutputQuantity) {
+      issues.push(issue('CORPORATE_OUTPUT_QUANTITY_REQUIRED', `outputs.${index}.quantity`,
+        'every corporate output quantity must be explicit except a single-output SPLIT with '
+          + 'split_ratio or a single-output 1:1 RENAME'));
     }
     return {
       ticker: output.ticker,
       name: output.name,
       quantity: quantity == null ? null : roundNumber(quantity),
-      allocation: allocation[index],
+      // Kept as a compatibility field for existing Excel/JSON shapes. A
+      // corporate action changes securities and quantities only; it never
+      // creates or allocates cost basis.
+      allocation: null,
     };
   });
 }
@@ -1105,12 +1076,6 @@ function applyCash(state, event, changeMinor, sourceType, decimals) {
   assignMoney(row, 'cash_change', changeMinor, decimals);
   assignMoney(row, 'cash_after', afterMinor, decimals);
   state.cashChain.push(row);
-  if (afterMinor < 0) {
-    addCheck(state.checks, event, 'NEGATIVE_CASH',
-      `cash balance became ${formatMinor(afterMinor, decimals)}`, 'warning', {
-        cash_after_minor: afterMinor,
-      });
-  }
 }
 
 function applyTrade(state, event, direction, decimals, sourceEvent = event) {
@@ -1120,13 +1085,28 @@ function applyTrade(state, event, direction, decimals, sourceEvent = event) {
     : event.type === 'sell'
       ? -event.quantity * direction
       : 0;
-  if (event.type === 'sell' && direction === 1 && event.quantity > position.quantity + 1e-9) {
+  const sameDayBuyKey = `${event.date}\u0000${event.ticker}`;
+  const remainingSameDayBuy = state.remainingSameDayBuyQuantities.get(sameDayBuyKey) || 0;
+  if (event.type === 'sell' && direction === 1 &&
+      event.quantity > position.quantity + remainingSameDayBuy + 1e-9) {
+    const availableQuantity = roundNumber(position.quantity + remainingSameDayBuy);
     addCheck(state.checks, sourceEvent, 'OVERSELL',
-      `sell quantity ${event.quantity} exceeds ${event.ticker} holding ${position.quantity}`,
-      'error', { ticker: event.ticker, available_quantity: position.quantity,
+      `sell quantity ${event.quantity} exceeds ${event.ticker} same-day available quantity `
+        + `${availableQuantity}`,
+      'error', { ticker: event.ticker, available_quantity: availableQuantity,
+        current_quantity: position.quantity,
+        remaining_same_day_buy_quantity: remainingSameDayBuy,
         sell_quantity: event.quantity });
   }
   if (event.type === 'buy') {
+    if (direction === 1) {
+      const remaining = roundNumber(remainingSameDayBuy - event.quantity);
+      if (remaining > 1e-12) {
+        state.remainingSameDayBuyQuantities.set(sameDayBuyKey, remaining);
+      } else {
+        state.remainingSameDayBuyQuantities.delete(sameDayBuyKey);
+      }
+    }
     position.quantity = roundNumber(position.quantity + quantityChange);
     position.total_shares_bought = roundNumber(
       position.total_shares_bought + event.quantity * direction,
@@ -1248,20 +1228,6 @@ function applyFundAction(state, event, direction, decimals, sourceEvent = event)
   applyCash(state, sourceEvent, event.cash_change_minor * direction, event.type, decimals);
 }
 
-function allocateMinor(total, weights) {
-  if (!weights.length) return [];
-  const allocated = [];
-  let used = 0;
-  for (let index = 0; index < weights.length; index += 1) {
-    const value = index === weights.length - 1
-      ? total - used
-      : Math.round(total * weights[index]);
-    allocated.push(value);
-    used += value;
-  }
-  return allocated;
-}
-
 function normalizeCorporateActionPriceRows(rawRows) {
   if (!Array.isArray(rawRows)) return [];
   return rawRows.map(row => ({
@@ -1270,38 +1236,6 @@ function normalizeCorporateActionPriceRows(rawRows) {
     price: Number(row && (row.price ?? row.close ?? row.latest_price)),
   })).filter(row => row.ticker && /^\d{4}-\d{2}-\d{2}$/.test(row.date) && row.price > 0)
     .sort((left, right) => left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker));
-}
-
-function corporateActionWeights(state, event, quantities) {
-  if (event.outputs.length <= 1) return [1];
-
-  // A populated allocation is a cached result of the same automatic price
-  // calculation. Legacy/Pending rows normally leave it null.
-  const cached = event.outputs.map(output => Number(output.allocation));
-  if (cached.every(value => Number.isFinite(value) && value >= 0) &&
-      cached.reduce((sum, value) => sum + value, 0) > 0) {
-    const total = cached.reduce((sum, value) => sum + value, 0);
-    return cached.map(value => roundNumber(value / total));
-  }
-
-  const start = Date.parse(`${event.date}T00:00:00.000Z`);
-  const end = start + 7 * 24 * 60 * 60 * 1000;
-  const marketValues = event.outputs.map((output, index) => {
-    const observation = state.corporateActionPrices.find(row => {
-      const observed = Date.parse(`${row.date}T00:00:00.000Z`);
-      return row.ticker === output.ticker && observed >= start && observed <= end;
-    });
-    return quantities[index] * Number(observation && observation.price || 0);
-  });
-  const totalMarketValue = marketValues.reduce((sum, value) => sum + value, 0);
-  if (totalMarketValue > 0) {
-    return marketValues.map(value => roundNumber(value / totalMarketValue));
-  }
-
-  addCheck(state.checks, event, 'CORPORATE_ACTION_PRICE_FALLBACK',
-    `post-action prices were unavailable; cumulative cost remains with ${event.outputs[0].ticker}`,
-    'warning', { tickers: event.outputs.map(output => output.ticker), action_date: event.date });
-  return event.outputs.map((_, index) => index === 0 ? 1 : 0);
 }
 
 function checkCorporateActionContinuity(state, event, oldQuantity, quantities) {
@@ -1337,6 +1271,7 @@ function checkCorporateActionContinuity(state, event, oldQuantity, quantities) {
 
 function applyCorporateAction(state, event, decimals) {
   const old = state.positions.get(event.ticker) || emptyPosition(event.ticker, event.name);
+  const oldQuantity = old.quantity;
   if (!state.positions.has(event.ticker)) {
     addCheck(state.checks, event, 'CORPORATE_ACTION_SOURCE_MISSING',
       `corporate action source ${event.ticker} was not held`, 'warning', {
@@ -1349,46 +1284,30 @@ function applyCorporateAction(state, event, decimals) {
       'warning', { ticker: event.ticker, recorded_pre_quantity: event.pre_quantity,
         replayed_quantity: old.quantity });
   }
-  state.positions.delete(event.ticker);
+  // Cash records are the only source of buy cost, sell proceeds, dividends,
+  // taxes and fees. Keep that history on the ticker that generated the cash
+  // record. The corporate action removes its old quantity, then creates only
+  // the declared output quantities; it must not move or invent cost basis.
+  state.positions.set(event.ticker, old);
+  old.quantity = 0;
 
   const quantities = event.outputs.map(output => {
     if (output.quantity != null) return output.quantity;
-    if (event.action_type === 'SPLIT' && event.split_ratio > 0) {
-      return roundNumber(old.quantity * event.split_ratio);
+    if (event.outputs.length === 1 && event.action_type === 'SPLIT' && event.split_ratio > 0) {
+      return roundNumber(oldQuantity * event.split_ratio);
     }
-    return old.quantity;
+    if (event.outputs.length === 1 && event.action_type === 'RENAME') return oldQuantity;
+    addCheck(state.checks, event, 'CORPORATE_OUTPUT_QUANTITY_REQUIRED',
+      `corporate action output ${output.ticker || '(missing ticker)'} has no quantity`, 'fatal', {
+        ticker: output.ticker || null,
+      });
+    return 0;
   });
-  checkCorporateActionContinuity(state, event, old.quantity, quantities);
-  const weights = corporateActionWeights(state, event, quantities);
-  const buyCosts = allocateMinor(old.buy_cost_minor, weights);
-  const grossBuys = allocateMinor(old.gross_buy_minor, weights);
-  const taxes = allocateMinor(old.transaction_tax_minor, weights);
-  const fees = allocateMinor(old.fees_minor, weights);
+  checkCorporateActionContinuity(state, event, oldQuantity, quantities);
 
   event.outputs.forEach((output, index) => {
     const position = positionFor(state, output.ticker, output.name || (index === 0 ? old.name : output.ticker));
     position.quantity = roundNumber(position.quantity + quantities[index]);
-    position.total_shares_bought = roundNumber(
-      position.total_shares_bought + quantities[index],
-    );
-    position.buy_cost_minor += buyCosts[index];
-    position.gross_buy_minor += grossBuys[index];
-    position.transaction_tax_minor += taxes[index];
-    position.fees_minor += fees[index];
-    if (weights[index] > 0) {
-      position.gross_buy_unknown_count += old.gross_buy_unknown_count;
-    }
-    if (index === 0) {
-      position.sell_proceeds_minor += old.sell_proceeds_minor;
-      position.dividend_income_minor += old.dividend_income_minor;
-      position.gross_sell_minor += old.gross_sell_minor;
-      position.gross_dividend_minor += old.gross_dividend_minor;
-      position.withholding_tax_minor += old.withholding_tax_minor;
-      position.gross_sell_unknown_count += old.gross_sell_unknown_count;
-      position.gross_dividend_unknown_count += old.gross_dividend_unknown_count;
-      position.tax_unknown_count += old.tax_unknown_count;
-      position.fees_unknown_count += old.fees_unknown_count;
-    }
   });
   applyCash(state, event, event.cash_change_minor, event.type, decimals);
 }
@@ -1744,6 +1663,16 @@ export function replayPortfolioLedger(rawEvents, options = {}) {
   assignMonthlyTradeNumbers(unique);
   unique.sort((left, right) => compareEvents(left, right, eventMap));
 
+  const remainingSameDayBuyQuantities = new Map();
+  for (const event of unique) {
+    if (event.type !== 'buy') continue;
+    const key = `${event.date}\u0000${event.ticker}`;
+    remainingSameDayBuyQuantities.set(
+      key,
+      roundNumber((remainingSameDayBuyQuantities.get(key) || 0) + event.quantity),
+    );
+  }
+
   const state = {
     cashMinor: normalizeOpeningMoney(options, 'opening_cash', decimals),
     liabilityMinor: normalizeOpeningMoney(options, 'opening_liability', decimals),
@@ -1756,6 +1685,7 @@ export function replayPortfolioLedger(rawEvents, options = {}) {
     checks,
     appliedById: new Map(),
     reversedIds: new Set(),
+    remainingSameDayBuyQuantities,
     corporateActionPrices: normalizeCorporateActionPriceRows(options.corporate_action_prices),
   };
   if (!Number.isFinite(state.units)) {

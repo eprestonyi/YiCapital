@@ -36,16 +36,17 @@ test('admin ledger exposes the complete one-time legacy migration controls', asy
   assertElement(html, 'input', 'legacy-confirm-phrase');
   assertElement(html, 'button', 'confirm-legacy');
   assertElement(html, 'button', 'drain-legacy-outbox');
+  assertElement(html, 'button', 'rebuild-derived');
+  assertElement(html, 'input', 'rebuild-reason');
   assertElement(html, 'dd', 'legacy-import-id');
   assertElement(html, 'dd', 'legacy-migration-hash');
 
   for (const id of [
-    'legacy-ack-negative-cash',
     'legacy-ack-duplicates',
     'legacy-ack-unknown-tax',
-    'legacy-ack-historical-nav',
-    'legacy-ack-historical-prices',
   ]) assertElement(html, 'input', id);
+
+  assert.doesNotMatch(html, /legacy-ack-historical-(?:nav|prices)/i);
 
   assert.match(html, /id=["']legacy-required-phrase["'][^>]*>\s*CONFIRM LEGACY US\s*</i);
   const legacyPanel = html.slice(
@@ -80,9 +81,6 @@ test('legacy migration UI uses preview, signed confirm, and outbox contracts', a
     .sort();
   assert.deepEqual(ackKeys, [
     'duplicates',
-    'historicalNav',
-    'historicalPrices',
-    'negativeCash',
     'unknownTax',
   ]);
   assert.match(acknowledgement, /Object\.fromEntries\(\s*LEGACY_ACKS\.map\(/);
@@ -93,7 +91,17 @@ test('legacy migration UI uses preview, signed confirm, and outbox contracts', a
   assert.match(confirmationGate, /phraseInput\.value\s*===\s*expectedPhrase/);
   assert.match(confirmationGate, /!phraseOk/);
 
+  assert.match(source, /historicalNavRows\.length\) issues\.push\([^)]*NAV 只能從 confirmed events \+ raw prices 派生/);
+  assert.match(source, /historicalPriceRows\.length\) issues\.push\([^)]*歷史價格只能由 raw-close 價格帶提供/);
+  assert.match(source, /historical_nav_rows:\s*\[\]/);
+  assert.match(source, /historical_price_rows:\s*\[\]/);
+
   assert.match(drain, /api\(\s*["']\/api\/admin\/ledger\/outbox["']/);
+
+  const rebuild = functionBlock(source, 'rebuildDerived');
+  assert.match(rebuild, /api\(\s*["']\/api\/admin\/ledger\/rebuild["']/);
+  assert.match(rebuild, /portfolio:\s*state\.portfolio/);
+  assert.match(rebuild, /reason/);
   assert.match(drain, /method\s*:\s*["']POST["']/);
   assert.match(drain, /portfolio\s*:\s*state\.portfolio/);
   assert.match(drain, /result\.pending\s*===\s*true/);

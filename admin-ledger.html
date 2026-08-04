@@ -43,8 +43,6 @@
   .ledger-review{display:grid;grid-template-columns:1fr auto;gap:8px;width:100%}
   .ledger-review input,.ledger-review select,.ledger-form input,.ledger-form select,.ledger-form textarea,
   .import-controls input,.import-controls select{background:var(--bg);border:1px solid var(--line);border-radius:7px;box-sizing:border-box;color:var(--txt);font-family:var(--zh);font-size:13px;padding:10px 12px;width:100%}
-  .ledger-review .negative{align-items:center;color:var(--muted);display:flex;font-family:var(--mono);font-size:10.5px;gap:7px;white-space:nowrap}
-  .ledger-review .negative input{width:auto}
   .ledger-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px}
   .ledger-field{min-width:0}
   .ledger-field.full{grid-column:1/-1}
@@ -145,7 +143,7 @@
             <h3 style="margin:0">Pending · 待確認事件</h3>
             <button class="btn2" id="refresh-ledger" type="button">刷新</button>
           </div>
-          <p class="sync-note">自動交易、股息、公司行動和 Excel 反向變更先停在這裡。修改、扣稅及現金檢查完成後才會寫入正式賬本。</p>
+          <p class="sync-note">人工交易／股東出入金、自動股息／公司行動，以及 Excel 反向變更都先停在這裡。修改與扣稅確認完成後才會寫入正式賬本。</p>
           <div id="pending-list" class="ledger-stack"><div class="empty-state">載入中…</div></div>
         </div>
 
@@ -226,6 +224,16 @@
         </div>
 
         <div class="card">
+          <h3>後台派生重算 · Events + Raw Prices → NAV</h3>
+          <p class="sync-note">不修改交易、股東申贖或 ledger revision；只從最早 active event 重算現金、持倉、份額、未復權市價與 NAV，並重新產生 Excel 輸出。</p>
+          <div class="import-controls">
+            <input id="rebuild-reason" type="text" maxlength="500" placeholder="重算原因（必填）">
+            <button class="btn2" id="rebuild-derived" type="button">排隊完整重算</button>
+          </div>
+          <div class="log sync-log" id="rebuild-log" role="status">尚未排隊。</div>
+        </div>
+
+        <div class="card">
           <h3>Excel 反向同步 · Excel → Database</h3>
           <p class="sync-note">只讀取 7 張事件 sheet。Asset Position、Liability Statement、Cash Flow、NAV 四張派生表的修改會列為忽略，不會反寫。CREATE / UPDATE 確認後只會進入 Pending，需再逐筆核對稅項才能入賬。</p>
           <label class="drop2" id="import-drop">
@@ -283,11 +291,8 @@
 
               <h4 style="margin-top:16px">條件確認</h4>
               <div class="legacy-acks" id="legacy-ack-list">
-                <label class="legacy-ack" id="legacy-ack-negative-cash-row"><input id="legacy-ack-negative-cash" type="checkbox" disabled><span>保留 Python 現金鏈計算出的歷史負現金，不改寫事件。</span><small id="legacy-ack-negative-cash-state">待 Preview</small></label>
                 <label class="legacy-ack" id="legacy-ack-duplicates-row"><input id="legacy-ack-duplicates" type="checkbox" disabled><span>保留後台識別出的完全重複事件。</span><small id="legacy-ack-duplicates-state">待 Preview</small></label>
                 <label class="legacy-ack" id="legacy-ack-unknown-tax-row"><input id="legacy-ack-unknown-tax" type="checkbox" disabled><span>歷史稅項維持 UNKNOWN_LEGACY，日後逐筆審閱。</span><small id="legacy-ack-unknown-tax-state">待 Preview</small></label>
-                <label class="legacy-ack" id="legacy-ack-historical-nav-row"><input id="legacy-ack-historical-nav" type="checkbox" disabled><span>NAV Statement 僅作只讀歷史估值種子。</span><small id="legacy-ack-historical-nav-state">待 Preview</small></label>
-                <label class="legacy-ack" id="legacy-ack-historical-prices-row"><input id="legacy-ack-historical-prices" type="checkbox" disabled><span>Asset Position 僅作只讀歷史價格種子。</span><small id="legacy-ack-historical-prices-state">待 Preview</small></label>
               </div>
               <div class="legacy-phrase">
                 <label for="legacy-confirm-phrase">逐字輸入 <code id="legacy-required-phrase">CONFIRM LEGACY US</code></label>
@@ -308,6 +313,6 @@
 
 <footer><div class="wrap"><div class="logo">Yi<b>Capital</b></div><p>© 2026 Yi Capital.</p></div></footer>
 
-<script src="assets/yc-ledger-admin.js?v=20260803j"></script>
+<script src="assets/yc-ledger-admin.js?v=20260803l"></script>
 </body>
 </html>

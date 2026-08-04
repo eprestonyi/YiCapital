@@ -89,7 +89,6 @@ test('an expired admin session clears browser identity before redirecting', asyn
   assert.match(admin, /if \(r\.status === 401\)[\s\S]*localStorage\.removeItem\(k\)[\s\S]*sessionStorage\.removeItem\(k\)[\s\S]*location\.href = 'login'/);
   for (const page of [
     'admin.html',
-    'admin-publish.html',
     'admin-reports.html',
     'admin-insights.html',
     'admin-users.html',
@@ -99,6 +98,13 @@ test('an expired admin session clears browser identity before redirecting', asyn
   ]) {
     assert.match(await read(page), /assets\/yc-admin\.js\?v=8\.12/);
   }
+});
+
+test('the retired workbook publisher permanently redirects to the event ledger', async () => {
+  const publisher = await read('admin-publish.html');
+  assert.match(publisher, /http-equiv="refresh" content="0; url=admin-ledger"/);
+  assert.match(publisher, /location\.replace\('admin-ledger'\)/);
+  assert.doesNotMatch(publisher, /XLSX|\.xlsx|\.xlsm|\/api\/publish|\/api\/ledger|type="file"|dataTransfer/);
 });
 
 test('static motion modes stop the loop and persistent Dashboard state preserves the entry route', async () => {

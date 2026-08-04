@@ -5,6 +5,12 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import {
+  freezeLedgerPriceTape,
+  handleLedgerAdminRequest,
+  ledgerHealth,
+  persistLedgerValuation,
+} from '../worker/ledger-store.js';
 import worker, {
   benchmarkSnapshotIsTushare,
   portfolioDataset,
@@ -13,6 +19,7 @@ import worker, {
   rebuildPortfolioNavHistory,
   tusharePortfolioQuote,
   updatePortfolioNav,
+  yahooUsCounterQuote,
 } from '../worker/worker.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -75,8 +82,11 @@ class D1Database {
 }
 
 async function ledgerDatabase() {
-  const sql = await readFile(path.join(ROOT, 'migrations/0002_portfolio_ledger.sql'), 'utf8');
-  return new D1Database(sql);
+  const sql = await Promise.all([
+    '0002_portfolio_ledger.sql',
+    '0003_frozen_price_tapes.sql',
+  ].map(file => readFile(path.join(ROOT, 'migrations', file), 'utf8')));
+  return new D1Database(sql.join('\n'));
 }
 
 function adapterWith(handler) {
@@ -90,7 +100,22 @@ function adapterWith(handler) {
   };
 }
 
-test('portfolio quote routing is A/HK realtime-first and US EOD-only', async () => {
+function officialCalendar(request, openDates) {
+  const compactToIso = value => `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+  const start = compactToIso(request.params.start_date);
+  const end = compactToIso(request.params.end_date);
+  const opens = new Set(openDates.map(value => value.replaceAll('-', '')));
+  const data = [];
+  for (let time = Date.parse(`${start}T00:00:00.000Z`);
+    time <= Date.parse(`${end}T00:00:00.000Z`);
+    time += 86400000) {
+    const calDate = new Date(time).toISOString().slice(0, 10).replaceAll('-', '');
+    data.push({ cal_date: calDate, is_open: opens.has(calDate) ? 1 : 0 });
+  }
+  return { data };
+}
+
+test('Tushare quote routing is A/HK realtime-first while its US source is EOD-only', async () => {
   assert.equal(portfolioDataset('a'), 'daily');
   assert.equal(portfolioDataset('hk'), 'hk_daily');
   assert.equal(portfolioDataset('us'), 'us_daily');
@@ -119,9 +144,12 @@ test('portfolio quote routing is A/HK realtime-first and US EOD-only', async () 
       fetched_at: '2026-07-30T08:00:00.000Z',
     };
   });
-  const hkQuote = await tusharePortfolioQuote(hkAdapter, '700.HK', 'hk', now);
+  const hkQuote = await tusharePortfolioQuote(hkAdapter, '700.HK', 'hk', now, {
+    verifiedSessionDate: '2026-07-30',
+  });
   assert.equal(hkQuote.quote_mode, 'realtime');
   assert.equal(hkQuote.date, '2026-07-30');
+  assert.equal(hkQuote.session_verified, true);
   assert.deepEqual(hkAdapter.calls.map(call => call.dataset), ['rt_hk_k']);
 
   const usAdapter = adapterWith(async dataset => {
@@ -136,6 +164,82 @@ test('portfolio quote routing is A/HK realtime-first and US EOD-only', async () 
   assert.equal(usQuote.quote_mode, 'eod');
   assert.equal(usQuote.freshness_class, 'eod');
   assert.deepEqual(usAdapter.calls.map(call => call.dataset), ['us_daily']);
+});
+
+test('Yahoo query2 US counter uses regularMarketPrice and regularMarketTime', async () => {
+  const calls = [];
+  const quote = await yahooUsCounterQuote(
+    'BRK.B.US',
+    () => Date.parse('2026-07-30T20:00:00.000Z'),
+    {
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return {
+        ok: true,
+        async json() {
+          return { chart: { result: [{ meta: {
+            regularMarketPrice: 512.34,
+            regularMarketTime: Date.parse('2026-07-30T19:59:00.000Z') / 1000,
+            marketState: 'REGULAR',
+          } }] } };
+        },
+      };
+    },
+    },
+  );
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /finance\/chart\/BRK-B/);
+  assert.equal(quote.close, 512.34);
+  assert.equal(quote.date, '2026-07-30');
+  assert.equal(quote.source, 'yahoo:query2-chart');
+  assert.equal(quote.price_basis, 'raw_counter');
+  assert.equal(quote.adjusted, false);
+  assert.equal(quote.regular_market_time, Date.parse('2026-07-30T19:59:00.000Z') / 1000);
+});
+
+test('Yahoo counter rejects an intraday print older than fifteen minutes', async () => {
+  await assert.rejects(
+    yahooUsCounterQuote('AAA.US', () => Date.parse('2026-07-30T19:30:01.000Z'), {
+      fetch: async () => ({
+        ok: true,
+        async json() {
+          return { chart: { result: [{ meta: {
+            regularMarketPrice: 10,
+            regularMarketTime: Date.parse('2026-07-30T19:15:00.000Z') / 1000,
+            marketState: 'REGULAR',
+          } }] } };
+        },
+      }),
+    }),
+    /yahoo_counter_payload_invalid/,
+  );
+});
+
+test('dateless HK realtime never inherits a weekend wall-clock date', async () => {
+  const weekendNow = () => Date.parse('2026-08-01T04:00:00.000Z'); // Saturday in HK.
+  const adapter = adapterWith(async dataset => {
+    if (dataset === 'rt_hk_k') {
+      return {
+        data: [{ ts_code: '00700.HK', close: 600 }],
+        freshness_class: 'intraday_snapshot',
+        fetched_at: '2026-08-01T04:00:00.000Z',
+      };
+    }
+    assert.equal(dataset, 'hk_daily');
+    return {
+      data: [{ ts_code: '00700.HK', trade_date: '20260731', close: 556 }],
+      freshness_class: 'eod',
+      fetched_at: '2026-08-01T04:00:00.000Z',
+    };
+  });
+
+  const quote = await tusharePortfolioQuote(adapter, '700.HK', 'hk', weekendNow, {
+    verifiedSessionDate: '2026-07-31',
+  });
+  assert.equal(quote.quote_mode, 'eod_fallback');
+  assert.equal(quote.date, '2026-07-31');
+  assert.notEqual(quote.date, '2026-08-01');
+  assert.deepEqual(adapter.calls.map(call => call.dataset), ['rt_hk_k', 'hk_daily']);
 });
 
 test('A/HK realtime failures fall back only to the matching Tushare EOD dataset', async () => {
@@ -331,6 +435,10 @@ test('ordinary NAV refresh and public cache fail closed while derived ledger wor
 });
 
 test('historical NAV replay fails closed when any ticker history request fails', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
   const led = {
     market: 'us', portfolio: 'us', ledgerRevision: 2, navRows: [],
     confirmedEvents: [
@@ -340,18 +448,557 @@ test('historical NAV replay fails closed when any ticker history request fails',
         quantity: 10, gross_amount: '100', net_cash: '-100' },
     ],
   };
-  const adapter = adapterWith(async (_dataset, request) => {
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') {
+      return officialCalendar(request, ['20260720', '20260721', '20260730']);
+    }
+    if (request.params.ts_code === 'SPY') return { data: [
+      { ts_code: 'SPY', trade_date: '20260720', close: 600 },
+      { ts_code: 'SPY', trade_date: '20260721', close: 601 },
+      { ts_code: 'SPY', trade_date: '20260730', close: 610 },
+    ] };
     if (request.params.ts_code === 'AAA') throw new Error('temporary upstream failure');
     return { data: [] };
   });
 
   await assert.rejects(
-    rebuildPortfolioNavHistory({}, 'us', led, {
+    rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
       adapter, now, affectedFrom: '2026-07-20', ledgerRevision: 2,
     }),
     error => error && error.code === 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE' &&
       /AAA/.test(error.message),
   );
+});
+
+test('historical NAV rejects a successful empty raw-close response instead of using book value', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 2, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-20',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+      { event_id: 'buy-1', type: 'BUY', date: '2026-07-20', ticker: 'AAA',
+        quantity: 10, gross_amount: '100', net_cash: '-100' },
+    ],
+  };
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') return officialCalendar(request, ['20260720']);
+    if (request.params.ts_code === 'SPY') {
+      return { data: [{ ts_code: 'SPY', trade_date: '20260720', close: 600 }] };
+    }
+    return { data: [] };
+  });
+
+  await assert.rejects(
+    rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
+      adapter, now: () => Date.parse('2026-07-20T22:00:00.000Z'),
+      affectedFrom: '2026-07-20', ledgerRevision: 2,
+    }),
+    error => error && error.code === 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE' &&
+      /AAA/.test(error.message),
+  );
+  assert.equal(database.database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_price_tapes WHERE portfolio_id = 'us'
+  `).get().count, 0);
+  assert.equal(database.database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_nav_snapshots WHERE portfolio_id = 'us'
+  `).get().count, 0);
+});
+
+test('a dividend-only ticker that was never held does not require a price tape row', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 2, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-20',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+      { event_id: 'dividend-no-position', type: 'DIVIDEND', date: '2026-07-20',
+        ticker: 'XHYH', quantity: 1, gross_amount: '5', net_cash: '5' },
+    ],
+  };
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') return officialCalendar(request, ['20260720']);
+    assert.equal(request.params.ts_code, 'SPY');
+    return { data: [{ ts_code: 'SPY', trade_date: '20260720', close: 600 }] };
+  });
+
+  const replay = await rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
+    adapter, now: () => Date.parse('2026-07-20T22:00:00.000Z'),
+    affectedFrom: '2026-07-20', ledgerRevision: 2,
+  });
+  assert.equal(replay.complete, false);
+  assert.equal(adapter.calls.length, 2);
+  const tape = database.database.prepare(`
+    SELECT required_tickers_json, price_row_count
+    FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 2
+  `).get();
+  assert.deepEqual(JSON.parse(tape.required_tickers_json), []);
+  assert.equal(tape.price_row_count, 0);
+  assert.equal(database.database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_price_tape_rows
+  `).get().count, 0);
+});
+
+test('historical NAV rejects an empty market calendar and never fabricates business days', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 1, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-20',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+    ],
+  };
+  const adapter = adapterWith(async () => ({ data: [] }));
+
+  await assert.rejects(
+    rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
+      adapter, now, affectedFrom: '2026-07-20', ledgerRevision: 1,
+    }),
+    error => error && error.code === 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE',
+  );
+  assert.equal(adapter.calls.length, 1);
+  assert.doesNotMatch(await readFile(path.join(ROOT, 'worker/worker.js'), 'utf8'),
+    /BUSINESS_DAY_CALENDAR_FALLBACK|function businessDates/);
+});
+
+test('official calendar proves a closed weekend but rejects an incomplete future extension', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 3 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 3, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-23',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+      { event_id: 'buy-1', type: 'BUY', date: '2026-07-23', ticker: 'AAA',
+        quantity: 10, gross_amount: '100', net_cash: '-100' },
+    ],
+  };
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') {
+      if (request.params.end_date === '20260727') return { data: [] };
+      return officialCalendar(request, ['20260723', '20260724']);
+    }
+    if (request.params.ts_code === 'SPY') return { data: [
+      { ts_code: 'SPY', trade_date: '20260723', close: 600 },
+      { ts_code: 'SPY', trade_date: '20260724', close: 601 },
+    ] };
+    return { data: [
+      { ts_code: 'AAA', trade_date: '20260723', close: 10 },
+      { ts_code: 'AAA', trade_date: '20260724', close: 11 },
+    ] };
+  });
+  const env = { FEEDBACK_DB: database };
+  const first = await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-24T22:00:00.000Z'),
+    affectedFrom: '2026-07-23', ledgerRevision: 3, batchSize: 50,
+  });
+  const weekend = await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-26T22:00:00.000Z'),
+    affectedFrom: '2026-07-23', ledgerRevision: 3, batchSize: 50,
+  });
+  assert.equal(weekend.targetThrough, first.targetThrough);
+  assert.equal(weekend.targetThrough, '2026-07-24');
+  await assert.rejects(
+    rebuildPortfolioNavHistory(env, 'us', led, {
+      adapter,
+      now: () => Date.parse('2026-07-28T02:00:00.000Z'),
+      affectedFrom: '2026-07-23', ledgerRevision: 3, batchSize: 50,
+    }),
+    error => error && error.code === 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE',
+  );
+  assert.equal(database.database.prepare(`
+    SELECT tape_through FROM ledger_price_tapes
+    WHERE portfolio_id = 'us' AND ledger_revision = 3
+  `).get().tape_through, '2026-07-24');
+});
+
+test('an open session is not frozen until the raw EOD watermark reaches that date', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 4 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 4, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-23',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+      { event_id: 'buy-1', type: 'BUY', date: '2026-07-23', ticker: 'AAA',
+        quantity: 10, gross_amount: '100', net_cash: '-100' },
+    ],
+  };
+  let eodAvailable = false;
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') {
+      return officialCalendar(request, ['20260723', '20260724']);
+    }
+    if (request.params.ts_code === 'SPY') return { data: [
+      { ts_code: 'SPY', trade_date: '20260723', close: 600 },
+      ...(eodAvailable ? [{ ts_code: 'SPY', trade_date: '20260724', close: 601 }] : []),
+    ] };
+    return { data: [
+      { ts_code: 'AAA', trade_date: '20260723', close: 10 },
+      { ts_code: 'AAA', trade_date: '20260724', close: 12 },
+    ] };
+  });
+  const env = { FEEDBACK_DB: database };
+  await assert.rejects(
+    rebuildPortfolioNavHistory(env, 'us', led, {
+      adapter,
+      now: () => Date.parse('2026-07-24T17:00:00.000Z'),
+      affectedFrom: '2026-07-23', ledgerRevision: 4, batchSize: 50,
+    }),
+    error => error && error.code === 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE',
+  );
+  assert.equal(database.database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_price_tapes WHERE portfolio_id = 'us'
+  `).get().count, 0);
+  eodAvailable = true;
+  const replay = await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-24T22:00:00.000Z'),
+    affectedFrom: '2026-07-23', ledgerRevision: 4, batchSize: 50,
+  });
+  assert.equal(replay.targetThrough, '2026-07-24');
+  assert.equal(database.database.prepare(`
+    SELECT tape_through FROM ledger_price_tapes
+    WHERE portfolio_id = 'us' AND ledger_revision = 4
+  `).get().tape_through, '2026-07-24');
+});
+
+test('historical NAV fails closed on an as-of tape gap and writes no book-value row', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 2, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-20',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+      { event_id: 'buy-1', type: 'BUY', date: '2026-07-20', ticker: 'AAA',
+        quantity: 10, gross_amount: '100', net_cash: '-100' },
+    ],
+  };
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') {
+      return officialCalendar(request, ['20260720', '20260721']);
+    }
+    if (request.params.ts_code === 'SPY') return { data: [
+      { ts_code: 'SPY', trade_date: '20260720', close: 600 },
+      { ts_code: 'SPY', trade_date: '20260721', close: 601 },
+    ] };
+    return { data: [{ ts_code: 'AAA', trade_date: '20260721', close: 12 }] };
+  });
+
+  await assert.rejects(
+    rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
+      adapter, now: () => Date.parse('2026-07-21T22:00:00.000Z'),
+      affectedFrom: '2026-07-20', ledgerRevision: 2,
+    }),
+    error => error && error.code === 'HISTORICAL_NAV_PRICE_TAPE_GAP' &&
+      /2026-07-20:AAA/.test(error.message),
+  );
+  assert.equal(database.database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_nav_snapshots WHERE portfolio_id = 'us'
+  `).get().count, 0);
+});
+
+test('a back-dated revision may prepend raw history but cannot revise the parent overlap', async () => {
+  const database = await ledgerDatabase();
+  const env = { FEEDBACK_DB: database };
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const common = {
+    requiredTickers: ['AAA'],
+    priceSource: 'tushare:us_daily',
+    calendarSource: 'tushare:us_tradecal+us_daily',
+    calendarSourceRef: 'us_tradecal:is_open+us_daily:SPY:eod-watermark',
+    priceBasis: 'raw_close',
+    adjusted: false,
+  };
+  await freezeLedgerPriceTape(env, 'us', {
+    ...common,
+    tapeFrom: '2026-07-20', tapeThrough: '2026-07-21',
+    calendarFrom: '2026-07-20', calendarDates: ['2026-07-20', '2026-07-21'],
+    priceRows: [
+      { ticker: 'AAA', date: '2026-07-20', close: 10,
+        source: 'tushare:us_daily', sourceRef: 'us_daily:close:raw-unadjusted' },
+      { ticker: 'AAA', date: '2026-07-21', close: 11,
+        source: 'tushare:us_daily', sourceRef: 'us_daily:close:raw-unadjusted' },
+    ],
+  }, 1);
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  const child = {
+    ...common,
+    tapeFrom: '2026-07-17', tapeThrough: '2026-07-22',
+    calendarFrom: '2026-07-17',
+    calendarDates: ['2026-07-17', '2026-07-20', '2026-07-21', '2026-07-22'],
+    parentPriceTapeId: 'raw-close:us:1',
+    inheritedThrough: '2026-07-21',
+    priceRows: [
+      { ticker: 'AAA', date: '2026-07-17', close: 9,
+        source: 'tushare:us_daily', sourceRef: 'us_daily:close:raw-unadjusted' },
+      { ticker: 'AAA', date: '2026-07-20', close: 10,
+        source: 'tushare:us_daily', sourceRef: 'us_daily:close:raw-unadjusted' },
+      { ticker: 'AAA', date: '2026-07-21', close: 11,
+        source: 'tushare:us_daily', sourceRef: 'us_daily:close:raw-unadjusted' },
+      { ticker: 'AAA', date: '2026-07-22', close: 12,
+        source: 'tushare:us_daily', sourceRef: 'us_daily:close:raw-unadjusted' },
+    ],
+  };
+  const revisedOverlap = {
+    ...child,
+    priceRows: child.priceRows.map(row => row.date === '2026-07-20'
+      ? { ...row, close: 999 }
+      : row),
+  };
+  await assert.rejects(
+    freezeLedgerPriceTape(env, 'us', revisedOverlap, 2),
+    error => error && error.details &&
+      error.details.code === 'HISTORICAL_NAV_PRICE_TAPE_IMMUTABLE_CONFLICT',
+  );
+  const tape = await freezeLedgerPriceTape(env, 'us', child, 2);
+  assert.equal(tape.parentPriceTapeId, 'raw-close:us:1');
+  assert.deepEqual(tape.calendarDates, child.calendarDates);
+  assert.deepEqual(tape.priceRows.map(row => [row.date, row.price]), [
+    ['2026-07-17', 9], ['2026-07-20', 10], ['2026-07-21', 11], ['2026-07-22', 12],
+  ]);
+});
+
+test('same-revision raw tape is deterministic, then only appends future EOD rows', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 5 WHERE portfolio_id = 'us'
+  `).run();
+  const events = [
+    { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-20', sequence: 1,
+      shareholder: 'LP1', subscription: '3000', redemption: '0', unit_price: '1' },
+    { event_id: 'buy-aaa', type: 'BUY', date: '2026-07-20', sequence: 1,
+      ticker: 'AAA', quantity: 10, gross_amount: '100', net_cash: '-100' },
+    { event_id: 'buy-old', type: 'BUY', date: '2026-07-20', sequence: 2,
+      ticker: 'OLD', quantity: 5, gross_amount: '50', net_cash: '-50' },
+    { event_id: 'buy-susp', type: 'BUY', date: '2026-07-20', sequence: 3,
+      ticker: 'SUSP', quantity: 10, gross_amount: '50', net_cash: '-50' },
+    { event_id: 'sell-old', type: 'SELL', date: '2026-07-21', sequence: 1,
+      ticker: 'OLD', quantity: 5, gross_amount: '50', net_cash: '50' },
+  ];
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 5,
+    confirmedEvents: events, navRows: [],
+  };
+  let supplierRevisedOldHistory = false;
+  const adapter = adapterWith(async (dataset, request) => {
+    const extension = request.params.start_date === '20260722';
+    const extensionTarget = request.params.end_date === '20260723';
+    const nextRevision = request.params.end_date === '20260724';
+    if (dataset === 'us_tradecal') {
+      return officialCalendar(
+        request,
+        nextRevision ? ['20260724']
+          : extension ? ['20260722', '20260723'] : ['20260720', '20260721'],
+      );
+    }
+    if (request.params.ts_code === 'SPY') {
+      const tradeDates = nextRevision
+        ? ['20260720', '20260721', '20260722', '20260723', '20260724']
+        : extensionTarget ? ['20260720', '20260721', '20260722', '20260723']
+          : ['20260720', '20260721'];
+      return { data: tradeDates.map((trade_date, index) => ({
+        ts_code: 'SPY', trade_date, close: 600 + index,
+      })) };
+    }
+    if (supplierRevisedOldHistory && request.params.start_date < '20260724') {
+      return { data: [{
+        ts_code: request.params.ts_code, trade_date: '20260721', close: 999,
+      }] };
+    }
+    if (request.params.start_date === '20260724') {
+      if (request.params.ts_code === 'AAA') {
+        return { data: [{ ts_code: 'AAA', trade_date: '20260724', close: 14 }] };
+      }
+      if (request.params.ts_code === 'NEW') {
+        return { data: [{ ts_code: 'NEW', trade_date: '20260724', close: 20 }] };
+      }
+      return { data: [] };
+    }
+    if (!extension) {
+      const closes = request.params.ts_code === 'AAA' ? [10, 11]
+        : request.params.ts_code === 'SUSP' ? [5, 5] : [10, 10];
+      return { data: ['20260720', '20260721'].map((trade_date, index) => ({
+        ts_code: request.params.ts_code,
+        trade_date,
+        close: closes[index],
+        adjusted_close: 999,
+      })) };
+    }
+    if (request.params.ts_code === 'AAA') {
+      return { data: [
+        { ts_code: 'AAA', trade_date: '20260722', close: 12, adjusted_close: 999 },
+        { ts_code: 'AAA', trade_date: '20260723', close: 13, adjusted_close: 999 },
+      ] };
+    }
+    // OLD was fully sold; SUSP remains held but had no counter print. Both
+    // legitimately carry their already-frozen prior raw close forward.
+    return { data: [] };
+  });
+  const env = { FEEDBACK_DB: database };
+  const first = await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-21T22:00:00.000Z'),
+    affectedFrom: '2026-07-20', ledgerRevision: 5, batchSize: 50,
+  });
+  const firstManifest = { ...database.database.prepare(`
+    SELECT price_tape_id, tape_through, calendar_dates_json, price_tape_hash,
+      price_row_count FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 5
+  `).get() };
+  const firstRows = database.database.prepare(`
+    SELECT ticker, price_date, price_micros, source, source_ref
+    FROM ledger_price_tape_rows WHERE price_tape_id = ? ORDER BY ticker, price_date
+  `).all(firstManifest.price_tape_id).map(row => ({ ...row }));
+  assert.equal(first.priceTapeId, 'raw-close:us:5');
+  assert.equal(adapter.calls.length, 5);
+
+  await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-21T22:00:00.000Z'),
+    affectedFrom: '2026-07-20', ledgerRevision: 5, batchSize: 50,
+  });
+  const repeatedManifest = { ...database.database.prepare(`
+    SELECT price_tape_id, tape_through, calendar_dates_json, price_tape_hash,
+      price_row_count FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 5
+  `).get() };
+  assert.deepEqual(repeatedManifest, firstManifest);
+  assert.equal(adapter.calls.length, 5);
+
+  const extended = await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-23T22:00:00.000Z'),
+    affectedFrom: '2026-07-20', ledgerRevision: 5, batchSize: 50,
+  });
+  const extendedManifest = { ...database.database.prepare(`
+    SELECT price_tape_id, tape_through, calendar_dates_json, price_tape_hash,
+      price_row_count FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 5
+  `).get() };
+  const extendedRows = database.database.prepare(`
+    SELECT ticker, price_date, price_micros, source, source_ref
+    FROM ledger_price_tape_rows WHERE price_tape_id = ? ORDER BY ticker, price_date
+  `).all(firstManifest.price_tape_id).map(row => ({ ...row }));
+  assert.equal(extended.priceTapeId, first.priceTapeId);
+  assert.equal(extendedManifest.price_tape_id, firstManifest.price_tape_id);
+  assert.equal(extendedManifest.tape_through, '2026-07-23');
+  assert.deepEqual(JSON.parse(extendedManifest.calendar_dates_json), [
+    '2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23',
+  ]);
+  assert.notEqual(extendedManifest.price_tape_hash, firstManifest.price_tape_hash);
+  assert.deepEqual(
+    extendedRows.filter(row => row.price_date <= firstManifest.tape_through),
+    firstRows,
+  );
+  assert.deepEqual(extendedRows.filter(row => row.price_date > firstManifest.tape_through), [
+    { ticker: 'AAA', price_date: '2026-07-22', price_micros: 12_000_000,
+      source: 'tushare:us_daily', source_ref: 'us_daily:close:raw-unadjusted' },
+    { ticker: 'AAA', price_date: '2026-07-23', price_micros: 13_000_000,
+      source: 'tushare:us_daily', source_ref: 'us_daily:close:raw-unadjusted' },
+  ]);
+  assert.equal(adapter.calls.length, 10);
+  const lastNav = database.database.prepare(`
+    SELECT nav_date, market_value_minor, net_value_minor
+    FROM ledger_nav_snapshots WHERE portfolio_id = 'us' ORDER BY nav_date DESC LIMIT 1
+  `).get();
+  assert.deepEqual({ ...lastNav }, {
+    nav_date: '2026-07-23', market_value_minor: 18_000, net_value_minor: 303_000,
+  });
+
+  // A mutable same-day counter quote is isolated in ledger_prices and cannot
+  // alter the historical tape or its hash.
+  await persistLedgerValuation({ FEEDBACK_DB: database }, 'us', {
+    date: '2026-07-23', cash: 2850, marketValue: 9990, totalAssets: 12840,
+    liability: 0, netValue: 12840, units: 3000, unitNav: 4.28,
+    sourceRef: 'live-counter-test', valuation: { priceBasis: 'raw_close' }, warnings: [],
+  }, [{ ticker: 'AAA', close: 999, source: 'TUSHARE', sourceRef: 'live-counter' }], 5);
+  const afterLiveManifest = { ...database.database.prepare(`
+    SELECT price_tape_id, tape_through, calendar_dates_json, price_tape_hash,
+      price_row_count FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 5
+  `).get() };
+  const afterLiveRows = database.database.prepare(`
+    SELECT ticker, price_date, price_micros, source, source_ref
+    FROM ledger_price_tape_rows WHERE price_tape_id = ? ORDER BY ticker, price_date
+  `).all(firstManifest.price_tape_id).map(row => ({ ...row }));
+  assert.deepEqual(afterLiveManifest, extendedManifest);
+  assert.deepEqual(afterLiveRows, extendedRows);
+  assert.equal(database.database.prepare(`
+    SELECT price_micros FROM ledger_prices
+    WHERE portfolio_id = 'us' AND ticker = 'AAA' AND price_date = '2026-07-23'
+  `).get().price_micros, 999_000_000);
+
+  // A new ledger revision inherits every common-ticker historical byte from
+  // the prior tape. Even if the supplier would now revise old closes, only the
+  // newly-held ticker history and future dates are fetched.
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 6 WHERE portfolio_id = 'us'
+  `).run();
+  supplierRevisedOldHistory = true;
+  const crossRevisionCallStart = adapter.calls.length;
+  const revisionSixEvents = [...events, {
+    event_id: 'buy-new', type: 'BUY', date: '2026-07-24', sequence: 1,
+    ticker: 'NEW', quantity: 1, gross_amount: '20', net_cash: '-20',
+  }];
+  const revisionSix = await rebuildPortfolioNavHistory(env, 'us', {
+    market: 'us', portfolio: 'us', ledgerRevision: 6,
+    confirmedEvents: revisionSixEvents,
+    navRows: [{ date: '2026-07-23', unitNav: 1.01, nav: 1.01 }],
+  }, {
+    adapter,
+    now: () => Date.parse('2026-07-24T22:00:00.000Z'),
+    affectedFrom: '2026-07-24', ledgerRevision: 6, batchSize: 50,
+  });
+  assert.equal(revisionSix.targetThrough, '2026-07-24');
+  const childManifest = database.database.prepare(`
+    SELECT parent_price_tape_id, inherited_through, tape_through
+    FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 6
+  `).get();
+  assert.deepEqual({ ...childManifest }, {
+    parent_price_tape_id: 'raw-close:us:5',
+    inherited_through: '2026-07-23',
+    tape_through: '2026-07-24',
+  });
+  const childPrefix = database.database.prepare(`
+    SELECT ticker, price_date, price_micros, source, source_ref
+    FROM ledger_price_tape_rows
+    WHERE price_tape_id = 'raw-close:us:6' AND price_date <= '2026-07-23'
+    ORDER BY ticker, price_date
+  `).all().map(row => ({ ...row }));
+  assert.deepEqual(childPrefix, extendedRows);
+  const crossRevisionCalls = adapter.calls.slice(crossRevisionCallStart);
+  assert.ok(crossRevisionCalls
+    .filter(call => call.request.params.ts_code && call.request.params.ts_code !== 'SPY')
+    .every(call => call.request.params.start_date === '20260724'));
+  assert.equal(database.database.prepare(`
+    SELECT price_micros FROM ledger_price_tape_rows
+    WHERE price_tape_id = 'raw-close:us:6' AND ticker = 'AAA' AND price_date = '2026-07-21'
+  `).get().price_micros, 11_000_000);
+  assert.deepEqual({ ...database.database.prepare(`
+    SELECT nav_date, market_value_minor, net_value_minor
+    FROM ledger_nav_snapshots WHERE portfolio_id = 'us' ORDER BY nav_date DESC LIMIT 1
+  `).get() }, {
+    nav_date: '2026-07-24', market_value_minor: 21_000, net_value_minor: 304_000,
+  });
 });
 
 test('dirty historical NAV rows are rebuilt from confirmed events and market-day prices', async () => {
@@ -377,6 +1024,16 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
   };
   insertEvent.run('capital-1', 'capital-1', 1, 'CAPITAL', '2026-07-20', 1, JSON.stringify(capital));
   insertEvent.run('buy-1', 'buy-1', 2, 'BUY', '2026-07-21', 1, JSON.stringify(buy));
+  database.database.prepare(`
+    INSERT INTO ledger_prices (
+      portfolio_id, ticker, price_date, ledger_revision, price_micros,
+      currency, source, source_ref, valuation_json, observed_at
+    ) VALUES (
+      'us', 'AAA', '2026-07-21', 2, 999000000,
+      'USD', 'LEGACY_READ_ONLY_PROJECTION', 'old-adjusted-excel-seed',
+      '{"readOnlyProjectionSeed":true,"adjusted":true}', 1
+    )
+  `).run();
   const kv = new MockKV({
     'ledger:us': JSON.stringify({
       market: 'us',
@@ -400,14 +1057,15 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
     }),
   });
   const adapter = adapterWith(async (dataset, request) => {
-    assert.equal(dataset, 'us_daily');
-    if (request.params.ts_code === 'SPY') {
-      return { data: [
-        { ts_code: 'SPY', trade_date: '20260720', close: 600 },
-        { ts_code: 'SPY', trade_date: '20260721', close: 601 },
-        { ts_code: 'SPY', trade_date: '20260730', close: 610 },
-      ] };
+    if (dataset === 'us_tradecal') {
+      return officialCalendar(request, ['20260720', '20260721', '20260730']);
     }
+    assert.equal(dataset, 'us_daily');
+    if (request.params.ts_code === 'SPY') return { data: [
+      { ts_code: 'SPY', trade_date: '20260720', close: 600 },
+      { ts_code: 'SPY', trade_date: '20260721', close: 601 },
+      { ts_code: 'SPY', trade_date: '20260730', close: 610 },
+    ] };
     assert.equal(request.params.ts_code, 'AAA');
     return {
       data: [
@@ -420,6 +1078,12 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
   });
 
   const env = { YC_KV: kv, FEEDBACK_DB: database };
+  await persistLedgerValuation(env, 'us', {
+    date: '2026-07-31', cash: 900, marketValue: 7770, totalAssets: 8670,
+    liability: 0, netValue: 8670, units: 1000, unitNav: 8.67,
+    sourceRef: 'stale-target-after-row',
+    valuation: { priceBasis: 'legacy_adjusted', adjusted: true }, warnings: [],
+  }, [], 2);
   const replay = await updatePortfolioNav(env, 'us', {
     adapter,
     now,
@@ -469,8 +1133,96 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
     { nav_date: '2026-07-30', cash_minor: 90000, market_value_minor: 12000,
       units_micros: 1_000_000_000, unit_nav_micros: 1_020_000, ledger_revision: 2 },
   ]);
+  assert.equal(rows.some(row => row.nav_date === '2026-07-31'), false);
   const rebuiltLedger = JSON.parse(kv.values.get('ledger:us'));
   assert.deepEqual(rebuiltLedger.navRecalculationRequired, []);
+  assert.deepEqual({
+    price: rebuiltLedger.positions[0].p,
+    priceDate: rebuiltLedger.positions[0].priceDate,
+    priceSource: rebuiltLedger.positions[0].priceSource,
+    priceBasis: rebuiltLedger.positions[0].priceBasis,
+    adjusted: rebuiltLedger.positions[0].priceAdjusted,
+    priceTapeId: rebuiltLedger.positions[0].priceTapeId,
+  }, {
+    price: 12,
+    priceDate: '2026-07-30',
+    priceSource: 'tushare:us_daily',
+    priceBasis: 'raw_close',
+    adjusted: false,
+    priceTapeId: 'raw-close:us:2',
+  });
+  assert.deepEqual({
+    price: rebuiltLedger.sourceHoldings[0].price,
+    source: rebuiltLedger.sourceHoldings[0].priceSource,
+    basis: rebuiltLedger.sourceHoldings[0].priceBasis,
+    adjusted: rebuiltLedger.sourceHoldings[0].adjusted,
+  }, {
+    price: 12, source: 'tushare:us_daily', basis: 'raw_close', adjusted: false,
+  });
+  const tapeManifest = database.database.prepare(`
+    SELECT price_basis, adjusted, price_source, price_row_count
+    FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 2
+  `).get();
+  assert.deepEqual({ ...tapeManifest }, {
+    price_basis: 'raw_close', adjusted: 0,
+    price_source: 'tushare:us_daily', price_row_count: 2,
+  });
+  assert.deepEqual(database.database.prepare(`
+    SELECT price_date, price_micros FROM ledger_price_tape_rows
+    WHERE price_tape_id = 'raw-close:us:2' ORDER BY price_date
+  `).all().map(row => ({ ...row })), [
+    { price_date: '2026-07-21', price_micros: 10_000_000 },
+    { price_date: '2026-07-30', price_micros: 12_000_000 },
+  ]);
+  assert.equal(database.database.prepare(`
+    SELECT price_micros FROM ledger_prices
+    WHERE portfolio_id = 'us' AND ticker = 'AAA' AND price_date = '2026-07-21'
+  `).get().price_micros, 999_000_000);
+  const exportResponse = await handleLedgerAdminRequest(
+    new Request('https://ledger.test/api/admin/ledger/export?portfolio=us'),
+    env,
+    { actor: 'test' },
+  );
+  assert.equal(exportResponse.status, 200);
+  const exported = await exportResponse.json();
+  assert.equal(exported.projection.positions[0].price, 12);
+  assert.equal(exported.projection.positions[0].price_basis, 'raw_close');
+  assert.equal(exported.projection.positions[0].price_adjusted, false);
+  assert.deepEqual(exported.priceRows.map(row => [row.ticker, row.date, row.price]), [
+    ['AAA', '2026-07-30', 12],
+  ]);
+  const health = await ledgerHealth(env);
+  assert.equal(health.rawNavReady, true, JSON.stringify(health.rawNavPortfolios));
+  assert.equal(health.rawNavPortfolios.us.priceBasis, 'raw_close');
+  await persistLedgerValuation(env, 'us', {
+    date: '2026-07-31', cash: 900, marketValue: 130, totalAssets: 1030,
+    liability: 0, netValue: 1030, units: 1000, unitNav: 1.03,
+    sourceRef: 'rt:raw-counter',
+    valuation: {
+      source: 'tushare', priceBasis: 'raw_counter', adjusted: false,
+      quoteDate: '2026-07-31',
+    },
+    warnings: [],
+  }, [{
+    ticker: 'AAA', date: '2026-07-31', close: 13, source: 'TUSHARE',
+    sourceRef: 'rt:AAA', valuation: { priceBasis: 'raw_counter', adjusted: false },
+  }], 2);
+  const counterHealth = await ledgerHealth(env);
+  assert.equal(counterHealth.rawNavReady, true);
+  assert.equal(counterHealth.rawNavPortfolios.us.currentCounterAfterTape, true);
+  await persistLedgerValuation(env, 'us', {
+    date: '2026-08-01', cash: 900, marketValue: 140, totalAssets: 1040,
+    liability: 0, netValue: 1040, units: 1000, unitNav: 1.04,
+    sourceRef: 'rt:raw-counter',
+    valuation: {
+      source: 'tushare', priceBasis: 'raw_counter', adjusted: false,
+      quoteDate: '2026-08-01',
+    },
+    warnings: [],
+  }, [], 2);
+  const staleTapeHealth = await ledgerHealth(env);
+  assert.equal(staleTapeHealth.rawNavReady, false);
+  assert.equal(staleTapeHealth.rawNavPortfolios.us.reason, 'NAV_TARGET_MISMATCH');
 });
 
 test('cash-only portfolio uses a market proxy quote to persist daily NAV', async () => {
@@ -489,10 +1241,14 @@ test('cash-only portfolio uses a market proxy quote to persist daily NAV', async
     }),
   });
   const adapter = adapterWith(async (dataset, request) => {
-    assert.equal(dataset, 'us_daily');
-    assert.equal(request.params.ts_code, 'SPY');
+    assert.equal(dataset, 'us_tradecal');
     return {
-      data: [{ ts_code: 'SPY', trade_date: '20260730', close: 650 }],
+      data: Array.from({ length: 15 }, (_, index) => {
+        const date = new Date(Date.UTC(2026, 6, 16 + index));
+        const compact = date.toISOString().slice(0, 10).replaceAll('-', '');
+        const weekday = date.getUTCDay();
+        return { cal_date: compact, is_open: weekday !== 0 && weekday !== 6 ? 1 : 0 };
+      }),
       freshness_class: 'eod',
       fetched_at: '2026-07-30T21:30:00.000Z',
     };
@@ -508,7 +1264,7 @@ test('cash-only portfolio uses a market proxy quote to persist daily NAV', async
   assert.equal(status.appended, '2026-07-30');
   assert.equal(status.marketValue, 0);
   assert.equal(status.netValue, 1000);
-  assert.deepEqual(adapter.calls.map(call => call.dataset), ['us_daily']);
+  assert.deepEqual(adapter.calls.map(call => call.dataset), ['us_tradecal']);
 
   const stored = database.database.prepare(`
     SELECT nav_date, cash_minor, market_value_minor, net_value_minor,
@@ -548,8 +1304,10 @@ test('an unchanged EOD fallback marks the served NAV as the last successful snap
     }),
     'navcache:hk': prior,
   });
-  const adapter = adapterWith(async dataset => {
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'hk_tradecal') return officialCalendar(request, ['20260730']);
     if (dataset === 'rt_hk_k') throw new Error('permission unavailable');
+    assert.equal(dataset, 'hk_daily');
     return {
       data: [{ ts_code: '00700.HK', trade_date: '20260730', close: 500 }],
       freshness_class: 'eod',
@@ -567,7 +1325,7 @@ test('an unchanged EOD fallback marks the served NAV as the last successful snap
   assert.equal(kv.values.get('navcache:hk'), prior);
 });
 
-test('public portfolio boot is snapshot-only; local workbooks remain explicit previews', async () => {
+test('public portfolio pages are database-snapshot-only with no workbook input path', async () => {
   const portfolioScript = await readFile(path.join(ROOT, 'assets/yc-portfolios.js'), 'utf8');
   assert.doesNotMatch(portfolioScript, /readWorkbook|YC\.analyze|A\.analyze|Math\.random/);
 
@@ -575,9 +1333,11 @@ test('public portfolio boot is snapshot-only; local workbooks remain explicit pr
     for (const market of ['a', 'hk', 'us']) {
       const file = path.join(ROOT, locale, `fund-${market}.html`);
       const source = await readFile(file, 'utf8');
-      assert.match(source, /bootCache\(\);/);
-      assert.equal((source.match(/\bbootHandle\s*\(/g) || []).length, 1);
-      assert.doesNotMatch(source, /await\s+bootHandle\s*\(/);
+      assert.deepEqual(source.match(/\/api\/nav\/(?:a|hk|us)/g), [`/api/nav/${market}`]);
+      assert.match(source, /if\(await bootCache\(\)\) return;/);
+      assert.doesNotMatch(source, /XLSX|\.xlsx|\.xlsm|assets\/data|YC\.analyze/);
+      assert.doesNotMatch(source, /showOpenFilePicker|indexedDB|dataTransfer|dropzone|filepick|FileReader/);
+      assert.doesNotMatch(source, /URLSearchParams|bootHandle|bootFetch|loadArrayBuffer|fetchBenchmarks|\/api\/benchmark/);
     }
   }
   const [wrangler, workerSource] = await Promise.all([

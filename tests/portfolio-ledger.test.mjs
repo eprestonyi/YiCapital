@@ -139,7 +139,14 @@ test('same-day replay follows Capital, Liability, Corporate Action, Buy/Sell, Di
     .map(row => [row.source_type, row.sequence]), [['sell', 1], ['buy', 2]]);
 });
 
-test('oversell and negative cash remain visible as checks instead of being silently repaired', () => {
+test('negative cash stays in arithmetic without a warning while oversells remain visible', () => {
+  const negativeOnly = replayPortfolioLedger([
+    buy({ event_id: 'unfunded-buy-only', quantity: 2, gross_amount: '50.00' }),
+  ]);
+  assert.equal(negativeOnly.ok, true);
+  assert.equal(negativeOnly.cash.decimal, '-50.00');
+  assert.equal(negativeOnly.checks.some(check => check.code === 'NEGATIVE_CASH'), false);
+
   const result = replayPortfolioLedger([
     buy({ event_id: 'unfunded-buy', quantity: 2, gross_amount: '50.00' }),
     {
@@ -153,13 +160,55 @@ test('oversell and negative cash remain visible as checks instead of being silen
   ]);
 
   assert.equal(result.ok, false);
-  assert.equal(result.checks.some(check => check.code === 'NEGATIVE_CASH'), true);
+  assert.equal(result.cash_chain[0].cash_after_decimal, '-50.00');
+  assert.equal(result.checks.some(check => check.code === 'NEGATIVE_CASH'), false);
   assert.equal(result.checks.some(check => check.code === 'OVERSELL'), true);
   assert.equal(result.positions[0].quantity, -1);
 });
 
-test('SPLIT and SPINOFF replace quantities and auto-allocate cost from action-date market values', () => {
+test('same-day position validation includes buys that replay later without changing cash order', () => {
   const result = replayPortfolioLedger([
+    buy({ event_id: 'seed-buy', date: '2026-01-02', quantity: 1, gross_amount: '10.00' }),
+    {
+      event_id: 'same-day-sell',
+      type: 'sell',
+      date: '2026-01-03',
+      ticker: 'AAA',
+      quantity: 2,
+      gross_amount: '24.00',
+    },
+    buy({
+      event_id: 'same-day-buy',
+      date: '2026-01-03',
+      quantity: 1,
+      gross_amount: '11.00',
+    }),
+  ]);
+
+  assert.deepEqual(result.ordered_events.filter(event => event.date === '2026-01-03')
+    .map(event => event.type), ['sell', 'buy']);
+  assert.deepEqual(result.cash_chain.filter(row => row.date === '2026-01-03')
+    .map(row => row.source_type), ['sell', 'buy']);
+  assert.equal(result.checks.some(check => check.code === 'OVERSELL'), false);
+  assert.equal(result.positions[0].quantity, 0);
+
+  const impossible = replayPortfolioLedger([
+    buy({ event_id: 'seed-buy-impossible', date: '2026-01-02', quantity: 1,
+      gross_amount: '10.00' }),
+    {
+      event_id: 'same-day-oversell', type: 'sell', date: '2026-01-03', ticker: 'AAA',
+      quantity: 2.01, gross_amount: '24.00',
+    },
+    buy({ event_id: 'same-day-buy-impossible', date: '2026-01-03', quantity: 1,
+      gross_amount: '11.00' }),
+  ]);
+  const oversell = impossible.checks.find(check => check.code === 'OVERSELL');
+  assert.equal(oversell.available_quantity, 2);
+  assert.equal(oversell.remaining_same_day_buy_quantity, 1);
+});
+
+test('SPLIT and SPINOFF replace quantities without allocating cash-derived cost', () => {
+  const events = [
     capital(),
     buy(),
     {
@@ -185,7 +234,8 @@ test('SPLIT and SPINOFF replace quantities and auto-allocate cost from action-da
         { ticker: 'BBB', quantity: 5 },
       ],
     },
-  ], {
+  ];
+  const result = replayPortfolioLedger(events, {
     corporate_action_prices: [
       { ticker: 'AAA', date: '2026-01-04', price: 4 },
       { ticker: 'BBB', date: '2026-01-05', price: 4 },
@@ -197,9 +247,18 @@ test('SPLIT and SPINOFF replace quantities and auto-allocate cost from action-da
     quantity: position.quantity,
     cost: position.buy_cost_minor,
   })), [
-    { ticker: 'AAA', quantity: 20, cost: 8000 },
-    { ticker: 'BBB', quantity: 5, cost: 2000 },
+    { ticker: 'AAA', quantity: 20, cost: 10000 },
+    { ticker: 'BBB', quantity: 5, cost: 0 },
   ]);
+  assert.equal(result.positions.find(position => position.ticker === 'AAA').total_shares_bought, 10);
+
+  const differentPrices = replayPortfolioLedger(events, {
+    corporate_action_prices: [
+      { ticker: 'AAA', date: '2026-01-04', price: 400 },
+      { ticker: 'BBB', date: '2026-01-05', price: 0.01 },
+    ],
+  });
+  assert.deepEqual(differentPrices.positions, result.positions);
 
   const noAllocation = {
     event_id: 'spinoff-no-evidence',
@@ -223,8 +282,77 @@ test('SPLIT and SPINOFF replace quantities and auto-allocate cost from action-da
     { ticker: 'AAA', quantity: 10, cost: 10000 },
     { ticker: 'BBB', quantity: 2, cost: 0 },
   ]);
-  assert.equal(fallback.checks.some(check =>
-    check.code === 'CORPORATE_ACTION_PRICE_FALLBACK' && check.severity === 'warning'), true);
+  assert.equal(fallback.checks.some(check => check.code === 'CORPORATE_ACTION_PRICE_FALLBACK'), false);
+});
+
+test('corporate action output quantities are explicit except derived SPLIT and 1:1 RENAME', () => {
+  for (const [actionType, outputs] of [
+    ['SPINOFF', [{ ticker: 'AAA', quantity: 10 }, { ticker: 'BBB' }]],
+    ['MERGER', [{ ticker: 'NEW' }]],
+    ['MERGER', [{ ticker: 'NEW', quantity: '   ' }]],
+    ['RENAME', [{ ticker: 'NEW' }, { ticker: 'OTHER', quantity: 1 }]],
+    ['SPLIT', [{ ticker: 'AAA' }, { ticker: 'BBB', quantity: 1 }]],
+  ]) {
+    const validation = validateLedgerEvent({
+      event_id: `missing-${actionType.toLowerCase()}`,
+      type: 'corporate_action',
+      date: '2026-01-03',
+      ticker: 'AAA',
+      action_type: actionType,
+      split_ratio: actionType === 'SPLIT' ? 2 : undefined,
+      outputs,
+    });
+    assert.equal(validation.valid, false, actionType);
+    assert.equal(validation.errors.some(error =>
+      error.code === 'CORPORATE_OUTPUT_QUANTITY_REQUIRED'), true, actionType);
+  }
+
+  const split = replayPortfolioLedger([
+    buy(),
+    {
+      event_id: 'derived-split', type: 'corporate_action', date: '2026-01-03',
+      ticker: 'AAA', action_type: 'SPLIT', split_ratio: 2,
+    },
+  ]);
+  assert.equal(split.positions[0].quantity, 20);
+
+  const rename = replayPortfolioLedger([
+    buy({ ticker: 'OLD', name: 'Old Company' }),
+    {
+      event_id: 'derived-rename', type: 'corporate_action', date: '2026-01-03',
+      ticker: 'OLD', action_type: 'RENAME', post_ticker: 'NEW',
+    },
+  ]);
+  assert.equal(rename.positions.find(position => position.ticker === 'NEW').quantity, 10);
+});
+
+test('RENAME leaves cash history on the old ticker and creates only target quantity', () => {
+  const result = replayPortfolioLedger([
+    capital(),
+    buy({ ticker: 'OLD', name: 'Old Company' }),
+    {
+      event_id: 'rename-1',
+      type: 'corporate_action',
+      date: '2026-01-03',
+      ticker: 'OLD',
+      action_type: 'RENAME',
+      outputs: [{ ticker: 'NEW', quantity: 10, allocation: 1 }],
+      cash_change: '2.50',
+    },
+  ]);
+
+  assert.deepEqual(result.positions.map(position => ({
+    ticker: position.ticker,
+    quantity: position.quantity,
+    cost: position.buy_cost_minor,
+    bought: position.total_shares_bought,
+  })), [
+    { ticker: 'NEW', quantity: 10, cost: 0, bought: 0 },
+    { ticker: 'OLD', quantity: 0, cost: 10000, bought: 10 },
+  ]);
+  assert.equal(result.cash.decimal, '902.50');
+  assert.equal(result.cash_chain.at(-1).source_type, 'corporate_action');
+  assert.deepEqual(result.ordered_events.at(-1).outputs.map(output => output.allocation), [null]);
 });
 
 test('capital units and fund split replay chronologically for total and shareholder units', () => {

@@ -43,7 +43,13 @@ const ENDPOINT_DEFINITIONS = {
   // Market
   trade_cal: endpoint('Market', 'static', DAY, 10000, [
     'exchange', 'start_date', 'end_date', 'is_open',
-  ]),
+  ], 26),
+  hk_tradecal: endpoint('Market', 'static', DAY, 10000, [
+    'start_date', 'end_date', 'is_open',
+  ], 250),
+  us_tradecal: endpoint('Market', 'static', DAY, 10000, [
+    'start_date', 'end_date', 'is_open',
+  ], 253),
   index_basic: endpoint('Market', 'static', DAY, 10000, [
     'ts_code', 'name', 'market', 'publisher', 'category',
   ]),
