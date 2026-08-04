@@ -22,9 +22,9 @@
   const isGuest = !isMember && localStorage.getItem('yc-guest') === '1';
   if (!isMember && !isGuest) return;
   const labels = {
-    tw: { guest: 'Guest 訪客', guestRole: '訪客模式', signIn: '登入 / 註冊', exit: '退出 Guest', logout: '登出 Logout', portfolio: '組合實錄', admin: '管理後台' },
-    cn: { guest: 'Guest 访客', guestRole: '访客模式', signIn: '登录 / 注册', exit: '退出 Guest', logout: '登出 Logout', portfolio: '组合实录', admin: '管理后台' },
-    en: { guest: 'Guest', guestRole: 'Guest access', signIn: 'Sign in / Register', exit: 'Exit Guest', logout: 'Sign out', portfolio: 'Portfolios', admin: 'Administration' },
+    tw: { guest: 'Guest 訪客', guestRole: '訪客模式', signIn: '登入 / 註冊', exit: '退出 Guest', logout: '登出 Logout', logoutRetry: '登出失敗，點擊重試', portfolio: '組合實錄', admin: '管理後台' },
+    cn: { guest: 'Guest 访客', guestRole: '访客模式', signIn: '登录 / 注册', exit: '退出 Guest', logout: '登出 Logout', logoutRetry: '登出失败，点击重试', portfolio: '组合实录', admin: '管理后台' },
+    en: { guest: 'Guest', guestRole: 'Guest access', signIn: 'Sign in / Register', exit: 'Exit Guest', logout: 'Sign out', logoutRetry: 'Sign-out failed — retry', portfolio: 'Portfolios', admin: 'Administration' },
   }[locale];
   const displayUser = isGuest ? labels.guest : user;
   const roleLabel = isGuest
@@ -99,29 +99,53 @@
       menu.classList.toggle('open');
     });
     document.addEventListener('click', () => menu.classList.remove('open'));
-    wrap.querySelector('#ycLogout').addEventListener('click', () => {
+    const logoutButton = wrap.querySelector('#ycLogout');
+    logoutButton.addEventListener('click', async () => {
       if (isMember && API) {
-        fetch(API + '/api/logout', {
-          method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + tok },
-          keepalive: true,
-        }).catch(() => {});
+        logoutButton.disabled = true;
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 8000);
+        try {
+          const response = await fetch(API + '/api/logout', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + tok },
+            keepalive: true,
+            signal: controller.signal,
+          });
+          if (!response.ok) throw new Error('logout_failed');
+        } catch (error) {
+          logoutButton.disabled = false;
+          logoutButton.textContent = labels.logoutRetry;
+          return;
+        } finally {
+          window.clearTimeout(timeout);
+        }
       }
       clearSession();
       location.replace(homePath);
     });
   }
 
-  // 靜默校驗會話：過期則清除並還原 LOGIN 鏈接
+  // 靜默校驗會話：短暫的邊緣讀取競態先重試，只有連續 401 才清除。
   if (isMember && API) {
-    fetch(API + '/api/me', { headers: { 'Authorization': 'Bearer ' + tok } })
-      .then(r => {
-        if (r.status === 401) {
-          clearSession();
-          location.replace(homePath);
+    const sameToken = () => String(localStorage.getItem('yc-token') || '').toLowerCase() === tok.toLowerCase();
+    const validate = attempt => {
+      if (!sameToken()) return Promise.resolve();
+      return fetch(API + '/api/me', {
+        headers: { 'Authorization': 'Bearer ' + tok },
+        cache: 'no-store',
+      }).then(r => {
+        if (r.status !== 401) return;
+        if (attempt < 1) {
+          window.setTimeout(() => validate(attempt + 1), 750);
+          return;
         }
-      })
-      .catch(() => {});
+        if (!sameToken()) return;
+        clearSession();
+        location.replace(loginPath + '?reason=expired');
+      }).catch(() => {});
+    };
+    validate(0);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);

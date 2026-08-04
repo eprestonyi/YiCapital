@@ -33,7 +33,9 @@ async function checkPortal() {
   try {
     const response = await fetchChecked(url);
     const health = await response.json();
-    if (health.version !== 'v9.0-d1-ledger') throw new Error(`unexpected version ${health.version}`);
+    if (health.version !== 'v9.1-d1-auth-sessions') throw new Error(`unexpected version ${health.version}`);
+    if (health.auth_sessions !== true) throw new Error('D1 authentication session schema is unavailable');
+    if (health.auth_rate_limit !== true) throw new Error('D1 authentication rate limiter is unavailable');
     if (health.ledger !== true) throw new Error('portfolio D1 ledger schema is unavailable');
     if (Number(health.ledger_outbox_pending) !== 0) {
       throw new Error(`portfolio D1 ledger outbox has ${health.ledger_outbox_pending} pending item(s)`);
@@ -45,6 +47,50 @@ async function checkPortal() {
     if (health.admin_google !== false) throw new Error('Google admin authentication must be disabled');
     if (health.tushare !== true) throw new Error('Tushare market source is unavailable');
     console.log(`PASS portal ${health.version}`);
+  } catch (error) {
+    failures.push(`${url}: ${error.message}`);
+  }
+}
+
+async function checkAuthCors() {
+  const url = `${PORTAL_BASE}/api/me`;
+  const allowed = ['https://www.yicapital.co', 'https://yicapital.co'];
+  try {
+    for (const origin of allowed) {
+      const response = await fetch(url, {
+        method: 'OPTIONS',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: {
+          Origin: origin,
+          'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'authorization',
+          'User-Agent': 'YiCapital-Live-Monitor/1.0',
+        },
+      });
+      if (response.status !== 204) throw new Error(`${origin} preflight returned ${response.status}`);
+      if (response.headers.get('access-control-allow-origin') !== origin) {
+        throw new Error(`${origin} was not reflected exactly`);
+      }
+      if (!String(response.headers.get('vary') || '').toLowerCase().split(',').map(x => x.trim()).includes('origin')) {
+        throw new Error(`${origin} response is missing Vary: Origin`);
+      }
+    }
+
+    const rejected = await fetch(url, {
+      method: 'OPTIONS',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        Origin: 'https://untrusted.example',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'authorization',
+        'User-Agent': 'YiCapital-Live-Monitor/1.0',
+      },
+    });
+    if (rejected.status !== 403) throw new Error(`untrusted origin returned ${rejected.status}`);
+    if (rejected.headers.has('access-control-allow-origin')) throw new Error('untrusted origin received CORS access');
+    console.log('PASS auth CORS www + apex allowlist');
   } catch (error) {
     failures.push(`${url}: ${error.message}`);
   }
@@ -97,6 +143,7 @@ await Promise.all([
   checkPage('/cn/', 'zh-Hans'),
   checkPage('/en/', 'en'),
   checkPortal(),
+  checkAuthCors(),
   checkEntryHistory(),
 ]);
 

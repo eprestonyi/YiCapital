@@ -17,9 +17,16 @@ function testEnv(overrides = {}) {
     },
     FEEDBACK_DB: {
       prepare: sql => {
-        const result = String(sql).includes('FROM ledger_outbox')
+        const query = String(sql);
+        const result = query.includes('FROM ledger_outbox')
           ? { pending: 0 }
-          : { count: String(sql).includes("'ledger_portfolios'") ? 14 : 3 };
+          : { count: query.includes("'ledger_portfolios'")
+            ? 14
+            : query.includes("'auth_account_revocations'")
+              ? 3
+              : query.includes("name = 'auth_rate_limits'")
+                ? 1
+                : 3 };
         const statement = {
           bind: () => statement,
           first: async () => result,
@@ -41,10 +48,12 @@ test('health exposes the feedback store without leaking configuration', async ()
   );
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.version, 'v9.0-d1-ledger');
+  assert.equal(body.version, 'v9.1-d1-auth-sessions');
   assert.equal(body.admin_google, false);
   assert.equal(body.feedback, true);
   assert.equal(body.ledger, true);
+  assert.equal(body.auth_sessions, true);
+  assert.equal(body.auth_rate_limit, true);
   assert.equal(body.ledger_outbox_pending, 0);
   assert.equal(body.feedback_rate_limit, true);
   assert.equal('database_id' in body, false);
@@ -55,12 +64,14 @@ test('live monitor and public release marker fail closed on the v9 ledger contra
     read('scripts/live-health.mjs'),
     read('assets/portal-config.js'),
   ]);
-  assert.match(monitor, /health\.version !== 'v9\.0-d1-ledger'/);
+  assert.match(monitor, /health\.version !== 'v9\.1-d1-auth-sessions'/);
+  assert.match(monitor, /health\.auth_sessions !== true/);
+  assert.match(monitor, /health\.auth_rate_limit !== true/);
   assert.match(monitor, /health\.ledger !== true/);
   assert.match(monitor, /Number\(health\.ledger_outbox_pending\) !== 0/);
   assert.match(monitor, /health\.admin_google !== false/);
   assert.doesNotMatch(monitor, /health\.version !== 'v8\.11-terminal-visuals'/);
-  assert.match(config, /window\.YC_RELEASE = 'v9\.0-d1-ledger'/);
+  assert.match(config, /window\.YC_RELEASE = 'v9\.1-d1-auth-sessions'/);
 });
 
 test('health fails closed when the D1 schema is incomplete', async () => {

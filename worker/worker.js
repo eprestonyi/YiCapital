@@ -21,9 +21,25 @@ import {
   portfolioDerivationState,
 } from './ledger-store.js';
 import { replayPortfolioLedger } from './portfolio-ledger.js';
+import {
+  GoogleIdTokenInvalidError,
+  GoogleJwksUnavailableError,
+  verifyGoogleIdToken,
+} from './google-id-token.js';
+import {
+  AuthStoreUnavailableError,
+  authRateAllowed,
+  authRateLimitHealth,
+  cleanupAuthState,
+  getSession,
+  newSession,
+  revokeSession,
+  revokeUserSessions,
+  sessionStoreHealth,
+} from './auth-sessions.js';
 
 /* ═══════════════════════════════════════════════════════════════
-   Yi Capital Portal Backend v9.0 — Cloudflare Worker（D1 Ledger + Password-only Admin）
+   Yi Capital Portal Backend v9.1 — Cloudflare Worker（D1 Ledger + D1 Auth Sessions）
    ─────────────────────────────────────────────────────────────
    帳號模型：
      · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則發 6 位驗證碼）
@@ -57,7 +73,8 @@ import { replayPortfolioLedger } from './portfolio-ledger.js';
      GET  /api/nav/us|hk|a      公開：只讀每日持久化快照（不即時計算/抓行情）
      ⏰ Cron: "30 21 * * *" 美股 ｜ "0 9 * * *" 亞洲即時 ｜ "30 10 * * *" 亞洲 EOD 對賬
    KV 鍵：
-     user:{用戶名} / email:{郵箱}→用戶名 / sess:{token} /
+     user:{用戶名} / email:{郵箱}→用戶名 /
+     sess:{token}（v9.1 僅作一個版本的舊會話遷移與緊急回退副本）/
      pending:{郵箱}(驗證碼,15分鐘) / gsetup:{token}(Google待設置,15分鐘) /
      ledger:{us|hk|a} / live:{us|hk|a} / navcache:{us|hk|a} /
      navstatus:{us|hk|a} / bmset:{us|hk|a} / bmstatus:{us|hk|a}
@@ -67,7 +84,6 @@ import { replayPortfolioLedger } from './portfolio-ledger.js';
      GH_BRANCH, GH_PATH, ALLOWED_ORIGIN,（可選）MAIL_FROM
    ═══════════════════════════════════════════════════════════════ */
 
-const SESSION_TTL = 7 * 24 * 3600;
 const enc = new TextEncoder();
 
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -85,46 +101,38 @@ function safeEqual(a, b) {
   let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return r === 0;
 }
-const corsHeaders = env => ({
-  'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN || '*',
-  'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-  'Access-Control-Max-Age': '86400',
-});
-const J = (env, data, status = 200, extraHeaders = {}) =>
+function normalizedCorsOrigin(request, env) {
+  const origin = request && request.headers && request.headers.get('Origin');
+  if (!origin) return env.ALLOWED_ORIGIN || '*';
+  const normalized = String(origin).replace(/\/+$/, '');
+  const configured = String(env.ALLOWED_ORIGINS || env.ALLOWED_ORIGIN || '')
+    .split(',')
+    .map(value => value.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+  const allowed = new Set([
+    ...configured,
+    'https://www.yicapital.co',
+    'https://yicapital.co',
+  ]);
+  if (allowed.has(normalized)) return normalized;
+  return null;
+}
+const corsHeaders = (env, request) => {
+  const origin = normalizedCorsOrigin(request, env);
+  return {
+    ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+    'Access-Control-Max-Age': '86400',
+    'Vary': 'Origin',
+  };
+};
+const baseJsonResponse = (env, data, status = 200, extraHeaders = {}, request = null) =>
   new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders(env), ...extraHeaders },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(env, request), ...extraHeaders },
   });
-
-async function getSession(request, env) {
-  const m = (request.headers.get('Authorization') || '').match(/^Bearer\s+([a-f0-9]{64})$/i);
-  if (!m) return null;
-  const raw = await env.YC_KV.get('sess:' + m[1]);
-  if (!raw) return null;
-  const session = JSON.parse(raw);
-  // Password-only admin: revoke every legacy Google-admin session at first use.
-  if (session.provider === 'google-admin') {
-    try { await env.YC_KV.delete('sess:' + m[1]); } catch (error) {}
-    return null;
-  }
-  return { token: m[1], ...session };
-}
-async function newSession(env, username, role, details = {}) {
-  const token = randomHex(32);
-  await env.YC_KV.put('sess:' + token, JSON.stringify({ u: username, role, ...details }), { expirationTtl: SESSION_TTL });
-  return token;
-}
-
-async function authRateAllowed(request, env, action, limit, windowSeconds) {
-  const address = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
-  const window = Math.floor(Date.now() / (windowSeconds * 1000));
-  const identity = await sha256Hex(address.split(',')[0].trim());
-  const key = ['authrate', action, identity, window].join(':');
-  const count = Number(await env.YC_KV.get(key) || 0) + 1;
-  await env.YC_KV.put(key, String(count), { expirationTtl: windowSeconds + 60 });
-  return count <= limit;
-}
+const J = baseJsonResponse;
 
 const FEEDBACK_CATEGORIES = new Set([
   'bug', 'content', 'data', 'ux',
@@ -166,18 +174,7 @@ function feedbackOriginAllowed(request, env) {
   const origin = request.headers.get('Origin');
   // Same-origin Sites proxy requests do not forward Origin to the portal Worker.
   if (!origin) return true;
-  const allowed = new Set([
-    env.ALLOWED_ORIGIN,
-    'https://www.yicapital.co',
-    'https://yicapital.co',
-  ].filter(Boolean).map(x => String(x).replace(/\/+$/, '')));
-  if (allowed.has(origin.replace(/\/+$/, ''))) return true;
-  try {
-    const u = new URL(origin);
-    if (u.protocol === 'https:' && u.hostname.endsWith('.chatgpt.site')) return true;
-    if (u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1')) return true;
-  } catch (e) {}
-  return false;
+  return normalizedCorsOrigin(request, env) !== null;
 }
 async function feedbackActor(sess, env, associateAccount) {
   if (!associateAccount || !sess) return { actorType: 'anonymous', username: null };
@@ -357,6 +354,14 @@ async function sendWelcome(env, email, username) {
       body: JSON.stringify({ from: 'Yi Capital <information@' + domain + '>', to: [email], reply_to: 'information@' + domain, subject: '歡迎加入 Yi Capital，' + username, html }),
     });
   } catch (e) { /* 歡迎信失敗不影響註冊 */ }
+}
+
+async function afterResponse(ctx, promise) {
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(promise);
+    return;
+  }
+  await promise;
 }
 
 async function createUser(env, rec) {
@@ -3157,9 +3162,15 @@ export {
 
 export default {
   async fetch(request, env, ctx) {
+    const J = (responseEnv, data, status = 200, extraHeaders = {}) =>
+      baseJsonResponse(responseEnv, data, status, extraHeaders, request);
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '');
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(env) });
+    if (request.method === 'OPTIONS') {
+      const origin = normalizedCorsOrigin(request, env);
+      if (!origin) return new Response(null, { status: 403, headers: { 'Vary': 'Origin' } });
+      return new Response(null, { status: 204, headers: corsHeaders(env, request) });
+    }
 
     try {
       const terminalResponse = await handleTushareTerminalRequest(request, env, {
@@ -3182,15 +3193,21 @@ export default {
             feedbackOk = Number(schema && schema.count || 0) === 3;
           }
         } catch (e) {}
-        const ledger = await ledgerHealth(env);
+        const [ledger, authSessions, authRateLimit] = await Promise.all([
+          ledgerHealth(env),
+          sessionStoreHealth(env),
+          authRateLimitHealth(env),
+        ]);
         return J(env, {
-          ok: true, version: 'v9.0-d1-ledger',
+          ok: true, version: 'v9.1-d1-auth-sessions',
           kv: kvOk,
           feedback: feedbackOk,
           ledger: ledger.ready,
           ledger_outbox_pending: ledger.outboxPending,
           raw_nav_ready: ledger.rawNavReady,
           raw_nav_portfolios: ledger.rawNavPortfolios,
+          auth_sessions: authSessions,
+          auth_rate_limit: authRateLimit,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
           tushare: !!env.TUSHARE_TOKEN,
           terminal_warehouse: !!env.YC_KV,
@@ -3228,8 +3245,9 @@ export default {
           return J(env, { ok: true, needCode: true, message: '驗證碼已發送至 ' + email });
         }
         await createUser(env, { u: username, email, salt, hash, provider: 'password', role: 'guest', disabled: false, newsletter, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: null });
-        await sendWelcome(env, email, username);
-        return J(env, { ok: true, message: '註冊成功，請登入' });
+        const token = await newSession(env, username, 'guest');
+        await afterResponse(ctx, sendWelcome(env, email, username));
+        return J(env, { ok: true, token, role: 'guest', username });
       }
 
       /* ════ 郵箱驗證碼確認 ════ */
@@ -3247,8 +3265,9 @@ export default {
         if (await env.YC_KV.get('user:' + p.u)) { await env.YC_KV.delete(pkey); return J(env, { error: '用戶名剛被佔用，請重新註冊' }, 409); }
         await createUser(env, { u: p.u, email: p.email, salt: p.salt, hash: p.hash, provider: 'password', role: 'guest', disabled: false, newsletter: p.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: null });
         await env.YC_KV.delete(pkey);
-        await sendWelcome(env, p.email, p.u);
-        return J(env, { ok: true, message: '驗證成功，請登入' });
+        const token = await newSession(env, p.u, 'guest');
+        await afterResponse(ctx, sendWelcome(env, p.email, p.u));
+        return J(env, { ok: true, token, role: 'guest', username: p.u });
       }
 
       /* ════ 登入：用戶名或郵箱 + 密碼 ════ */
@@ -3287,14 +3306,22 @@ export default {
         const b = await request.json();
         const credential = b.credential;
         if (!credential) return J(env, { error: '缺少憑證' }, 400);
-        const gr = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(credential));
-        if (!gr.ok) return J(env, { error: 'Google 憑證無效' }, 401);
-        const t = await gr.json();
-        if (t.aud !== env.GOOGLE_CLIENT_ID) return J(env, { error: '憑證受眾不匹配' }, 401);
-        if (!['accounts.google.com', 'https://accounts.google.com'].includes(String(t.iss || ''))) return J(env, { error: 'Google 憑證簽發者無效' }, 401);
-        if (!t.sub || !Number.isFinite(Number(t.exp)) || Number(t.exp) * 1000 <= Date.now()) return J(env, { error: 'Google 憑證已過期' }, 401);
-        if (String(t.email_verified) !== 'true' || !t.email) return J(env, { error: 'Google 郵箱未驗證' }, 401);
-        const email = t.email.toLowerCase();
+        let t;
+        try {
+          t = await verifyGoogleIdToken(credential, env.GOOGLE_CLIENT_ID);
+        } catch (error) {
+          if (error instanceof GoogleJwksUnavailableError) {
+            return J(env, {
+              error: 'Google 身份驗證暫時不可用，請稍後再試',
+              code: 'google_keys_unavailable',
+            }, 503, { 'Retry-After': '5' });
+          }
+          if (error instanceof GoogleIdTokenInvalidError) {
+            return J(env, { error: 'Google 憑證無效', code: 'google_credential_invalid' }, 401);
+          }
+          throw error;
+        }
+        const email = t.email;
         const mapped = await env.YC_KV.get('email:' + email);
         if (mapped) {
           const u = JSON.parse(await env.YC_KV.get('user:' + mapped) || 'null');
@@ -3316,8 +3343,8 @@ export default {
             newsletter: b.newsletter === true, terms: true, termsAt: new Date().toISOString(),
             created: new Date().toISOString(), lastLogin: new Date().toISOString(),
           });
-          await sendWelcome(env, email, username);
           const token = await newSession(env, username, 'guest');
+          await afterResponse(ctx, sendWelcome(env, email, username));
           return J(env, { ok: true, token, role: 'guest', username });
         }
         // 新用戶 → 發放 15 分鐘設置票據，前端引導其設置用戶名+密碼
@@ -3344,8 +3371,8 @@ export default {
         const hash = await pbkdf2(password, salt);
         await createUser(env, { u: username, email: g.email, name: g.name, googleSub: g.googleSub || null, salt, hash, provider: 'google', role: 'guest', disabled: false, newsletter: b.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: new Date().toISOString() });
         await env.YC_KV.delete(skey);
-        await sendWelcome(env, g.email, username);
         const token = await newSession(env, username, 'guest');
+        await afterResponse(ctx, sendWelcome(env, g.email, username));
         return J(env, { ok: true, token, role: 'guest', username });
       }
 
@@ -3455,6 +3482,17 @@ export default {
       }
 
       /* ════ 會話 ════ */
+      if (path === '/api/logout' && request.method === 'POST') {
+        const match = String(request.headers.get('Authorization') || '')
+          .match(/^Bearer\s+([a-f0-9]{64})$/i);
+        if (match && !await revokeSession(env, match[1])) {
+          return J(env, { error: '登出暫時未能完成，請重試' }, 503, {
+            'Cache-Control': 'no-store',
+            'Retry-After': '2',
+          });
+        }
+        return J(env, { ok: true }, 200, { 'Cache-Control': 'no-store' });
+      }
       const sess = await getSession(request, env);
 
       /* ════ 用戶意見：公開提交，登入可選；所有文字均視為不可信輸入 ════ */
@@ -3568,13 +3606,14 @@ export default {
 
       if (path === '/api/me' && request.method === 'GET') {
         if (!sess) return J(env, { error: '未登入' }, 401);
-        return J(env, { ok: true, username: sess.u, role: sess.role });
+        return J(env, {
+          ok: true,
+          username: sess.u,
+          role: sess.role,
+          expiresAt: new Date(sess.expiresAt).toISOString(),
+          absoluteExpiresAt: new Date(sess.absoluteExpiresAt).toISOString(),
+        }, 200, { 'Cache-Control': 'no-store' });
       }
-      if (path === '/api/logout' && request.method === 'POST') {
-        if (sess) await env.YC_KV.delete('sess:' + sess.token);
-        return J(env, { ok: true });
-      }
-
       /* ════ 管理員 ════ */
       const needAdmin = () => {
         if (!sess) return J(env, { error: '未登入' }, 401);
@@ -3786,6 +3825,9 @@ export default {
         if (!raw) return J(env, { error: '用戶不存在' }, 404);
         const u = JSON.parse(raw);
         if (action === 'delete') {
+          if (!await revokeUserSessions(env, username)) {
+            return J(env, { error: '會話撤銷暫時失敗，未刪除帳號，請重試' }, 503);
+          }
           if (env.FEEDBACK_DB) {
             const now = Date.now();
             const statements = [
@@ -3823,10 +3865,16 @@ export default {
           if (u.email) await env.YC_KV.delete('email:' + u.email);
           return J(env, { ok: true, message: '已刪除 ' + username });
         }
+        if (action === 'resetpw' && (!newPassword || newPassword.length < 6)) {
+          return J(env, { error: '新密碼至少 6 位' }, 400);
+        }
+        if ((action === 'disable' || action === 'resetpw') &&
+            !await revokeUserSessions(env, username)) {
+          return J(env, { error: '會話撤銷暫時失敗，帳號未更新，請重試' }, 503);
+        }
         if (action === 'disable') u.disabled = true;
         else if (action === 'enable') u.disabled = false;
         else if (action === 'resetpw') {
-          if (!newPassword || newPassword.length < 6) return J(env, { error: '新密碼至少 6 位' }, 400);
           u.salt = randomHex(16); u.hash = await pbkdf2(newPassword, u.salt);
         } else return J(env, { error: '未知操作' }, 400);
         await env.YC_KV.put(key, JSON.stringify(u));
@@ -3978,6 +4026,9 @@ export default {
         const uRaw = await env.YC_KV.get('user:' + rec.u);
         if (!uRaw) return J(env, { error: '用戶不存在' }, 400);
         const u = JSON.parse(uRaw);
+        if (!await revokeUserSessions(env, rec.u)) {
+          return J(env, { error: '會話撤銷暫時失敗，密碼未重設，請重試' }, 503);
+        }
         u.salt = randomHex(16); u.hash = await pbkdf2(password, u.salt);
         await env.YC_KV.put('user:' + rec.u, JSON.stringify(u));
         await env.YC_KV.delete('reset:' + email);
@@ -3994,6 +4045,9 @@ export default {
         const uRaw = await env.YC_KV.get('user:' + username);
         if (!uRaw) return J(env, { error: '用戶不存在' }, 404);
         const u = JSON.parse(uRaw);
+        if (!await revokeUserSessions(env, username)) {
+          return J(env, { error: '會話撤銷暫時失敗，密碼未更新，請重試' }, 503);
+        }
         u.salt = randomHex(16); u.hash = await pbkdf2(password, u.salt);
         await env.YC_KV.put('user:' + username, JSON.stringify(u));
         return J(env, { ok: true, username });
@@ -4079,6 +4133,14 @@ export default {
       return J(env, { error: 'Not found' }, 404);
     } catch (e) {
       const requestId = 'req_' + Date.now().toString(36) + '_' + randomHex(3);
+      if (e instanceof AuthStoreUnavailableError) {
+        console.error('auth_request_unavailable', requestId, e.operation);
+        return J(env, {
+          error: '身份服務暫時不可用，請稍後重試',
+          code: 'auth_store_unavailable',
+          requestId,
+        }, 503, { 'Cache-Control': 'no-store', 'Retry-After': '2' });
+      }
       console.error('request_failed', requestId, e);
       return J(env, { error: '服務器暫時發生錯誤', requestId }, 500);
     }
@@ -4124,6 +4186,9 @@ export default {
           refreshTushareTerminalSnapshots(env).catch(e =>
             console.error('terminal_tushare_refresh_failed', e)),
           cleanupFeedbackRateLimits(env).catch(e => console.error('feedback_rate_cleanup_failed', e)),
+          cleanupAuthState(env).then(ok => {
+            if (!ok) console.error('auth_state_cleanup_failed');
+          }).catch(e => console.error('auth_state_cleanup_failed', e)),
         ]);
       })());
     } else if (cron === '0 9 * * *') {
@@ -4135,6 +4200,9 @@ export default {
           refreshTushareTerminalSnapshots(env).catch(e =>
             console.error('terminal_tushare_refresh_failed', e)),
           cleanupFeedbackRateLimits(env).catch(e => console.error('feedback_rate_cleanup_failed', e)),
+          cleanupAuthState(env).then(ok => {
+            if (!ok) console.error('auth_state_cleanup_failed');
+          }).catch(e => console.error('auth_state_cleanup_failed', e)),
         ]);
       })());
     } else if (cron === '30 10 * * *') {

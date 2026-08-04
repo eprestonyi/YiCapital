@@ -79,6 +79,10 @@
       termsRequired: '必須同意服務條款才能註冊。',
       invalidCode: '請輸入 6 位數字驗證碼。',
       backendMissing: '身份服務暫時不可用。',
+      requestTimeout: '登入服務回應逾時，請重試。',
+      networkError: '暫時無法連接登入服務，請檢查網絡後重試。',
+      rateLimited: '登入嘗試過多，請稍後再試。',
+      googleUnavailable: 'Google 登入服務暫時不可用，請稍後再試。',
       googleChecking: '正在驗證 Google 帳號…',
       googleSetup: 'Google 身份已驗證，請設定用戶名。',
       codeSent: '驗證碼已發送，請檢查收件箱與垃圾郵件。',
@@ -142,6 +146,10 @@
       termsRequired: '必须同意服务条款才能注册。',
       invalidCode: '请输入 6 位数字验证码。',
       backendMissing: '身份服务暂时不可用。',
+      requestTimeout: '登录服务响应超时，请重试。',
+      networkError: '暂时无法连接登录服务，请检查网络后重试。',
+      rateLimited: '登录尝试过多，请稍后再试。',
+      googleUnavailable: 'Google 登录服务暂时不可用，请稍后再试。',
       googleChecking: '正在验证 Google 账号…',
       googleSetup: 'Google 身份已验证，请设置用户名。',
       codeSent: '验证码已发送，请检查收件箱与垃圾邮件。',
@@ -205,6 +213,10 @@
       termsRequired: 'You must accept the Terms of Service to register.',
       invalidCode: 'Enter the 6-digit verification code.',
       backendMissing: 'The identity service is temporarily unavailable.',
+      requestTimeout: 'The identity service timed out. Please try again.',
+      networkError: 'Unable to reach the identity service. Check your connection and try again.',
+      rateLimited: 'Too many sign-in attempts. Please try again later.',
+      googleUnavailable: 'Google sign-in is temporarily unavailable. Please try again.',
       googleChecking: 'Verifying your Google account…',
       googleSetup: 'Google identity verified. Choose a username.',
       codeSent: 'Verification code sent. Check your inbox and spam folder.',
@@ -433,14 +445,31 @@
 
   async function api(path, body) {
     if (!API) throw new Error(copy.backendMissing);
-    const response = await fetch(API + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(localizeServerError(payload.error));
-    return payload;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(API + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(
+        response.status === 429
+          ? copy.rateLimited
+          : payload.code === 'google_keys_unavailable'
+            ? copy.googleUnavailable
+            : localizeServerError(payload.error)
+      );
+      return payload;
+    } catch (error) {
+      if (error && error.name === 'AbortError') throw new Error(copy.requestTimeout);
+      if (error instanceof TypeError) throw new Error(copy.networkError);
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 
   function localizeServerError(serverError) {
@@ -524,7 +553,11 @@
       if (pendingEmail && authMode === 'signup') {
         const code = $('yc-entry-code').value.trim();
         if (!/^\d{6}$/.test(code)) throw new Error(copy.invalidCode);
-        await api('/api/verify', { email: pendingEmail, code });
+        const verified = await api('/api/verify', { email: pendingEmail, code });
+        if (validSession(verified)) {
+          sessionIn(verified);
+          return;
+        }
         const signedIn = await api('/api/login', pendingCredentials);
         sessionIn(signedIn);
         return;
@@ -555,6 +588,8 @@
           pendingCredentials = { username, password };
           setMessage(copy.codeSent, 'success');
           renderForm();
+        } else if (validSession(payload)) {
+          sessionIn(payload);
         } else {
           const signedIn = await api('/api/login', { username, password });
           sessionIn(signedIn);
@@ -638,7 +673,11 @@
     script.async = true;
     script.defer = true;
     script.onload = renderGoogleButton;
-    script.onerror = () => setMessage(copy.genericError, 'error');
+    script.onerror = () => {
+      googleLoading = false;
+      script.remove();
+      setMessage(copy.networkError, 'error');
+    };
     document.head.appendChild(script);
   }
 

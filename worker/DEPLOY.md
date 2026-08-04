@@ -1,4 +1,4 @@
-Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Password-only Admin + Wrangler ES Module + Terminal Atlas + 用戶意見 D1）
+Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Password-only Admin + Wrangler ES Module + Terminal Atlas + 用戶意見 D1）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
@@ -20,7 +20,7 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Pas
    該 Worker → Settings → Bindings → Add → KV namespace
    Variable name 填 YC_KV，Namespace 選剛建的 → Save
 
-③-B 創建及初始化 D1（用戶意見 + 投資組合事件賬本）
+③-B 創建及初始化 D1（登入會話 + 用戶意見 + 投資組合事件賬本）
    Cloudflare 儀表盤 → Storage & Databases → D1 → Create database
    名稱填 yicapital-feedback。
    Worker → Settings → Bindings → Add → D1 database
@@ -28,9 +28,16 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Pas
    使用倉庫的 wrangler.toml 部署時，執行：
      npx wrangler d1 migrations apply FEEDBACK_DB --remote
    這會依次套用 migrations/0001_user_feedback.sql、
-   migrations/0002_portfolio_ledger.sql 與 migrations/0003_frozen_price_tapes.sql。
+   migrations/0002_portfolio_ledger.sql、migrations/0003_frozen_price_tapes.sql 與
+   migrations/0004_auth_sessions.sql。
    0003 為每個 ledger revision 建立 immutable、未復權 raw-close price tape，
-   是 NAV 發布門禁。不要把用戶意見、投資組合事件或稅務資料存入公開 GitHub 文件。
+   是 NAV 發布門禁；0004 必須先於 v9.1 Worker 部署完成。不要把登入 token、
+   用戶意見、投資組合事件或稅務資料存入公開 GitHub 文件。
+
+   v9.1 以 D1 作為登入會話真源：30 天閒置滑動續期、180 天絕對上限；KV 的
+   sess:{token} 只保留一個版本作舊會話懶遷移與緊急回退，之後應刪除兼容寫入。
+   回退時只可回退到仍理解 D1 會話與撤銷墓碑的 v9.1 build；回退至舊 KV-only
+   Worker 會破壞即時登出語義，因此不屬於安全回退路徑。
 
    v9 過渡期可讓事件賬本與 user log 共用 FEEDBACK_DB。若另建專用 D1，綁定名
    必須是 LEDGER_DB；Worker 會優先使用 LEDGER_DB，未配置時才回退 FEEDBACK_DB。
@@ -40,7 +47,7 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Pas
      ADMIN_USERNAME   你的管理員用戶名
      ADMIN_PASSWORD   你的管理員密碼（設強一點）
      GH_TOKEN         GitHub Fine-grained token（僅 YiCapital 倉庫、僅 Contents 讀寫）
-     FEEDBACK_RATE_SALT  隨機 32-byte 字串，只用於匿名防濫用摘要
+     FEEDBACK_RATE_SALT  隨機 32-byte 字串，用於匿名意見及登入限流摘要
      TUSHARE_TOKEN    Tushare Pro token；只存 Worker Secret，禁止寫入前端或 Git
    【Text 類型（明文變量）】
      GH_OWNER         eprestonyi
@@ -49,7 +56,9 @@ Cloudflare Worker v9.0 部署步驟（D1 事件賬本 + Excel 雙向同步 + Pas
      GH_PATH          assets/data/Yi_Capital_US.xlsx
      GH_PATH_HK       assets/data/Yi_Capital_HK.xlsx（可省略，這是默認值）
      GH_PATH_A        assets/data/Yi_Capital_A.xlsx（可省略，這是默認值）
-     ALLOWED_ORIGIN   https://你的網站域名（如 https://yicapital.com，不帶末尾斜杠）
+     ALLOWED_ORIGIN   https://www.yicapital.co（canonical host，不帶末尾斜杠）
+     ALLOWED_ORIGINS  可選逗號分隔 allowlist；過渡期可填
+                      https://www.yicapital.co,https://yicapital.co
      TERMINAL_RATE_LIMIT_PER_MINUTE  可選；每 IP 每分鐘上限，預設 120
    → Save and deploy
 

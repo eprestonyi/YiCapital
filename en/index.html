@@ -3,6 +3,7 @@
 <head>
 <script>window.YC_LANG='en';</script>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>if(location.hostname==='yicapital.co')location.replace('https://www.yicapital.co'+location.pathname+location.search+location.hash);</script>
 <link rel="icon" href="/favicon.svg?v=20260802a" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260802a">
 <title>YiCapital | Independent Research</title>
@@ -18,8 +19,8 @@
 window.YC_ENTRY_MODE='gate';
 (()=>{try{const q=new URLSearchParams(location.search);if(q.get('guest')==='1')localStorage.setItem('yc-guest','1');const token=localStorage.getItem('yc-token')||sessionStorage.getItem('yc-token')||'';const user=localStorage.getItem('yc-user')||sessionStorage.getItem('yc-user')||'';const member=/^[a-f0-9]{64}$/i.test(token)&&!!user;const guest=localStorage.getItem('yc-guest')==='1';document.documentElement.classList.add(member||guest?'yc-dashboard-requested':'yc-entry-pending');}catch(e){document.documentElement.classList.add('yc-entry-pending');}})();
 </script>
-<script src="../assets/portal-config.js?v=8.12"></script>
-<script src="../assets/yc-entry.js?v=8.12" defer></script>
+<script src="../assets/portal-config.js?v=9.1"></script>
+<script src="../assets/yc-entry.js?v=9.1" defer></script>
 </head>
 <body>
 <div class="yc-entry-fallback" role="status"><div class="yc-entry-fallback-card">
@@ -171,6 +172,6 @@ renderReports("home-reports","","");document.addEventListener("yc-content-report
 </script>
 <script src="../assets/yc-home-live.js"></script>
 <script src="../assets/yc-i18n.js"></script>
-<script src="../assets/yc-session.js?v=8.9"></script>
+<script src="../assets/yc-session.js?v=9.1"></script>
 </body>
 </html>

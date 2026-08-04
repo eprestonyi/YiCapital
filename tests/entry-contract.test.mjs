@@ -16,6 +16,7 @@ test('all three home routes mount the market entry before the existing dashboard
     assert.match(html, /yc-user/);
     assert.match(html, /yc-guest/);
     assert.match(html, /yc-dashboard-requested/);
+    assert.match(html, /location\.hostname==='yicapital\.co'/);
   }
 });
 
@@ -26,8 +27,15 @@ test('all direct login routes use the same entry experience', async () => {
     assert.match(html, /yc-entry\.css/);
     assert.match(html, /yc-entry\.js/);
     assert.match(html, /yc-entry-fallback/);
+    assert.match(html, /location\.hostname==='yicapital\.co'/);
     assert.doesNotMatch(html, /id="p"|id="u"/);
   }
+});
+
+test('the shared portal config canonicalizes apex pages before auth state is reused', async () => {
+  const config = await read('assets/portal-config.js');
+  assert.match(config, /window\.location\.hostname === 'yicapital\.co'/);
+  assert.match(config, /window\.location\.replace\('https:\/\/www\.yicapital\.co'/);
 });
 
 test('anonymous Guest never receives an authentication token', async () => {
@@ -119,6 +127,7 @@ test('static motion modes stop the loop and persistent Dashboard state preserves
   assert.match(session, /\['yc-token', 'yc-role', 'yc-user', 'yc-guest'\]/);
   assert.match(session, /location\.replace\(homePath\)/);
   assert.match(session, /isGuest/);
+  assert.match(session, /sameToken/);
   const sceneDuration = Number(entry.match(/const sceneDuration = (\d+);/)[1]);
   const drawDuration = Number(entry.match(/const drawDuration = (\d+);/)[1]);
   assert.ok(sceneDuration >= 30000);
