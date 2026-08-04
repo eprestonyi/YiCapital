@@ -1502,7 +1502,7 @@ function cleanMetrics(value) {
   });
   return out;
 }
-function calculatePortfolioMetrics(history) {
+function calculatePortfolioMetrics(history, options = {}) {
   const rows = normalizeHistory(history), rp = rows.map(x => x.ret), days = rp.length;
   if (!days) return {
     metrics: null, drawdown: [], rollVol: [], rollSharpe: [],
@@ -1541,15 +1541,19 @@ function calculatePortfolioMetrics(history) {
     }),
     hist: histogram(rp),
     varTable: buildVarTable(rp),
-    stress: stressScenarios(rp),
+    stress: options.includeStress === false ? null : stressScenarios(rp),
   };
 }
-function makePortfolioCache(led, live, status) {
+function makePortfolioCache(led, live, status, options = {}) {
   const sourceHistory = normalizeHistory(led.history);
   const liveRows = normalizeHistory(live.rows);
   const combined = normalizeHistory([...sourceHistory, ...liveRows]);
   const complete = sourceHistory.length > 0;
-  let calculated = calculatePortfolioMetrics(complete ? combined : liveRows);
+  const hasStressOverride = Object.hasOwn(options, 'stress');
+  let calculated = calculatePortfolioMetrics(complete ? combined : liveRows, {
+    includeStress: !hasStressOverride,
+  });
+  if (hasStressOverride) calculated = { ...calculated, stress: options.stress };
   const sourceMetricValues = cleanMetrics(led.sourceMetrics || led.snap);
   let metrics = complete
     ? { ...sourceMetricValues, ...(calculated.metrics || {}) }
@@ -1671,8 +1675,8 @@ function makePortfolioCache(led, live, status) {
     status: status || null, cacheVersion: 3,
   };
 }
-async function persistPortfolioCache(env, pf, led, live, status) {
-  const cache = makePortfolioCache({ ...led, portfolio: pf }, live, status);
+async function persistPortfolioCache(env, pf, led, live, status, options = {}) {
+  const cache = makePortfolioCache({ ...led, portfolio: pf }, live, status, options);
   await Promise.all([
     env.YC_KV.put('live:' + pf, JSON.stringify(live)),
     env.YC_KV.put('navstatus:' + pf, JSON.stringify(status)),
@@ -3009,8 +3013,12 @@ async function updatePortfolioNav(env, pf, options = {}) {
   };
   const affectedFrom = String(options.affectedFrom || '').slice(0, 10);
   const continuationRequested = Boolean(options.phase) || isoDatePattern.test(affectedFrom);
-  const ledRaw = await env.YC_KV.get('ledger:' + pf);
+  const [ledRaw, publicCacheRaw] = await Promise.all([
+    env.YC_KV.get('ledger:' + pf),
+    continuationRequested ? Promise.resolve(null) : env.YC_KV.get('navcache:' + pf),
+  ]);
   const cachedLedger = ledRaw ? JSON.parse(ledRaw) : null;
+  const cachedPublic = publicCacheRaw ? JSON.parse(publicCacheRaw) : null;
   let led = cachedLedger;
   if (continuationRequested && (env.LEDGER_DB || env.FEEDBACK_DB)) {
     // Confirm necessarily advances D1 before KV. A continuation must therefore
@@ -3085,6 +3093,24 @@ async function updatePortfolioNav(env, pf, options = {}) {
   const lastPxRaw = await env.YC_KV.get('lastpx:' + pf), lastPx = lastPxRaw ? JSON.parse(lastPxRaw) : {};
   const adapter = options.adapter || createTushareAdapter(env, options);
   const ledgerRevision = Number(options.ledgerRevision ?? led.ledgerRevision);
+  if (!continuationRequested && cachedPublic &&
+      Number(cachedPublic.ledgerRevision) === ledgerRevision) {
+    const cachedHistory = Array.isArray(cachedPublic.history) ? cachedPublic.history : [];
+    const cachedNavRows = Array.isArray(cachedPublic.navRows)
+      ? cachedPublic.navRows.map(row => ({
+        ...row,
+        unitNav: Number(row && (row.unitNav ?? row.nav)),
+      }))
+      : [];
+    const cachedLastNav = cachedNavRows.at(-1);
+    led = {
+      ...led,
+      history: cachedHistory.length ? cachedHistory : led.history,
+      navRows: cachedNavRows.length ? cachedNavRows : led.navRows,
+      lastDate: cachedLastNav && cachedLastNav.date || led.lastDate,
+      lastUnitNav: cachedLastNav && Number(cachedLastNav.unitNav) || led.lastUnitNav,
+    };
+  }
   if (live && live.ledgerRevision != null && Number(live.ledgerRevision) !== ledgerRevision) {
     live = { rows: [], holdings: [], ledgerRevision };
   }
@@ -3465,7 +3491,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
     fallback: false,
     complete: true,
   });
-  await persistLedgerValuation(env, pf, {
+  const persistedNav = await persistLedgerValuation(env, pf, {
     ...navRow,
     source: valuationSource,
     sourceRef: live.sourceMeta.source_endpoint,
@@ -3502,17 +3528,94 @@ async function updatePortfolioNav(env, pf, options = {}) {
       sessionVerified: item.q.session_verified === true,
     },
   })), ledgerRevision);
-  const freshLedger = await materializeLedgerKv(env, pf, {
-    expectedLedgerRevision: ledgerRevision,
-    currentDate: marketDate,
+  const persistedUnits = Number(persistedNav.units) || 0;
+  const persistedDivPerUnit = persistedUnits > 0 ? fundDividend / persistedUnits : 0;
+  const persistedRet = prev.unitNav > 0
+    ? (Number(persistedNav.unitNav) + persistedDivPerUnit) / prev.unitNav - 1
+    : Number(persistedNav.netValue) / prev.netValue - 1;
+  const canonicalNavRow = {
+    ...navRow,
+    ret: round(persistedRet, 10),
+    unitNav: Number(persistedNav.unitNav),
+    units: persistedUnits,
+    marketValue: Number(persistedNav.marketValue),
+    cash: Number(persistedNav.cash),
+    liability: Number(persistedNav.liability),
+    totalAssets: Number(persistedNav.totalAssets),
+    netValue: Number(persistedNav.netValue),
+    mv: Number(persistedNav.netValue),
+    fundActionAdjustment: Number(persistedNav.fundActionAdjustment),
+    divPerUnit: round(persistedDivPerUnit, 10),
+  };
+  Object.assign(st, {
+    marketValue: canonicalNavRow.marketValue,
+    netValue: canonicalNavRow.netValue,
   });
+  if (continuationRequested) {
+    const freshLedger = await materializeLedgerKv(env, pf, {
+      expectedLedgerRevision: ledgerRevision,
+      currentDate: marketDate,
+    });
+    live.rows = [];
+    live.ledgerRevision = ledgerRevision;
+    await Promise.all([
+      env.YC_KV.put('lastpx:' + pf, JSON.stringify(lastPx)),
+      persistPortfolioCache(env, pf, freshLedger, live, st),
+    ]);
+    return st;
+  }
+  // Ordinary counter refreshes change no event fact or ledger revision. The
+  // D1 snapshot above is authoritative, so rebuilding the entire event/KV
+  // projection and 200k-sample stress model every minute is both redundant
+  // and unsafe under Cloudflare's scheduled CPU ceiling. Extend the public
+  // cache from the prior D1-derived history, recompute lightweight curve/basic
+  // metrics, and reuse the last fully built stress model. Confirm/rebuild
+  // continuations still take the full materialize path before reaching here.
+  const realtimeHistory = [
+    ...(Array.isArray(led.history) ? led.history : [])
+      .filter(row => row && row.date !== marketDate),
+    {
+      date: marketDate,
+      ret: canonicalNavRow.ret,
+      unitNav: canonicalNavRow.unitNav,
+      divPerUnit: canonicalNavRow.divPerUnit,
+    },
+  ].sort((left, right) => left.date.localeCompare(right.date));
+  const realtimeNavRows = [
+    ...(Array.isArray(led.navRows) ? led.navRows : [])
+      .filter(row => row && row.date !== marketDate),
+    canonicalNavRow,
+  ].sort((left, right) => left.date.localeCompare(right.date));
+  const realtimeLedger = {
+    ...led,
+    sourceHoldings: holdings,
+    cash: canonicalNavRow.cash,
+    liability: canonicalNavRow.liability,
+    units: canonicalNavRow.units,
+    baseMarketValue: canonicalNavRow.marketValue,
+    baseTotalAssets: canonicalNavRow.totalAssets,
+    baseNetValue: canonicalNavRow.netValue,
+    baseMV: canonicalNavRow.netValue,
+    lastDate: marketDate,
+    lastUnitNav: canonicalNavRow.unitNav,
+    history: realtimeHistory,
+    navRows: realtimeNavRows,
+    ledgerRevision,
+    savedAt: now.toISOString(),
+  };
   // D1 snapshots are the complete derived history. Keep KV live rows empty so
   // the same NAV date is never maintained in two independent stores.
   live.rows = [];
   live.ledgerRevision = ledgerRevision;
+  const reusableStress = cachedPublic &&
+    Number(cachedPublic.ledgerRevision) === ledgerRevision
+    ? cachedPublic.stress ?? null
+    : null;
   await Promise.all([
     env.YC_KV.put('lastpx:' + pf, JSON.stringify(lastPx)),
-    persistPortfolioCache(env, pf, freshLedger, live, st),
+    persistPortfolioCache(env, pf, realtimeLedger, live, st, {
+      stress: reusableStress,
+    }),
   ]);
   return st;
 }
@@ -4589,11 +4692,6 @@ export default {
     if (cron === '* * * * *') {
       ctx.waitUntil((async () => {
         const nowValue = Date.now();
-        await drainLedgerOutbox(env, {
-          portfolio: scheduledLedgerOutboxPortfolio(nowValue),
-          refreshPortfolio: updatePortfolioNav,
-        })
-          .catch(e => console.error('ledger_outbox_continuation_failed', e));
         const realtimePortfolios = ['us', 'hk', 'a']
           .filter(portfolio => portfolioRealtimeWindowOpen(nowValue, portfolio));
         if (!realtimePortfolios.length) return;
@@ -4611,6 +4709,14 @@ export default {
           portfolios: realtimePortfolios,
           nav,
         }));
+      })());
+    } else if (cron === '*/2 * * * *') {
+      ctx.waitUntil((async () => {
+        const nowValue = Date.now();
+        await drainLedgerOutbox(env, {
+          portfolio: scheduledLedgerOutboxPortfolio(nowValue),
+          refreshPortfolio: updatePortfolioNav,
+        }).catch(e => console.error('ledger_outbox_continuation_failed', e));
       })());
     } else if (cron === '30 21 * * *') {
       ctx.waitUntil((async () => {
