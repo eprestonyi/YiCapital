@@ -3542,7 +3542,7 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
 // Cloudflare scheduled invocations have a tighter CPU ceiling than admin
 // requests. Keep every continuation small enough for minute-cron replay even
 // after the event history and frozen raw-price tape have grown.
-const NAV_REPLAY_DEFAULT_BATCH_SIZE = 5;
+const NAV_REPLAY_DEFAULT_BATCH_SIZE = 1;
 const NAV_REPLAY_MAX_BATCH_SIZE = 50;
 
 function navReplayBatchSize(value) {
@@ -4343,6 +4343,10 @@ export async function handleLedgerAdminRequest(request, env, context = {}) {
       const body = await readJson(request);
       return respond(await drainLedgerOutbox(env, {
         portfolio: body.portfolio || null,
+        // Interactive admin continuation has a larger request CPU budget and
+        // remains bounded. Scheduled/deferred automation keeps the safer
+        // one-session default below.
+        navBatchSize: body.navBatchSize ?? 5,
         refreshPortfolio: context.refreshPortfolio,
       }));
     }
