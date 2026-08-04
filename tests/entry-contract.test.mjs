@@ -104,6 +104,43 @@ test('member registration is progressive and Google sign-up exposes optional Ins
   assert.doesNotMatch(entry, /id="yc-entry-password-2"/);
 });
 
+test('signed-in account center exposes editable profile, locked identities and opt-in recovery', async () => {
+  const [session, worker] = await Promise.all([
+    read('assets/yc-session.js'),
+    read('worker/worker.js'),
+  ]);
+  for (const label of [
+    'Account Settings & Profile',
+    'Connect MCPs & APIs',
+    'Contact Site Operator',
+    'Social Media',
+    'Support & Help',
+  ]) assert.match(session, new RegExp(label.replace(/[&]/g, '\\&')));
+  assert.match(session, /data-avatar-file/);
+  assert.match(session, /name="displayName"/);
+  assert.match(session, /name="username"/);
+  assert.match(session, /name="newsletter"/);
+  assert.match(session, /readonly value=/);
+  assert.match(session, /\/api\/account\/profile/);
+  assert.match(session, /yc-subscribe-card/);
+  assert.match(session, /profile\.newsletter/);
+  assert.match(session, /eprestonyi@gmail\.com/);
+  assert.match(worker, /usernameOwner/);
+  assert.match(worker, /avatarDataUrl/);
+  assert.match(worker, /connections:\s*\{/);
+  assert.match(worker, /revokeUserSessions\(env, sess\.u\)/);
+});
+
+test('all member surfaces load the current account-center release', async () => {
+  const pages = [
+    'index.html', 'about.html', 'insights.html', 'forum.html', 'portfolios.html',
+    'filings.html', 'fund-us.html', 'fund-hk.html', 'fund-a.html',
+    'cn/index.html', 'cn/about.html', 'cn/insights.html', 'cn/forum.html', 'cn/portfolios.html',
+    'en/index.html', 'en/about.html', 'en/insights.html', 'en/forum.html', 'en/portfolios.html',
+  ];
+  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.0/);
+});
+
 test('Google verification uses persistent signing-key resilience', async () => {
   const worker = await read('worker/worker.js');
   const verifier = await read('worker/google-id-token.js');

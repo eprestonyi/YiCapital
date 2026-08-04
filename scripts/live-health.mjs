@@ -33,7 +33,7 @@ async function checkPortal() {
   try {
     const response = await fetchChecked(url);
     const health = await response.json();
-    if (health.version !== 'v9.2-google-auth-resilience') throw new Error(`unexpected version ${health.version}`);
+    if (health.version !== 'v9.3-account-center') throw new Error(`unexpected version ${health.version}`);
     if (health.auth_sessions !== true) throw new Error('D1 authentication session schema is unavailable');
     if (health.auth_rate_limit !== true) throw new Error('D1 authentication rate limiter is unavailable');
     if (health.ledger !== true) throw new Error('portfolio D1 ledger schema is unavailable');

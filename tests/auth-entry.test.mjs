@@ -156,6 +156,103 @@ test('email and password resolve the mapped email to the ordinary account', asyn
   assert.equal(session.u, 'tingxunyi');
 });
 
+test('member profile returns connected identities and persists display, avatar and newsletter preferences', async () => {
+  const salt = '11112222333344445555666677778888';
+  const hash = await passwordHash('member-password', salt);
+  const kv = kvStore({
+    'email:member@example.com': 'member_id',
+    'user:member_id': JSON.stringify({
+      u: 'member_id',
+      name: 'Member Name',
+      email: 'member@example.com',
+      googleSub: 'google-member-123',
+      salt,
+      hash,
+      provider: 'password',
+      role: 'guest',
+      disabled: false,
+      newsletter: false,
+      created: '2026-08-01T00:00:00.000Z',
+    }),
+  });
+  const env = {
+    YC_KV: kv,
+    ADMIN_USERNAME: 'site-admin',
+    ALLOWED_ORIGIN: 'https://www.yicapital.co',
+  };
+  const login = await worker.fetch(new Request('https://portal.test/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.21' },
+    body: JSON.stringify({ username: 'member@example.com', password: 'member-password' }),
+  }), env);
+  assert.equal(login.status, 200);
+  const { token } = await login.json();
+
+  const me = await worker.fetch(new Request('https://portal.test/api/me', {
+    headers: { Authorization: 'Bearer ' + token },
+  }), env);
+  assert.equal(me.status, 200);
+  assert.deepEqual((await me.json()).connections, { email: true, google: true });
+
+  const avatar = 'data:image/png;base64,aGVsbG8=';
+  const update = await worker.fetch(new Request('https://portal.test/api/account/profile', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + token,
+      'CF-Connecting-IP': '203.0.113.21',
+    },
+    body: JSON.stringify({
+      displayName: 'Yi Researcher',
+      username: 'member_id',
+      newsletter: true,
+      avatarDataUrl: avatar,
+      email: 'attacker@example.com',
+      googleSub: 'attacker-google-subject',
+    }),
+  }), env);
+  assert.equal(update.status, 200);
+  const profile = await update.json();
+  assert.equal(profile.displayName, 'Yi Researcher');
+  assert.equal(profile.newsletter, true);
+  assert.equal(profile.avatar, avatar);
+  assert.equal(profile.email, 'member@example.com');
+  assert.deepEqual(profile.connections, { email: true, google: true });
+  const stored = JSON.parse(kv.values.get('user:member_id'));
+  assert.equal(stored.email, 'member@example.com');
+  assert.equal(stored.googleSub, 'google-member-123');
+  assert.equal(stored.name, 'Yi Researcher');
+  assert.equal(stored.newsletter, true);
+});
+
+test('member profile rejects a case-insensitive ID collision without changing the account', async () => {
+  const kv = kvStore({
+    'user:alpha': JSON.stringify({ u: 'alpha', email: 'alpha@example.com', newsletter: false }),
+    'user:TakenID': JSON.stringify({ u: 'TakenID', email: 'taken@example.com', newsletter: false }),
+    ['sess:' + 'a'.repeat(64)]: JSON.stringify({
+      u: 'alpha', role: 'guest', issuedAt: Date.now(), lastSeenAt: Date.now(),
+      expiresAt: Date.now() + 86400000, absoluteExpiresAt: Date.now() + 172800000,
+    }),
+  });
+  const response = await worker.fetch(new Request('https://portal.test/api/account/profile', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + 'a'.repeat(64),
+      'CF-Connecting-IP': '203.0.113.22',
+    },
+    body: JSON.stringify({ username: 'takenid' }),
+  }), {
+    YC_KV: kv,
+    ADMIN_USERNAME: 'site-admin',
+    ALLOWED_ORIGIN: 'https://www.yicapital.co',
+  });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /ID/);
+  assert.ok(kv.values.has('user:alpha'));
+  assert.equal(kv.values.has('user:takenid'), false);
+});
+
 test('Google one-click registration creates a passwordless member session', async () => {
   const originalFetch = globalThis.fetch;
   const kv = kvStore();

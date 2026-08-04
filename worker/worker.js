@@ -262,6 +262,49 @@ function feedbackItem(row) {
 const isUsername = u => /^[a-zA-Z0-9_\-\u4e00-\u9fff]{2,24}$/.test(u || '');
 const isEmail = e => /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(e || '');
 
+async function usernameOwner(env, username) {
+  const candidate = String(username || '').trim();
+  if (!candidate) return null;
+  const normalized = candidate.toLowerCase();
+  const indexed = await env.YC_KV.get('username-ci:' + normalized);
+  if (indexed) return indexed;
+  if (await env.YC_KV.get('user:' + candidate)) return candidate;
+  // Older accounts predate the case-insensitive index. Scan only on account
+  // creation/rename, then backfill the index so future checks stay constant-time.
+  let cursor;
+  do {
+    const page = await env.YC_KV.list({ prefix: 'user:', ...(cursor ? { cursor } : {}) });
+    const match = (page.keys || []).find(key => key.name.slice(5).toLowerCase() === normalized);
+    if (match) {
+      const owner = match.name.slice(5);
+      await env.YC_KV.put('username-ci:' + normalized, owner);
+      return owner;
+    }
+    if (page.list_complete !== false || !page.cursor) break;
+    cursor = page.cursor;
+  } while (cursor);
+  return null;
+}
+
+function accountProfile(user, session) {
+  const record = user || {};
+  const username = String(record.u || session.u || '');
+  const email = String(record.email || '');
+  return {
+    username,
+    displayName: String(record.name || username),
+    email,
+    avatar: typeof record.avatar === 'string' ? record.avatar : null,
+    newsletter: record.newsletter === true,
+    provider: String(record.provider || (session.role === 'admin' ? 'password' : 'email')),
+    connections: {
+      email: Boolean(email),
+      google: Boolean(record.googleSub),
+    },
+    createdAt: record.created || null,
+  };
+}
+
 async function nextGoogleUsername(env, profile) {
   const localPart = String(profile.email || '').split('@')[0];
   let base = String(profile.name || localPart || 'YiMember')
@@ -272,7 +315,8 @@ async function nextGoogleUsername(env, profile) {
   if (base.length < 2) base = 'YiMember';
   let candidate = base;
   for (let suffix = 2; suffix < 1000; suffix += 1) {
-    if (candidate !== env.ADMIN_USERNAME && !await env.YC_KV.get('user:' + candidate)) return candidate;
+    if (candidate.toLowerCase() !== String(env.ADMIN_USERNAME || '').toLowerCase() &&
+        !await usernameOwner(env, candidate)) return candidate;
     candidate = (base.slice(0, Math.max(2, 24 - String(suffix).length)) + suffix).slice(0, 24);
   }
   return 'Yi_' + randomHex(6);
@@ -369,6 +413,7 @@ async function afterResponse(ctx, promise) {
 
 async function createUser(env, rec) {
   await env.YC_KV.put('user:' + rec.u, JSON.stringify(rec));
+  await env.YC_KV.put('username-ci:' + String(rec.u).toLowerCase(), rec.u);
   if (rec.email) await env.YC_KV.put('email:' + rec.email, rec.u);
 }
 
@@ -3881,7 +3926,7 @@ export default {
             .catch(error => console.error('google_signing_key_warmup_failed', error)));
         }
         return J(env, {
-          ok: true, version: 'v9.2-google-auth-resilience',
+          ok: true, version: 'v9.3-account-center',
           kv: kvOk,
           feedback: feedbackOk,
           ledger: ledger.ready,
@@ -3940,7 +3985,7 @@ export default {
         if (username === env.ADMIN_USERNAME) return J(env, { error: '該用戶名不可用' }, 400);
         if (b.terms !== true) return J(env, { error: '必須同意服務條款才能註冊' }, 400);
         const newsletter = b.newsletter === true;
-        if (await env.YC_KV.get('user:' + username)) return J(env, { error: '用戶名已存在' }, 409);
+        if (await usernameOwner(env, username)) return J(env, { error: '用戶名已存在' }, 409);
         if (await env.YC_KV.get('email:' + email)) return J(env, { error: '該郵箱已被註冊' }, 409);
         const salt = randomHex(16);
         const hash = await pbkdf2(password, salt);
@@ -4321,12 +4366,103 @@ export default {
 
       if (path === '/api/me' && request.method === 'GET') {
         if (!sess) return J(env, { error: '未登入' }, 401);
+        let user = null;
+        if (sess.role !== 'admin') {
+          const raw = await env.YC_KV.get('user:' + sess.u);
+          if (!raw) return J(env, { error: '帳號資料不存在' }, 401);
+          user = JSON.parse(raw);
+          if (user.disabled) return J(env, { error: '此帳號已被停用' }, 403);
+        }
         return J(env, {
           ok: true,
-          username: sess.u,
+          ...accountProfile(user, sess),
           role: sess.role,
           expiresAt: new Date(sess.expiresAt).toISOString(),
           absoluteExpiresAt: new Date(sess.absoluteExpiresAt).toISOString(),
+        }, 200, { 'Cache-Control': 'no-store' });
+      }
+
+      if (path === '/api/account/profile' && request.method === 'POST') {
+        if (!sess) return J(env, { error: '未登入' }, 401);
+        if (sess.role === 'admin') return J(env, { error: '管理員資料由安全配置管理' }, 403);
+        if (!await authRateAllowed(request, env, 'profile', 40, 3600)) {
+          return J(env, { error: '更新過於頻繁，請稍後再試' }, 429);
+        }
+        const declaredLength = Number(request.headers.get('Content-Length') || 0);
+        if (declaredLength > 420 * 1024) return J(env, { error: '頭像檔案過大' }, 413);
+        const bodyText = await request.text();
+        if (enc.encode(bodyText).byteLength > 420 * 1024) return J(env, { error: '頭像檔案過大' }, 413);
+        let body;
+        try { body = JSON.parse(bodyText); } catch (error) { return J(env, { error: 'JSON 格式無效' }, 400); }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return J(env, { error: '提交格式無效' }, 400);
+        }
+        const raw = await env.YC_KV.get('user:' + sess.u);
+        if (!raw) return J(env, { error: '帳號資料不存在' }, 404);
+        const user = JSON.parse(raw);
+        if (user.disabled) return J(env, { error: '此帳號已被停用' }, 403);
+
+        const nextUsername = Object.prototype.hasOwnProperty.call(body, 'username')
+          ? String(body.username || '').trim()
+          : sess.u;
+        if (!isUsername(nextUsername)) {
+          return J(env, { error: 'ID 需為 2–24 位中英文、數字、_ 或 -' }, 400);
+        }
+        if (nextUsername.toLowerCase() === String(env.ADMIN_USERNAME || '').toLowerCase()) {
+          return J(env, { error: '此 ID 不可用' }, 409);
+        }
+        const owner = await usernameOwner(env, nextUsername);
+        if (owner && owner.toLowerCase() !== sess.u.toLowerCase()) {
+          return J(env, { error: '此 ID 已被其他帳號使用' }, 409);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(body, 'displayName')) {
+          const name = cleanPlain(body.displayName, 50).replace(/\s+/g, ' ');
+          if (!name) return J(env, { error: '顯示名稱不能留空' }, 400);
+          user.name = name;
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'newsletter')) {
+          if (typeof body.newsletter !== 'boolean') return J(env, { error: '訂閱設定無效' }, 400);
+          user.newsletter = body.newsletter;
+          user.newsletterUpdatedAt = new Date().toISOString();
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'avatarDataUrl')) {
+          const avatar = body.avatarDataUrl;
+          if (avatar === null || avatar === '') user.avatar = null;
+          else if (typeof avatar !== 'string' || avatar.length > 360 * 1024 ||
+              !/^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(avatar)) {
+            return J(env, { error: '頭像格式無效或檔案過大' }, 400);
+          } else user.avatar = avatar;
+        }
+
+        let token = null;
+        const renamed = nextUsername !== sess.u;
+        if (renamed) {
+          if (!await revokeUserSessions(env, sess.u)) {
+            return J(env, { error: '帳號會話暫時無法安全更新，請重試' }, 503);
+          }
+          const previousUsername = sess.u;
+          user.u = nextUsername;
+          user.updatedAt = new Date().toISOString();
+          await env.YC_KV.put('user:' + nextUsername, JSON.stringify(user));
+          await env.YC_KV.put('username-ci:' + nextUsername.toLowerCase(), nextUsername);
+          if (user.email) await env.YC_KV.put('email:' + user.email, nextUsername);
+          await env.YC_KV.delete('user:' + previousUsername);
+          if (previousUsername.toLowerCase() !== nextUsername.toLowerCase()) {
+            await env.YC_KV.delete('username-ci:' + previousUsername.toLowerCase());
+          }
+          token = await newSession(env, nextUsername, sess.role);
+        } else {
+          user.u = sess.u;
+          user.updatedAt = new Date().toISOString();
+          await env.YC_KV.put('user:' + sess.u, JSON.stringify(user));
+          await env.YC_KV.put('username-ci:' + sess.u.toLowerCase(), sess.u);
+        }
+        return J(env, {
+          ok: true,
+          ...accountProfile(user, { ...sess, u: nextUsername }),
+          role: sess.role,
+          ...(token ? { token } : {}),
         }, 200, { 'Cache-Control': 'no-store' });
       }
       /* ════ 管理員 ════ */
@@ -4577,6 +4713,7 @@ export default {
             await env.FEEDBACK_DB.batch(statements);
           }
           await env.YC_KV.delete(key);
+          await env.YC_KV.delete('username-ci:' + String(username).toLowerCase());
           if (u.email) await env.YC_KV.delete('email:' + u.email);
           return J(env, { ok: true, message: '已刪除 ' + username });
         }
