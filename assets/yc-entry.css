@@ -1362,3 +1362,80 @@ body.yc-entry-open {
     transition-duration: 1ms !important;
   }
 }
+
+/* v9.2 — focused, progressive authentication */
+.yc-entry-google-consent {
+  display: none;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--scene-border) 62%, transparent);
+}
+
+.yc-entry-google-consent .yc-entry-check {
+  margin: 0;
+}
+
+#yc-entry-form {
+  animation: yc-entry-form-in 180ms cubic-bezier(.22, 1, .36, 1);
+}
+
+@keyframes yc-entry-form-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (min-width: 821px) and (max-height: 800px) {
+  .yc-entry-auth-column {
+    align-items: flex-start;
+    max-height: calc(100dvh - 68px);
+    padding-top: 24px;
+    padding-bottom: 24px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .yc-entry-auth-copy {
+    margin-bottom: 12px;
+  }
+
+  .yc-entry-tabs {
+    margin-bottom: 14px;
+  }
+
+  .yc-entry-divider {
+    margin: 10px 0;
+  }
+
+  .yc-entry-field {
+    margin-bottom: 9px;
+  }
+
+  .yc-entry-legal {
+    margin-top: 12px;
+  }
+}
+
+@media (max-width: 820px) {
+  .yc-entry-root[data-entry-mode="login"] .yc-entry-story {
+    display: none;
+  }
+
+  .yc-entry-root[data-entry-mode="login"] .yc-entry-auth-column {
+    min-height: calc(100dvh - 64px);
+    padding: 28px 18px 44px;
+    border-top: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .yc-entry-google-consent .yc-entry-check,
+  .yc-entry-check {
+    font-size: 10.5px;
+  }
+}

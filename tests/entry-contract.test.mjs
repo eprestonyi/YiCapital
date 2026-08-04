@@ -88,8 +88,18 @@ test('worker exposes a compact entry snapshot and keeps external data credential
 
 test('administrator entry is username-password only', async () => {
   const entry = await read('assets/yc-entry.js');
-  assert.match(entry, /\(authMode === 'login' \|\| authMode === 'signup'\) && !setupToken/);
+  assert.match(entry, /const providersVisible = \(authMode === 'login' \|\| authMode === 'signup'\)[\s\S]{0,120}&& !setupToken/);
   assert.doesNotMatch(entry, /provider:\s*['"]google-admin['"]/);
+});
+
+test('member registration is progressive and Google sign-up exposes optional Insights consent', async () => {
+  const entry = await read('assets/yc-entry.js');
+  assert.match(entry, /let signupStep = 1/);
+  assert.match(entry, /signupStep === 1 && !setupToken/);
+  assert.match(entry, /id="yc-entry-google-newsletter" type="checkbox" checked/);
+  assert.match(entry, /newsletter: googleNewsletter \? googleNewsletter\.checked : false/);
+  assert.match(entry, /googleConsent\.style\.display = providersVisible && GCID/);
+  assert.doesNotMatch(entry, /id="yc-entry-password-2"/);
 });
 
 test('an expired admin session clears browser identity before redirecting', async () => {

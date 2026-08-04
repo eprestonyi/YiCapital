@@ -60,6 +60,8 @@
       code: '6 位郵箱驗證碼',
       continueLogin: '登入並進入 Dashboard',
       createAccount: '創建帳號',
+      continueEmail: '繼續使用郵箱',
+      backOptions: '返回註冊方式',
       verify: '驗證並進入 Dashboard',
       completeGoogle: '完成 Google 註冊',
       guest: '以 Guest 繼續',
@@ -73,6 +75,7 @@
       backMember: '返回用戶登入',
       terms: '我同意《服務條款》',
       newsletter: '訂閱 Yi Capital Insights（可隨時取消）',
+      googleNewsletter: '首次以 Google 建立帳號時訂閱 Insights（可隨時取消）',
       legal: '繼續即表示你同意服務條款與私隱政策。',
       required: '請完整填寫必填欄位。',
       mismatch: '兩次密碼不一致。',
@@ -127,6 +130,8 @@
       code: '6 位邮箱验证码',
       continueLogin: '登录并进入 Dashboard',
       createAccount: '创建账号',
+      continueEmail: '继续使用邮箱',
+      backOptions: '返回注册方式',
       verify: '验证并进入 Dashboard',
       completeGoogle: '完成 Google 注册',
       guest: '以 Guest 继续',
@@ -140,6 +145,7 @@
       backMember: '返回用户登录',
       terms: '我同意《服务条款》',
       newsletter: '订阅 Yi Capital Insights（可随时取消）',
+      googleNewsletter: '首次以 Google 建立账号时订阅 Insights（可随时取消）',
       legal: '继续即表示你同意服务条款与隐私政策。',
       required: '请完整填写必填字段。',
       mismatch: '两次密码不一致。',
@@ -194,6 +200,8 @@
       code: '6-digit email code',
       continueLogin: 'Sign in to Dashboard',
       createAccount: 'Create account',
+      continueEmail: 'Continue with email',
+      backOptions: 'Back to sign-up options',
       verify: 'Verify and enter Dashboard',
       completeGoogle: 'Complete Google registration',
       guest: 'Continue as Guest',
@@ -207,6 +215,7 @@
       backMember: 'Back to member sign in',
       terms: 'I agree to the Terms of Service',
       newsletter: 'Subscribe to Yi Capital Insights (unsubscribe anytime)',
+      googleNewsletter: 'For a new Google account, subscribe to Insights (unsubscribe anytime)',
       legal: 'By continuing, you agree to the Terms of Service and Privacy Policy.',
       required: 'Please complete all required fields.',
       mismatch: 'The passwords do not match.',
@@ -250,6 +259,7 @@
   const root = document.createElement('div');
   root.className = 'yc-entry-root';
   root.dataset.scene = 'hk';
+  root.dataset.entryMode = MODE;
   root.setAttribute('role', 'dialog');
   root.setAttribute('aria-modal', 'true');
   root.setAttribute('aria-label', copy.authTitle);
@@ -313,6 +323,9 @@
           </div>
           <div class="yc-entry-google" id="yc-entry-google"></div>
           <div class="yc-entry-google-note" id="yc-entry-google-note">${copy.googleWait}</div>
+          <div class="yc-entry-google-consent" id="yc-entry-google-consent">
+            <label class="yc-entry-check"><input id="yc-entry-google-newsletter" type="checkbox" checked><span>${copy.googleNewsletter}</span></label>
+          </div>
           <div class="yc-entry-divider" id="yc-entry-divider">${copy.orEmail}</div>
           <form id="yc-entry-form" novalidate></form>
           <button class="yc-entry-guest" id="yc-entry-guest" type="button">${copy.guest}</button>
@@ -341,7 +354,10 @@
   const adminButton = $('yc-entry-admin');
   const googleBox = $('yc-entry-google');
   const googleNote = $('yc-entry-google-note');
+  const googleConsent = $('yc-entry-google-consent');
   let authMode = location.hash === '#signup' ? 'signup' : 'login';
+  let signupStep = 1;
+  let signupEmail = '';
   let resetStep = 1;
   let pendingEmail = null;
   let pendingCredentials = null;
@@ -362,6 +378,14 @@
       <label for="${id}">${label}</label>
       <input id="${id}" type="${type || 'text'}" autocomplete="${autocomplete || 'off'}" ${extra || ''}>
     </div>`;
+  }
+
+  function focusWithoutPageJump(input) {
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    root.scrollTop = 0;
+    const authViewport = root.querySelector('.yc-entry-auth-column');
+    if (authViewport) authViewport.scrollTop = 0;
   }
 
   function renderForm() {
@@ -406,16 +430,27 @@
     const signup = authMode === 'signup';
     const admin = authMode === 'admin';
     if (signup) {
-      form.innerHTML = `
-        <div class="yc-entry-form-grid">
-          ${field('yc-entry-user', copy.username, 'text', 'username', true, 'required maxlength="24"')}
-          ${setupToken ? '' : field('yc-entry-email', copy.email, 'email', 'email', true, 'required')}
-          ${field('yc-entry-password', copy.password, 'password', 'new-password', false, 'required minlength="6"')}
-          ${field('yc-entry-password-2', copy.confirmPassword, 'password', 'new-password', false, 'required minlength="6"')}
-        </div>
-        <label class="yc-entry-check"><input id="yc-entry-newsletter" type="checkbox" checked><span>${copy.newsletter}</span></label>
-        <label class="yc-entry-check"><input id="yc-entry-terms" type="checkbox" checked><span>${copy.terms.replace('《服務條款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服務條款》</a>`).replace('《服务条款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服务条款》</a>`).replace('Terms of Service', `<a href="${paths.terms}" target="_blank" rel="noopener">Terms of Service</a>`)}</span></label>
-        <button class="yc-entry-submit" type="submit">${setupToken ? copy.completeGoogle : copy.createAccount}</button>`;
+      if (signupStep === 1 && !setupToken) {
+        form.innerHTML = `
+          ${field('yc-entry-email', copy.email, 'email', 'email', true, 'required autofocus')}
+          <button class="yc-entry-submit" type="submit">${copy.continueEmail}</button>`;
+      } else {
+        form.innerHTML = `
+          <div class="yc-entry-form-grid">
+            ${field('yc-entry-user', copy.username, 'text', 'username', true, 'required maxlength="24"')}
+            ${field('yc-entry-password', copy.password, 'password', 'new-password', true, 'required minlength="6"')}
+          </div>
+          <label class="yc-entry-check"><input id="yc-entry-newsletter" type="checkbox" checked><span>${copy.newsletter}</span></label>
+          <label class="yc-entry-check"><input id="yc-entry-terms" type="checkbox" checked><span>${copy.terms.replace('《服務條款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服務條款》</a>`).replace('《服务条款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服务条款》</a>`).replace('Terms of Service', `<a href="${paths.terms}" target="_blank" rel="noopener">Terms of Service</a>`)}</span></label>
+          <button class="yc-entry-submit" type="submit">${setupToken ? copy.completeGoogle : copy.createAccount}</button>
+          ${setupToken ? '' : `<div class="yc-entry-admin-row"><button class="yc-entry-link-button" type="button" id="yc-entry-signup-back">${copy.backOptions}</button></div>`}`;
+        const signupBack = $('yc-entry-signup-back');
+        if (signupBack) signupBack.onclick = () => {
+          signupStep = 1;
+          renderForm();
+          window.requestAnimationFrame(() => focusWithoutPageJump($('yc-entry-email')));
+        };
+      }
     } else {
       form.innerHTML = `
         ${field('yc-entry-user', admin ? copy.adminUser : copy.identity, 'text', 'username', true, 'required')}
@@ -430,12 +465,21 @@
 
   function switchAuth(next) {
     authMode = next;
+    signupStep = 1;
+    signupEmail = '';
     resetStep = 1;
     pendingEmail = null;
     pendingCredentials = null;
     setupToken = null;
     setMessage('');
     renderForm();
+    if (history && history.replaceState) {
+      history.replaceState(null, '', next === 'signup' ? '#signup' : location.pathname + location.search);
+    }
+    window.requestAnimationFrame(() => {
+      const firstInput = form.querySelector('input[autofocus], input');
+      focusWithoutPageJump(firstInput);
+    });
   }
 
   root.querySelectorAll('.yc-entry-tab').forEach(button => {
@@ -563,15 +607,26 @@
         return;
       }
 
+      if (authMode === 'signup' && signupStep === 1 && !setupToken) {
+        const email = $('yc-entry-email').value.trim().toLowerCase();
+        if (!email) throw new Error(copy.required);
+        signupEmail = email;
+        signupStep = 2;
+        renderForm();
+        window.requestAnimationFrame(() => {
+          const usernameInput = $('yc-entry-user');
+          focusWithoutPageJump(usernameInput);
+        });
+        return;
+      }
+
       const username = $('yc-entry-user').value.trim();
       const password = $('yc-entry-password').value;
       if (!username || !password) throw new Error(copy.required);
 
       if (authMode === 'signup') {
-        const confirm = $('yc-entry-password-2').value;
         const terms = $('yc-entry-terms').checked;
         const newsletter = $('yc-entry-newsletter').checked;
-        if (password !== confirm) throw new Error(copy.mismatch);
         if (!terms) throw new Error(copy.termsRequired);
         if (setupToken) {
           const payload = await api('/api/google/complete', {
@@ -580,7 +635,7 @@
           sessionIn(payload);
           return;
         }
-        const email = $('yc-entry-email').value.trim();
+        const email = signupEmail;
         if (!email) throw new Error(copy.required);
         const payload = await api('/api/signup', { username, email, password, newsletter, terms: true, locale });
         if (payload.needCode) {
@@ -610,17 +665,19 @@
   async function handleGoogle(response) {
     setMessage(copy.googleChecking);
     try {
+      const googleNewsletter = $('yc-entry-google-newsletter');
       const payload = await api('/api/google', {
         credential: response && response.credential,
         autoCreate: authMode !== 'admin',
         terms: true,
-        newsletter: false,
+        newsletter: googleNewsletter ? googleNewsletter.checked : false,
         locale,
       });
       if (authMode === 'admin' && payload.role !== 'admin') throw new Error(copy.adminDenied);
       if (payload.needSetup) {
         setupToken = payload.setupToken;
         authMode = 'signup';
+        signupStep = 2;
         setMessage(copy.googleSetup, 'success');
         renderForm();
         return;
@@ -654,10 +711,13 @@
 
   function updateProviders() {
     // Administrator authentication is intentionally username/password only.
-    const providersVisible = (authMode === 'login' || authMode === 'signup') && !setupToken;
+    const providersVisible = (authMode === 'login' || authMode === 'signup')
+      && !setupToken
+      && (authMode !== 'signup' || signupStep === 1);
     divider.style.display = providersVisible ? 'flex' : 'none';
     googleBox.style.display = providersVisible && GCID ? 'flex' : 'none';
     googleNote.style.display = providersVisible && !GCID ? 'block' : 'none';
+    googleConsent.style.display = providersVisible && GCID ? 'block' : 'none';
     if (providersVisible && GCID) {
       if (window.google && window.google.accounts) renderGoogleButton();
       else loadGoogle();
@@ -1169,5 +1229,16 @@
   }
   resizeCanvas();
   activateScene(0, false);
+  const authColumn = root.querySelector('.yc-entry-auth-column');
+  const settleMarketWhileAuthenticating = () => {
+    if (manualScene || reduceMotion) return;
+    manualScene = true;
+    sceneStarted = null;
+    root.classList.add('is-manual');
+    updateSceneText(1, true);
+    drawChart(1);
+  };
+  authColumn.addEventListener('focusin', settleMarketWhileAuthenticating, { once: true });
+  authColumn.addEventListener('pointerdown', settleMarketWhileAuthenticating, { once: true });
   if (!reduceMotion) requestAnimationFrame(animationFrame);
 })();

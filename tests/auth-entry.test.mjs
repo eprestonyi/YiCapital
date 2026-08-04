@@ -172,6 +172,7 @@ test('Google one-click registration creates a passwordless member session', asyn
           credential: google.token,
           autoCreate: true,
           terms: true,
+          newsletter: true,
         }),
       }),
       {
@@ -191,6 +192,7 @@ test('Google one-click registration creates a passwordless member session', asyn
     assert.equal(user.provider, 'google');
     assert.equal(user.googleSub, 'google-subject-123');
     assert.equal(user.hash, null);
+    assert.equal(user.newsletter, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

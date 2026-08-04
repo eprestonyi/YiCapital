@@ -72,7 +72,7 @@ test('entry, terminal and shared styles carry the current cache key', async () =
       assert.match(html, /assets\/style\.css\?v=20260802a/);
     }
     if (html.includes('yc-entry.css')) {
-      assert.match(html, /yc-entry\.css\?v=20260802a/);
+      assert.match(html, /yc-entry\.css\?v=20260804b/);
     }
     if (html.includes('terminal-v2.css')) {
       assert.match(html, /terminal-v2\.css\?v=20260802b/);
