@@ -164,6 +164,10 @@ function stripSyncFields(event) {
     'portfolio', 'portfolio_id',
     '__yi_event_id', '__yi_event_version', '__yi_base_hash', '__yi_sync_token',
   ].forEach(key => delete copy[key]);
+  // Dividend price is a display-only derivative of authoritative Amount / quantity.
+  // Legacy workbooks retained more precision here than the reversible Excel format,
+  // so hashing it would turn an untouched export into a false UPDATE.
+  if (upper(copy.event_type || copy.type) === 'DIVIDEND') delete copy.price;
   return copy;
 }
 const canonicalHash = event => sha256Hex(stableJson(stripSyncFields(event)));
