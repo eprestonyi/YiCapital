@@ -603,6 +603,21 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-2').status, 'PENDING');
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'xlsx-2').status, 'PENDING');
 
+  const materializedLedgerRaw = env.YC_KV.values.get('ledger:us');
+  const materializedLedger = JSON.parse(materializedLedgerRaw);
+  const sentinelStress = {
+    model: 'noncentral-t',
+    crash: { model: 'noncentral-t', sentinel: 'same-revision-prefix' },
+    bear: { model: 'noncentral-t', sentinel: 'same-revision-prefix' },
+    grind: { model: 'noncentral-t', sentinel: 'same-revision-prefix' },
+  };
+  env.YC_KV.values.set('navcache:us', JSON.stringify({
+    portfolio: 'us',
+    ledgerRevision: 2,
+    history: materializedLedger.history.slice(0, -1),
+    stress: sentinelStress,
+  }));
+
   const published = await drain();
   assert.equal(published.ok, true, JSON.stringify(published));
   assert.deepEqual(published.results.map(item => [item.kind, item.complete]), [
@@ -611,7 +626,9 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   ]);
   assert.equal(adapter.calls.length, callsBeforeMaterialize);
   assert.ok(outboxRows(env).every(row => row.status === 'DONE'));
+  assert.equal(env.YC_KV.values.get('ledger:us'), materializedLedgerRaw);
   const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  assert.deepEqual(cache.stress, sentinelStress);
   assert.equal(cache.navRows.length, 5);
   assert.equal(cache.as_of, '2026-07-24');
   assert.deepEqual(cache.base, {
@@ -762,8 +779,17 @@ test('current-revision NAV publishes without rewrite only when its raw tape is a
   assert.ok(ledger.navRows.every(row => row.ledgerRevision === 2));
   env.YC_KV.values.set('navcache:us', JSON.stringify({
     cacheVersion: 2,
+    portfolio: 'us',
+    ledgerRevision: 2,
+    history: [{ date: '2026-07-20', ret: 0.5 }],
     navRows: ledger.navRows.slice(0, -1),
     as_of: '2026-07-23',
+    stress: {
+      model: 'noncentral-t',
+      crash: { model: 'noncentral-t', sentinel: 'invalid-lineage' },
+      bear: { model: 'noncentral-t', sentinel: 'invalid-lineage' },
+      grind: { model: 'noncentral-t', sentinel: 'invalid-lineage' },
+    },
   }));
   insertOutbox(env, { id: 'kv-2', revision: 2, kind: 'REBUILD_KV', status: 'DONE' });
   insertOutbox(env, {
@@ -796,6 +822,7 @@ test('current-revision NAV publishes without rewrite only when its raw tape is a
   assert.equal(cache.ledgerRevision, 2);
   assert.equal(cache.navRows.length, 5);
   assert.equal(cache.as_of, '2026-07-24');
+  assert.equal(cache.stress, null);
 
   const priorPublishedValues = Object.fromEntries(
     ['live:us', 'navstatus:us', 'navcache:us'].map(key => [key, env.YC_KV.values.get(key)]),

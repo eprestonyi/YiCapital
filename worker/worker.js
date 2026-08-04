@@ -2364,10 +2364,12 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     const publishedValuation = publishedNav.valuation &&
       typeof publishedNav.valuation === 'object'
       ? publishedNav.valuation : {};
-    const publishedLedger = await materializeLedgerKv(env, pf, {
-      expectedLedgerRevision: ledgerRevision,
-      currentDate: publishedDate,
-    });
+    const publishedLedger = materializedPublishLedgerUsable(led, pf, ledgerRevision)
+      ? led
+      : await materializeLedgerKv(env, pf, {
+        expectedLedgerRevision: ledgerRevision,
+        currentDate: publishedDate,
+      });
     const publishedFreshness = preservedCounter
       ? String(
         publishedValuation.freshness_class ||
@@ -2440,8 +2442,15 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       env.YC_KV.get('navcache:' + pf),
     ]);
     await assertLedgerRevision(env, pf, ledgerRevision);
+    // Historical stress is intentionally expensive. Reuse it only when the
+    // prior same-revision public history is an exact prefix of the freshly
+    // materialized D1 history; otherwise publish an explicit null instead of
+    // silently running a 200k-sample Monte Carlo inside the outbox request.
+    const reusableStress = reusableHistoricalPublishStress(
+      previousCache, publishedLedger, pf, ledgerRevision,
+    );
     const publishedCache = await persistPortfolioCache(
-      env, pf, publishedLedger, live, status,
+      env, pf, publishedLedger, live, status, { stress: reusableStress },
     );
     try {
       await assertLedgerRevision(env, pf, ledgerRevision);
@@ -2998,6 +3007,44 @@ function portfolioCacheMatchesRevision(cache, ledgerRevision) {
   return Number(rawRevision) === ledgerRevision;
 }
 
+function materializedPublishLedgerUsable(ledger, portfolio, ledgerRevision) {
+  if (!ledger || Number(ledger.ledgerRevision) !== Number(ledgerRevision) ||
+      String(ledger.portfolio || ledger.market || '') !== String(portfolio) ||
+      ledger.source !== 'd1-confirmed-event-ledger' ||
+      ledger.savedBy !== 'ledger-outbox' || ledger.valuationReady !== true ||
+      (Array.isArray(ledger.navRecalculationRequired) &&
+        ledger.navRecalculationRequired.length > 0)) {
+    return false;
+  }
+  return (Array.isArray(ledger.sourceHoldings) ? ledger.sourceHoldings : [])
+    .every(row => row && row.adjusted === false &&
+      ['raw_close', 'raw_counter'].includes(String(row.priceBasis || '').toLowerCase()));
+}
+
+function reusableHistoricalPublishStress(cacheRaw, ledger, portfolio, ledgerRevision) {
+  let cache;
+  try {
+    cache = typeof cacheRaw === 'string' ? JSON.parse(cacheRaw) : cacheRaw;
+  } catch {
+    return null;
+  }
+  if (!cache || String(cache.portfolio || '') !== String(portfolio) ||
+      Number(cache.ledgerRevision) !== Number(ledgerRevision)) return null;
+  const stress = cache.stress;
+  if (!stress || stress.model !== 'noncentral-t' ||
+      !['crash', 'bear', 'grind'].every(key => stress[key] &&
+        stress[key].model === 'noncentral-t')) return null;
+  const cachedHistory = normalizeHistory(cache.history);
+  const materializedHistory = normalizeHistory(ledger && ledger.history);
+  if (!cachedHistory.length || cachedHistory.length > materializedHistory.length ||
+      materializedHistory.length - cachedHistory.length > 1) return null;
+  const exactPrefix = cachedHistory.every((row, index) => {
+    const current = materializedHistory[index];
+    return current && current.date === row.date && current.ret === row.ret;
+  });
+  return exactPrefix ? stress : null;
+}
+
 /* 持倉/現金/負債/份額為唯一營運基準；價格源只提供可核驗的 counter/raw close。 */
 async function updatePortfolioNav(env, pf, options = {}) {
   const nowFn = typeof options.now === 'function' ? options.now : Date.now;
@@ -3013,26 +3060,39 @@ async function updatePortfolioNav(env, pf, options = {}) {
   };
   const affectedFrom = String(options.affectedFrom || '').slice(0, 10);
   const continuationRequested = Boolean(options.phase) || isoDatePattern.test(affectedFrom);
+  const publishContinuation = String(options.phase || '').toLowerCase() === 'publish';
   const [ledRaw, publicCacheRaw] = await Promise.all([
     env.YC_KV.get('ledger:' + pf),
-    continuationRequested ? Promise.resolve(null) : env.YC_KV.get('navcache:' + pf),
+    continuationRequested && !publishContinuation
+      ? Promise.resolve(null)
+      : env.YC_KV.get('navcache:' + pf),
   ]);
   const cachedLedger = ledRaw ? JSON.parse(ledRaw) : null;
   const cachedPublic = publicCacheRaw ? JSON.parse(publicCacheRaw) : null;
   let led = cachedLedger;
   if (continuationRequested && (env.LEDGER_DB || env.FEEDBACK_DB)) {
-    // Confirm necessarily advances D1 before KV. A continuation must therefore
-    // derive from current-revision D1 facts; the previous KV may contribute
-    // presentation-only metadata but never events, cash, positions or units.
-    const replayInput = await loadLedgerReplayInput(env, pf, options.ledgerRevision);
-    led = cachedLedger && portfolioCacheMatchesRevision(cachedLedger, replayInput.ledgerRevision)
-      ? {
-        ...cachedLedger,
-        ...replayInput,
-        sourceMetrics: cachedLedger.sourceMetrics || {},
-        snap: cachedLedger.snap || null,
-      }
-      : replayInput;
+    if (publishContinuation && materializedPublishLedgerUsable(
+      cachedLedger, pf, options.ledgerRevision,
+    )) {
+      // The immediately preceding materialize phase already wrote the complete,
+      // valued current-revision ledger. Replaying every event/NAV row again here
+      // only discards those prices and can exceed the scheduled CPU budget.
+      await assertLedgerRevision(env, pf, Number(options.ledgerRevision));
+      led = cachedLedger;
+    } else {
+      // Confirm necessarily advances D1 before KV. A continuation must therefore
+      // derive from current-revision D1 facts; the previous KV may contribute
+      // presentation-only metadata but never events, cash, positions or units.
+      const replayInput = await loadLedgerReplayInput(env, pf, options.ledgerRevision);
+      led = cachedLedger && portfolioCacheMatchesRevision(cachedLedger, replayInput.ledgerRevision)
+        ? {
+          ...cachedLedger,
+          ...replayInput,
+          sourceMetrics: cachedLedger.sourceMetrics || {},
+          snap: cachedLedger.snap || null,
+        }
+        : replayInput;
+    }
   }
   if (!led) {
     st.skip = 'no-ledger';
