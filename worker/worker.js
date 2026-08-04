@@ -1706,6 +1706,14 @@ async function writePortfolioAttempt(env, pf, status) {
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 const HISTORICAL_NAV_DEFAULT_BATCH_SIZE = 1;
 const HISTORICAL_NAV_MAX_BATCH_SIZE = 50;
+const SCHEDULED_OUTBOX_PORTFOLIOS = Object.freeze(['us', 'hk', 'a']);
+export function scheduledLedgerOutboxPortfolio(timestamp = Date.now()) {
+  const minute = Math.floor(Number(timestamp) / 60_000);
+  if (!Number.isFinite(minute)) return SCHEDULED_OUTBOX_PORTFOLIOS[0];
+  const index = ((minute % SCHEDULED_OUTBOX_PORTFOLIOS.length) +
+    SCHEDULED_OUTBOX_PORTFOLIOS.length) % SCHEDULED_OUTBOX_PORTFOLIOS.length;
+  return SCHEDULED_OUTBOX_PORTFOLIOS[index];
+}
 const compactIsoDate = value => String(value || '').slice(0, 10).replaceAll('-', '');
 const addIsoDays = (value, days) => {
   const time = Date.parse(`${String(value).slice(0, 10)}T00:00:00.000Z`);
@@ -4580,9 +4588,12 @@ export default {
     const cron = event.cron || '';
     if (cron === '* * * * *') {
       ctx.waitUntil((async () => {
-        await drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
-          .catch(e => console.error('ledger_outbox_continuation_failed', e));
         const nowValue = Date.now();
+        await drainLedgerOutbox(env, {
+          portfolio: scheduledLedgerOutboxPortfolio(nowValue),
+          refreshPortfolio: updatePortfolioNav,
+        })
+          .catch(e => console.error('ledger_outbox_continuation_failed', e));
         const realtimePortfolios = ['us', 'hk', 'a']
           .filter(portfolio => portfolioRealtimeWindowOpen(nowValue, portfolio));
         if (!realtimePortfolios.length) return;

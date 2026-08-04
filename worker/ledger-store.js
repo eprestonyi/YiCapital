@@ -4346,7 +4346,7 @@ export async function handleLedgerAdminRequest(request, env, context = {}) {
         // Interactive admin continuation has a larger request CPU budget and
         // remains bounded. Scheduled/deferred automation keeps the safer
         // one-session default below.
-        navBatchSize: body.navBatchSize ?? 5,
+        navBatchSize: 5,
         refreshPortfolio: context.refreshPortfolio,
       }));
     }
