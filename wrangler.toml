@@ -15,4 +15,4 @@ database_name = "yicapital-feedback"
 database_id = "f237ed54-98c3-47ad-8000-d063513219eb"
 
 [triggers]
-crons = ["* * * * *", "30 21 * * *", "0 9 * * *", "30 10 * * *"]
+crons = ["* * * * *", "*/2 * * * *", "30 21 * * *", "0 9 * * *", "30 10 * * *"]

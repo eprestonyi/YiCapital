@@ -1588,6 +1588,8 @@ test('public portfolio pages are database-snapshot-only with no workbook input p
   ]);
   assert.match(wrangler, /"30 10 \* \* \*"/);
   assert.match(wrangler, /"\* \* \* \* \*"/);
+  assert.match(wrangler, /"\*\/2 \* \* \* \*"/);
   assert.match(workerSource, /cron:asia-eod/);
   assert.match(workerSource, /cron === ['"]\* \* \* \* \*['"]/);
+  assert.match(workerSource, /cron === ['"]\*\/2 \* \* \* \*['"]/);
 });

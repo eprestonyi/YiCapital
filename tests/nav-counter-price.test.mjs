@@ -206,6 +206,17 @@ async function assertSameDayCounterRefresh({
     prices: [{ ticker, date: '2026-07-29', close: 8 }],
   });
   await materializeLedgerKv(env, portfolio, { expectedLedgerRevision: 2 });
+  const materializedLedgerRaw = env.YC_KV.values.get(`ledger:${portfolio}`);
+  const fullStress = { model: 'full-eod-model', fixture: portfolio };
+  env.YC_KV.values.set(`navcache:${portfolio}`, JSON.stringify({
+    ledgerRevision: 2,
+    history: [{ date: '2026-07-29', ret: 0 }],
+    navRows: [{
+      date: '2026-07-29', nav: 0.98, unitNav: 0.98,
+      cash: 900, marketValue: 80, totalAssets: 980, netValue: 980, units: 1000,
+    }],
+    stress: fullStress,
+  }));
 
   let counterClose = 10;
   let officialEodClose = null;
@@ -260,6 +271,8 @@ async function assertSameDayCounterRefresh({
   assert.equal(first.marketValue, 100);
   assert.equal(first.netValue, 1000);
   assert.equal(first.upToDate, undefined);
+  assert.equal(env.YC_KV.values.get(`ledger:${portfolio}`), materializedLedgerRaw);
+  assert.deepEqual(JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`)).stress, fullStress);
   const intradayNavValuation = JSON.parse(database.prepare(`
     SELECT valuation_json FROM ledger_nav_snapshots
     WHERE portfolio_id = ? AND nav_date = '2026-07-30'
@@ -281,6 +294,8 @@ async function assertSameDayCounterRefresh({
   assert.equal(second.marketValue, 120);
   assert.equal(second.netValue, 1020);
   assert.equal(second.upToDate, undefined);
+  assert.equal(env.YC_KV.values.get(`ledger:${portfolio}`), materializedLedgerRaw);
+  assert.deepEqual(JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`)).stress, fullStress);
 
   officialEodClose = 13;
   nowValue = Date.parse('2026-07-30T10:00:00.000Z');
@@ -290,6 +305,8 @@ async function assertSameDayCounterRefresh({
   assert.equal(officialClose.netValue, 1030);
   assert.equal(officialClose.pricing_fallback, 'latest_eod_snapshot');
   assert.equal(officialClose.priceBasis, 'raw_close');
+  assert.equal(env.YC_KV.values.get(`ledger:${portfolio}`), materializedLedgerRaw);
+  assert.deepEqual(JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`)).stress, fullStress);
 
   const navRows = database.prepare(`
     SELECT nav_date, cash_minor, market_value_minor, total_assets_minor,
@@ -976,6 +993,17 @@ test('live market value sums exact fractional quantity-price products before rou
     units_micros: 1_000_000,
     unit_nav_micros: 992_000,
   });
+  const publicNav = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  assert.deepEqual(publicNav.navRows.at(-1), {
+    date: '2026-07-30', nav: 0.992, ret: 0.002020202,
+    unitNav: 0.992, units: 1, marketValue: 0.01, cash: 0.98,
+    liability: 0, totalAssets: 0.99, netValue: 0.99,
+    mv: 0.99, divPerUnit: 0,
+  });
+  assert.deepEqual(publicNav.base, {
+    date: '2026-07-30', unitNav: 0.992, marketValue: 0.01,
+    totalAssets: 0.99, netValue: 0.99, cash: 0.98, liability: 0, units: 1,
+  });
   const live = JSON.parse(env.YC_KV.values.get('live:us'));
   assert.deepEqual(live.holdings.map(row => row.marketValue), [0.01, 0.01]);
   assert.deepEqual(live.holdings.map(row => row.weight), [50, 50]);
@@ -1003,6 +1031,42 @@ test('live market value sums exact fractional quantity-price products before rou
     unit_nav_micros: 1_004_000,
     source: 'yahoo:query2-chart',
   });
+  const refreshedPublicNav = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  assert.deepEqual(refreshedPublicNav.navRows.at(-1), {
+    date: '2026-07-30', nav: 1.004, ret: 0.0141414141,
+    unitNav: 1.004, units: 1, marketValue: 0.02, cash: 0.98,
+    liability: 0, totalAssets: 1, netValue: 1,
+    mv: 1, divPerUnit: 0,
+  });
+
+  const priorKv = Object.fromEntries(
+    ['ledger:us', 'live:us', 'lastpx:us', 'navstatus:us', 'navcache:us']
+      .map(key => [key, env.YC_KV.values.get(key)]),
+  );
+  const originalPut = env.YC_KV.put.bind(env.YC_KV);
+  let revisionAdvanced = false;
+  env.YC_KV.put = async (key, value) => {
+    await originalPut(key, value);
+    if (key === 'navcache:us' && !revisionAdvanced) {
+      revisionAdvanced = true;
+      database.prepare(`
+        UPDATE ledger_portfolios SET ledger_revision = 4 WHERE portfolio_id = 'us'
+      `).run();
+    }
+  };
+  yahooPrice = 3;
+  await assert.rejects(
+    updatePortfolioNav(env, 'us', {
+      adapter,
+      now: () => Date.parse('2026-07-30T19:00:00.000Z'),
+      fetch: yahooFetch,
+    }),
+    error => error && error.details && error.details.code === 'LEDGER_REVISION_CHANGED',
+  );
+  assert.equal(revisionAdvanced, true);
+  for (const [key, value] of Object.entries(priorKv)) {
+    assert.equal(env.YC_KV.values.get(key), value, key);
+  }
 });
 
 test('A 2025-01-06 NAV uses raw counter closes and rejects the old adjusted-price result', async () => {
