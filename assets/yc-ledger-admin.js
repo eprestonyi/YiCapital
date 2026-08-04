@@ -249,6 +249,7 @@
     $('reset-event').addEventListener('click', resetForm);
     $('export-workbook').addEventListener('click', exportWorkbook);
     $('rebuild-derived').addEventListener('click', rebuildDerived);
+    $('drain-outbox').addEventListener('click', drainPortfolioOutbox);
     $('import-file').addEventListener('change', event => prepareImport(event.target.files && event.target.files[0]));
     $('preview-import').addEventListener('click', previewImport);
     $('confirm-import').addEventListener('click', confirmImport);
@@ -334,6 +335,46 @@
       log.textContent = `✓ 已排隊 ${state.portfolio.toUpperCase()} revision ${revision} · from ${affectedFrom}。後台會按批次自動完成。`;
     } catch (error) {
       log.textContent = '✗ 重算排隊失敗：' + error.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function drainPortfolioOutbox() {
+    const portfolio = state.portfolio;
+    const button = $('drain-outbox');
+    const status = $('drain-outbox-state');
+    const log = $('rebuild-log');
+    button.disabled = true;
+    status.textContent = `正在續跑 ${portfolio.toUpperCase()} 目前的重算進度…`;
+    log.textContent = '正在處理 REBUILD_KV / RECALC_NAV / REBUILD_EXCEL…';
+    try {
+      const result = await api('/api/admin/ledger/outbox', {
+        method: 'POST', body: JSON.stringify({ portfolio }),
+      });
+      const rows = Array.isArray(result.results) ? result.results : [];
+      const failed = rows.filter(item => item && item.ok === false);
+      const continuation = rows.find(item => item && item.complete === false && item.ok !== false);
+      const pending = result.pending === true || Boolean(continuation);
+      const processed = asNumber(first(result, ['processed'], rows.length), rows.length);
+      const remaining = asNumber(first(result, ['remaining'], pending ? 1 : 0), pending ? 1 : 0);
+      if (failed.length) {
+        const detail = String(first(failed[0], ['error'], '請稍後重試')).slice(0, 240);
+        log.textContent = `✗ ${portfolio.toUpperCase()} 隊列已處理 ${processed} 項，其中 ${failed.length} 項失敗：${detail}`;
+      } else if (pending) {
+        const nextPhase = String(first(continuation || {}, ['nextPhase', 'phase'], '等待下一批'));
+        const batchThrough = String(first(continuation || {}, ['batchThrough'], ''));
+        log.textContent = `↻ ${portfolio.toUpperCase()} 本批已完成 · processed ${processed} · remaining ${remaining} · 下一階段 ${nextPhase}${batchThrough ? `（已到 ${batchThrough}）` : ''}。`;
+      } else {
+        log.textContent = `✓ ${portfolio.toUpperCase()} 隊列處理完成 · processed ${processed}${processed === 0 ? '（目前沒有待處理項）' : ''}。`;
+      }
+      status.textContent = failed.length
+        ? '本批有錯誤；保留 checkpoint，可按鈕重試。'
+        : pending ? '本批完成；可再次繼續，直到 remaining 變成 0。' : '目前隊列已清空。';
+      await loadLedger();
+    } catch (error) {
+      log.textContent = `✗ ${portfolio.toUpperCase()} 隊列處理失敗：${error.message}`;
+      status.textContent = 'checkpoint 未重置；可稍後重試。';
     } finally {
       button.disabled = false;
     }
