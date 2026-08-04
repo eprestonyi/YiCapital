@@ -207,6 +207,93 @@ async function seedFrozenTape(env) {
   }, 2);
 }
 
+test('single and batch NAV persistence canonicalize cent-exact accounting identities', async () => {
+  const env = await setup();
+  env.FEEDBACK_DB.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const units = 2_107_072.57018;
+  const unitNav = 235_108.805 / units;
+  const shared = {
+    cash: -12_809.08,
+    marketValue: 247_917.88,
+    totalAssets: 235_108.81,
+    liability: 0,
+    netValue: 235_108.81,
+    units,
+    unitNav,
+    valuation: { priceBasis: 'raw_counter', adjusted: false },
+    warnings: [],
+  };
+
+  await persistLedgerValuation(env, 'us', {
+    ...shared,
+    date: '2026-08-04',
+    source: 'yahoo:query2-chart',
+    sourceRef: 'counter:half-cent',
+  }, [], 1);
+  await persistLedgerValuationBatch(env, 'us', {
+    replaceFrom: '2026-08-05',
+    replaceThrough: '2026-08-05',
+    navRows: [{
+      ...shared,
+      date: '2026-08-05',
+      market_value: shared.marketValue,
+      total_assets: shared.totalAssets,
+      net_value: shared.netValue,
+      unit_nav: shared.unitNav,
+    }],
+    priceRows: [],
+  }, 1);
+
+  const rows = env.FEEDBACK_DB.database.prepare(`
+    SELECT nav_date, cash_minor, market_value_minor, total_assets_minor,
+      liability_minor, net_value_minor, units_micros, unit_nav_micros
+    FROM ledger_nav_snapshots
+    WHERE portfolio_id = 'us' AND ledger_revision = 1
+    ORDER BY nav_date
+  `).all().map(row => ({ ...row }));
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.equal(row.cash_minor, -1_280_908);
+    assert.equal(row.market_value_minor, 24_791_788);
+    assert.equal(row.total_assets_minor, 23_510_880);
+    assert.equal(row.net_value_minor, 23_510_880);
+    assert.equal(row.cash_minor + row.market_value_minor, row.total_assets_minor);
+    assert.equal(row.total_assets_minor - row.liability_minor, row.net_value_minor);
+    assert.equal(row.units_micros, 2_107_072_570_180);
+    assert.equal(row.unit_nav_micros, 111_581);
+  }
+});
+
+test('NAV outbox defaults to a CPU-bounded five-session continuation', async () => {
+  const env = await setup();
+  env.FEEDBACK_DB.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  insertOutbox(env, { id: 'nav-1', revision: 1, kind: 'RECALC_NAV' });
+
+  const result = await drainLedgerOutbox(env, {
+    portfolio: 'us',
+    refreshPortfolio: async (runtimeEnv, portfolio, options) => {
+      assert.equal(runtimeEnv, env);
+      assert.equal(portfolio, 'us');
+      assert.equal(options.batchSize, 5);
+      return {
+        pf: portfolio,
+        ledgerRevision: 1,
+        complete: true,
+        historicalReplay: true,
+        fallback: false,
+      };
+    },
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.pending, false, JSON.stringify(result));
+  assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-1').status, 'DONE');
+});
+
 test('daily EOD scheduling requeues DONE and attaches intent to unfinished checkpoints', async () => {
   const env = await setup();
   seedEvents(env);
