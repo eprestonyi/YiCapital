@@ -564,6 +564,143 @@ function yahooUsSymbol(ticker) {
   return String(ticker || '').trim().toUpperCase().replace(/\.US$/, '').replaceAll('.', '-');
 }
 
+function yahooSplitRatio(event) {
+  const numerator = Number(event && event.numerator);
+  const denominator = Number(event && event.denominator);
+  if (numerator > 0 && denominator > 0) return numerator / denominator;
+  const match = String(event && event.splitRatio || '').match(/^([0-9.]+):([0-9.]+)$/);
+  if (!match) return null;
+  const left = Number(match[1]);
+  const right = Number(match[2]);
+  return left > 0 && right > 0 ? left / right : null;
+}
+
+/**
+ * Yahoo's daily `close` is not dividend-adjusted, but Yahoo normalizes older
+ * closes across stock splits. The legacy Python engine explicitly multiplies
+ * every pre-split close back by the split ratio because the ledger separately
+ * replays the real share-count transformation. Keep that exact convention.
+ */
+export async function yahooUsPortfolioHistory(
+  ticker,
+  startDate,
+  endDate,
+  now = Date.now,
+  options = {},
+) {
+  const fetchFn = options.fetch || globalThis.fetch;
+  if (typeof fetchFn !== 'function') throw new Error('yahoo_history_fetch_unavailable');
+  const symbol = yahooUsSymbol(ticker);
+  const startMs = Date.parse(`${String(startDate).slice(0, 10)}T00:00:00.000Z`);
+  // Yahoo treats period2 in the exchange timezone. Two UTC days make the
+  // requested US close fully inclusive; rows are still filtered back to the
+  // exact requested endDate below (the legacy Python downloader also pads).
+  const endMs = Date.parse(`${addIsoDays(endDate, 2)}T00:00:00.000Z`);
+  if (!symbol || !Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) {
+    throw new Error('yahoo_history_request_invalid');
+  }
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+    `?period1=${Math.floor(startMs / 1000)}&period2=${Math.floor(endMs / 1000)}` +
+    '&interval=1d&includePrePost=false&events=div%2Csplits&includeAdjustedClose=false';
+  let payload = null;
+  let lastFetchError = null;
+  for (let attempt = 0; attempt < 2 && !payload; attempt += 1) {
+    try {
+      const timeoutSignal = typeof AbortSignal !== 'undefined' &&
+        typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(10000)
+        : undefined;
+      const response = await fetchFn(url, {
+        headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 YiCapital/1.0' },
+        ...(timeoutSignal ? { signal: timeoutSignal } : {}),
+      });
+      if (!response || response.ok !== true || typeof response.json !== 'function') {
+        throw new Error('yahoo_history_http_unavailable');
+      }
+      payload = await response.json();
+    } catch (error) {
+      lastFetchError = error;
+    }
+  }
+  if (!payload) {
+    const error = new Error('yahoo_history_http_unavailable');
+    error.cause = lastFetchError;
+    throw error;
+  }
+  const result = payload && payload.chart && Array.isArray(payload.chart.result)
+    ? payload.chart.result[0]
+    : null;
+  if (!result || payload.chart.error) throw new Error('yahoo_history_payload_invalid');
+  const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
+  const closes = result.indicators && Array.isArray(result.indicators.quote)
+    ? result.indicators.quote[0] && result.indicators.quote[0].close
+    : [];
+  if (!Array.isArray(closes)) throw new Error('yahoo_history_payload_invalid');
+  const splits = Object.values(result.events && result.events.splits || {})
+    .map(event => {
+      const timestamp = Number(event && event.date);
+      return {
+        date: Number.isFinite(timestamp) && timestamp > 0
+          ? portfolioMarketDate(timestamp * 1000, 'us')
+          : null,
+        ratio: yahooSplitRatio(event),
+      };
+    })
+    .filter(event => isoDatePattern.test(event.date) && event.ratio > 0 && event.ratio !== 1)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const fetchedAt = new Date(now()).toISOString();
+  const rows = timestamps.map((timestamp, index) => {
+    const seconds = Number(timestamp);
+    const date = Number.isFinite(seconds) && seconds > 0
+      ? portfolioMarketDate(seconds * 1000, 'us')
+      : null;
+    let close = Number(closes[index]);
+    if (!isoDatePattern.test(date) || date < startDate || date > endDate || !(close > 0)) {
+      return null;
+    }
+    for (const split of splits) {
+      if (date < split.date) close *= split.ratio;
+    }
+    return {
+      ticker: String(ticker || '').trim().toUpperCase(),
+      date,
+      price: close,
+      close,
+      source: 'yahoo:query2-chart',
+      sourceRef: 'query2.finance.yahoo.com/v8/finance/chart:close:raw-unadjusted:pre-split-restored',
+      valuation: { priceBasis: 'raw_close', adjusted: false },
+      fetchedAt,
+    };
+  }).filter(Boolean);
+  // Yahoo occasionally publishes the completed regular-session close in meta
+  // before the corresponding 1d bar's close field is populated. Accept it
+  // only when its own timestamp proves the exact requested session; never
+  // relabel a stale or current-session counter as another day's EOD close.
+  const metaSeconds = Number(result.meta && result.meta.regularMarketTime);
+  const metaClose = Number(result.meta && result.meta.regularMarketPrice);
+  const metaDate = Number.isFinite(metaSeconds) && metaSeconds > 0
+    ? portfolioMarketDate(metaSeconds * 1000, 'us')
+    : null;
+  if (isoDatePattern.test(metaDate) && metaDate >= startDate && metaDate <= endDate &&
+      metaClose > 0 && !rows.some(row => row.date === metaDate)) {
+    rows.push({
+      ticker: String(ticker || '').trim().toUpperCase(),
+      date: metaDate,
+      price: metaClose,
+      close: metaClose,
+      source: 'yahoo:query2-chart',
+      sourceRef: 'query2.finance.yahoo.com/v8/finance/chart:regularMarketPrice:session-timestamped-raw-close',
+      valuation: { priceBasis: 'raw_close', adjusted: false },
+      fetchedAt,
+    });
+  }
+  return {
+    ticker: String(ticker || '').trim().toUpperCase(),
+    rows: [...new Map(rows.map(row => [row.date, row])).values()]
+      .sort((left, right) => left.date.localeCompare(right.date)),
+  };
+}
+
 async function yahooUsCounterQuote(ticker, now = Date.now, options = {}) {
   const fetchFn = options.fetch || globalThis.fetch;
   if (typeof fetchFn !== 'function') throw new Error('yahoo_counter_fetch_unavailable');
@@ -1568,6 +1705,42 @@ async function tusharePortfolioHistory(adapter, ticker, market, startDate, endDa
   };
 }
 
+async function portfolioHistoricalPrices(
+  adapter,
+  ticker,
+  market,
+  startDate,
+  endDate,
+  nowFn,
+  historyFetch,
+) {
+  if (market === 'us' && typeof historyFetch === 'function') {
+    return yahooUsPortfolioHistory(ticker, startDate, endDate, nowFn, {
+      fetch: historyFetch,
+    });
+  }
+  return tusharePortfolioHistory(adapter, ticker, market, startDate, endDate, nowFn);
+}
+
+async function mapWithConcurrency(values, concurrency, mapper) {
+  const items = Array.isArray(values) ? values : [];
+  if (!items.length) return [];
+  const output = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(items.length, Math.max(1, Number(concurrency) || 1)) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        output[index] = await mapper(items[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return output;
+}
+
 async function tusharePortfolioCalendarTape(
   adapter,
   market,
@@ -1837,7 +2010,13 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
   const eventDates = events.map(eventEffectiveDate).filter(date => isoDatePattern.test(date)).sort();
   const historyStart = eventDates[0];
   const tickers = portfolioHistoricalTickers(events);
-  const priceSource = `tushare:${portfolioDataset(market)}`;
+  const historyFetch = typeof options.historyFetch === 'function' ? options.historyFetch : null;
+  const priceSource = market === 'us' && historyFetch
+    ? 'yahoo:query2-chart'
+    : `tushare:${portfolioDataset(market)}`;
+  const historicalSource = market === 'us' && historyFetch
+    ? 'yahoo:query2-chart+tushare:us_tradecal'
+    : 'tushare';
   const priorFrozenTape = ledgerRevision > 0
     ? await loadPriorFrozenLedgerPriceTape(env, pf, ledgerRevision)
     : null;
@@ -1956,7 +2135,7 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     return {
       pf,
       ranAt: new Date(nowFn()).toISOString(),
-      source: 'tushare',
+      source: historicalSource,
       freshness_class: 'eod',
       historicalReplay: true,
       complete: false,
@@ -2010,14 +2189,24 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       throw new Error('historical_nav_publish_calendar_coverage_missing');
     }
     const publishedThrough = materializedLast.date;
+    // A continuation is intentionally loaded from price-free D1 event facts.
+    // The materialize phase has already persisted the current-revision raw
+    // prices, so rebuild the valued ledger before publishing presentation
+    // fields. Otherwise the NAV rows are correct while public holdings/base
+    // silently expose zero prices and market values from the replay input.
+    const publishedLedger = await materializeLedgerKv(env, pf, {
+      expectedLedgerRevision: ledgerRevision,
+      currentDate: publishedThrough,
+    });
     const live = {
       rows: [],
-      holdings: led.sourceHoldings || [],
+      holdings: publishedLedger.sourceHoldings || [],
       updatedAt: new Date(nowFn()).toISOString(),
       marketDate: publishedThrough,
       ledgerRevision,
       sourceMeta: {
-        source: 'tushare',
+        source: historicalSource,
+        priceSource,
         source_endpoint: 'historical-nav-replay:raw-close',
         as_of: publishedThrough,
         fetched_at: new Date(nowFn()).toISOString(),
@@ -2060,7 +2249,9 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       env.YC_KV.get('navcache:' + pf),
     ]);
     await assertLedgerRevision(env, pf, ledgerRevision);
-    const publishedCache = await persistPortfolioCache(env, pf, led, live, status);
+    const publishedCache = await persistPortfolioCache(
+      env, pf, publishedLedger, live, status,
+    );
     try {
       await assertLedgerRevision(env, pf, ledgerRevision);
     } catch (error) {
@@ -2108,15 +2299,16 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     }
     if (calendarExtension.dates.length) {
       const extensionThrough = calendarExtension.dates.at(-1);
-      const fetchedExtension = await Promise.all(tickers.map(async ticker => {
+      const fetchedExtension = await mapWithConcurrency(tickers, 3, async ticker => {
         try {
-          const result = await tusharePortfolioHistory(
+          const result = await portfolioHistoricalPrices(
             adapter,
             ticker,
             market,
             addIsoDays(tape.tapeThrough, 1),
             extensionThrough,
             nowFn,
+            historyFetch,
           );
           // A sold/delisted or temporarily suspended ticker can legitimately
           // have no new counter print. Its previously frozen raw close remains
@@ -2130,7 +2322,7 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
             error: String(error && (error.code || error.message) || 'unavailable'),
           };
         }
-      }));
+      });
       const unavailableExtension = fetchedExtension
         .filter(item => item.error).map(item => item.ticker);
       if (unavailableExtension.length) {
@@ -2250,15 +2442,16 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
           });
         }
       }
-      const fetchedSegments = await Promise.all(fetchPlans.map(async plan => {
+      const fetchedSegments = await mapWithConcurrency(fetchPlans, 3, async plan => {
         try {
-          const result = await tusharePortfolioHistory(
+          const result = await portfolioHistoricalPrices(
             adapter,
             plan.ticker,
             market,
             plan.from,
             plan.through,
             nowFn,
+            historyFetch,
           );
           return { ...plan, rows: result.rows, error: plan.requireRows && !result.rows.length };
         } catch (error) {
@@ -2268,7 +2461,7 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
             error: String(error && (error.code || error.message) || 'unavailable'),
           };
         }
-      }));
+      });
       const unavailable = fetchedSegments.filter(item => item.error).map(item => item.ticker);
       if (unavailable.length) {
         const error = new Error(
@@ -2333,19 +2526,20 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       throw error;
     }
     const tickerFirstDates = portfolioTickerFirstHoldingDates(events);
-    const fetched = await Promise.all(tickers.map(async ticker => {
+    const fetched = await mapWithConcurrency(tickers, 3, async ticker => {
       const firstHoldingDate = tickerFirstDates.get(ticker) || historyStart;
       if (firstHoldingDate > targetThrough) {
         return { ticker, rows: [], futureHolding: true };
       }
       try {
-        const result = await tusharePortfolioHistory(
+        const result = await portfolioHistoricalPrices(
           adapter,
           ticker,
           market,
           firstHoldingDate,
           targetThrough,
           nowFn,
+          historyFetch,
         );
         return result.rows.length
           ? result
@@ -2357,7 +2551,7 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
           error: String(error && (error.code || error.message) || 'unavailable'),
         };
       }
-    }));
+    });
     const unavailableHistory = fetched.filter(item => item.error).map(item => item.ticker);
     if (unavailableHistory.length) {
       const error = new Error(`historical_nav_price_history_unavailable:${unavailableHistory.join(',')}`);
@@ -2511,7 +2705,7 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
   const baseStatus = {
     pf,
     ranAt: new Date(nowFn()).toISOString(),
-    source: 'tushare',
+    source: historicalSource,
     freshness_class: 'eod',
     historicalReplay: true,
     complete: false,
@@ -2581,9 +2775,12 @@ function portfolioCacheMatchesRevision(cache, ledgerRevision) {
   return Number(rawRevision) === ledgerRevision;
 }
 
-/* 持倉/現金/負債/份額為唯一營運基準；Tushare 日線是唯一自動估值源。 */
+/* 持倉/現金/負債/份額為唯一營運基準；價格源只提供可核驗的 counter/raw close。 */
 async function updatePortfolioNav(env, pf, options = {}) {
   const nowFn = typeof options.now === 'function' ? options.now : Date.now;
+  const historyFetch = Object.hasOwn(options, 'historyFetch')
+    ? options.historyFetch
+    : options.adapter ? null : options.fetch || globalThis.fetch;
   const now = new Date(nowFn());
   const st = {
     pf,
@@ -2712,6 +2909,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
     return rebuildPortfolioNavHistory(env, pf, led, {
       ...options,
       adapter,
+      historyFetch,
       ledgerRevision,
       affectedFrom: replayFrom,
       dirtyNavDates,
@@ -2745,6 +2943,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
         affectedFrom: isoDatePattern.test(affectedFrom) ? affectedFrom : led.sourceDate,
         prepareTapeOnly: true,
         adapter,
+        historyFetch,
         ledgerRevision,
       });
       currentTape = await loadFrozenLedgerPriceTape(env, pf, ledgerRevision);
