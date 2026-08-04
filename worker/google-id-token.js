@@ -39,8 +39,8 @@ function invalid(message) {
   return new GoogleIdTokenInvalidError(message);
 }
 
-function unavailable() {
-  return new GoogleJwksUnavailableError();
+function unavailable(message) {
+  return new GoogleJwksUnavailableError(message);
 }
 
 function isPlainObject(value) {
@@ -189,21 +189,23 @@ async function fetchJwks(url, fetchImpl, now, timeoutMs, keyCache, keyCacheKey) 
         redirect: 'error',
         signal: controller.signal,
       });
-      if (!response || !response.ok) throw unavailable();
+      if (!response || !response.ok) {
+        throw unavailable('google_jwks_http_' + (response ? response.status : 'missing'));
+      }
       raw = await response.text();
     } catch (error) {
       if (error instanceof GoogleJwksUnavailableError) throw error;
-      throw unavailable();
+      throw unavailable('google_jwks_fetch_' + String(error && error.name || 'failed'));
     } finally {
       clearTimeout(timer);
     }
-    if (!raw || raw.length > MAX_JWKS_BYTES) throw unavailable();
+    if (!raw || raw.length > MAX_JWKS_BYTES) throw unavailable('google_jwks_payload_size');
 
     let payload;
     try {
       payload = JSON.parse(raw);
     } catch (error) {
-      throw unavailable();
+      throw unavailable('google_jwks_json_invalid');
     }
     const fetchedAt = now();
     const lifetimeMs = cacheLifetimeMs(response.headers);
@@ -449,10 +451,14 @@ export async function probeGoogleTokenInfo(options = {}) {
     });
     const reachable = !!response && (response.status === 400 || response.status === 401);
     if (!reachable) console.error('google_tokeninfo_probe_unexpected_status', response && response.status);
-    return reachable;
+    return options.diagnostic
+      ? { ok: reachable, status: response ? response.status : null, error: null }
+      : reachable;
   } catch (error) {
     console.error('google_tokeninfo_probe_request_failed', error && error.name);
-    return false;
+    return options.diagnostic
+      ? { ok: false, status: null, error: String(error && error.name || 'request_failed') }
+      : false;
   } finally {
     clearTimeout(timer);
   }

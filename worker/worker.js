@@ -3916,12 +3916,18 @@ export default {
           return J(env, { ok: true, mode: 'local' }, 200, { 'Cache-Control': 'no-store' });
         } catch (error) {
           console.error('google_jwks_readiness_failed', error && error.name, error && error.message);
-          if (await probeGoogleTokenInfo()) {
+          const tokenInfoProbe = await probeGoogleTokenInfo({ diagnostic: true });
+          if (tokenInfoProbe.ok) {
             return J(env, { ok: true, mode: 'remote-fallback' }, 200, {
               'Cache-Control': 'no-store',
             });
           }
-          return J(env, { ok: false, code: 'google_keys_unavailable' }, 503,
+          return J(env, {
+            ok: false,
+            code: 'google_keys_unavailable',
+            local: String(error && error.message || 'unavailable').slice(0, 80),
+            remote: tokenInfoProbe.status || tokenInfoProbe.error || 'unavailable',
+          }, 503,
             { 'Cache-Control': 'no-store', 'Retry-After': '5' });
         }
       }
