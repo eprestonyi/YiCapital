@@ -193,6 +193,7 @@ test('Google one-click registration creates a passwordless member session', asyn
     assert.equal(user.googleSub, 'google-subject-123');
     assert.equal(user.hash, null);
     assert.equal(user.newsletter, true);
+    assert.ok(kv.values.has('google:jwks:v1'));
   } finally {
     globalThis.fetch = originalFetch;
   }

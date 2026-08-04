@@ -5,6 +5,8 @@ const MAX_JWKS_KEYS = 64;
 const MAX_TOKEN_BYTES = 16 * 1024;
 const DEFAULT_CLOCK_SKEW_SECONDS = 60;
 const MAX_CACHE_SECONDS = 24 * 60 * 60;
+const MAX_STALE_SECONDS = 48 * 60 * 60;
+const PERSISTED_JWKS_CACHE_KEY = 'google:jwks:v1';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
@@ -121,7 +123,54 @@ function indexJwks(payload) {
   return keys;
 }
 
-async function fetchJwks(url, fetchImpl, now, timeoutMs) {
+async function loadPersistedJwks(url, keyCache, keyCacheKey, now) {
+  if (!keyCache || typeof keyCache.get !== 'function') return null;
+  let raw;
+  try {
+    raw = await keyCache.get(keyCacheKey);
+  } catch (error) {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    const payload = JSON.parse(raw);
+    if (!isPlainObject(payload)
+        || payload.version !== 1
+        || payload.url !== url
+        || !Array.isArray(payload.keys)
+        || !Number.isFinite(payload.expiresAt)
+        || !Number.isFinite(payload.staleUntil)
+        || payload.staleUntil <= now()) {
+      return null;
+    }
+    return {
+      keys: indexJwks({ keys: payload.keys }),
+      importedKeys: new Map(),
+      expiresAt: payload.expiresAt,
+      staleUntil: payload.staleUntil,
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function persistJwks(url, entry, keyCache, keyCacheKey, now) {
+  if (!keyCache || typeof keyCache.put !== 'function' || entry.staleUntil <= now()) return;
+  const ttl = Math.max(60, Math.ceil((entry.staleUntil - now()) / 1000));
+  try {
+    await keyCache.put(keyCacheKey, JSON.stringify({
+      version: 1,
+      url,
+      keys: Array.from(entry.keys.values()),
+      expiresAt: entry.expiresAt,
+      staleUntil: entry.staleUntil,
+    }), { expirationTtl: ttl });
+  } catch (error) {
+    // Persistent cache failures must never turn a valid Google login into an outage.
+  }
+}
+
+async function fetchJwks(url, fetchImpl, now, timeoutMs, keyCache, keyCacheKey) {
   const existing = jwksRequests.get(url);
   if (existing) return existing;
 
@@ -153,12 +202,16 @@ async function fetchJwks(url, fetchImpl, now, timeoutMs) {
     } catch (error) {
       throw unavailable();
     }
+    const fetchedAt = now();
+    const lifetimeMs = cacheLifetimeMs(response.headers);
     const entry = {
       keys: indexJwks(payload),
       importedKeys: new Map(),
-      expiresAt: now() + cacheLifetimeMs(response.headers),
+      expiresAt: fetchedAt + lifetimeMs,
+      staleUntil: fetchedAt + lifetimeMs + (lifetimeMs > 0 ? MAX_STALE_SECONDS * 1000 : 0),
     };
     jwksCache.set(url, entry);
+    await persistJwks(url, entry, keyCache, keyCacheKey, now);
     return entry;
   })();
 
@@ -171,12 +224,24 @@ async function fetchJwks(url, fetchImpl, now, timeoutMs) {
 }
 
 async function jwkForKid(kid, options) {
-  const { jwksUrl, fetchImpl, now, timeoutMs } = options;
+  const { jwksUrl, fetchImpl, now, timeoutMs, keyCache, keyCacheKey } = options;
   let entry = jwksCache.get(jwksUrl);
+  if (!entry || entry.staleUntil <= now()) {
+    entry = await loadPersistedJwks(jwksUrl, keyCache, keyCacheKey, now);
+    if (entry) jwksCache.set(jwksUrl, entry);
+  }
   const fresh = entry && entry.expiresAt > now();
+  const stale = entry && entry.staleUntil > now() && entry.keys.has(kid) ? entry : null;
 
-  if (!fresh) entry = await fetchJwks(jwksUrl, fetchImpl, now, timeoutMs);
-  else if (!entry.keys.has(kid)) entry = await fetchJwks(jwksUrl, fetchImpl, now, timeoutMs);
+  try {
+    if (!fresh) entry = await fetchJwks(jwksUrl, fetchImpl, now, timeoutMs, keyCache, keyCacheKey);
+    else if (!entry.keys.has(kid)) {
+      entry = await fetchJwks(jwksUrl, fetchImpl, now, timeoutMs, keyCache, keyCacheKey);
+    }
+  } catch (error) {
+    if (error instanceof GoogleJwksUnavailableError && stale) entry = stale;
+    else throw error;
+  }
 
   const jwk = entry.keys.get(kid);
   if (!jwk) throw invalid('Google ID token signing key is unknown');
@@ -250,6 +315,34 @@ function validateClaims(payload, audience, nowSeconds, clockSkewSeconds) {
   return email;
 }
 
+/** Keep a verified Google signing-key set ready before the next user signs in. */
+export async function warmGoogleSigningKeys(options = {}) {
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const fetchImpl = options.fetch || globalThis.fetch;
+  if (typeof fetchImpl !== 'function') throw unavailable();
+  const jwksUrl = options.jwksUrl || GOOGLE_JWKS_URL;
+  const timeoutMs = options.timeoutMs == null ? GOOGLE_JWKS_TIMEOUT_MS : Number(options.timeoutMs);
+  const keyCache = options.keyCache;
+  const keyCacheKey = options.keyCacheKey || PERSISTED_JWKS_CACHE_KEY;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('Google signing-key warmup options are invalid');
+  }
+
+  let entry = jwksCache.get(jwksUrl);
+  if (!entry || entry.staleUntil <= now()) {
+    entry = await loadPersistedJwks(jwksUrl, keyCache, keyCacheKey, now);
+    if (entry) jwksCache.set(jwksUrl, entry);
+  }
+  if (entry && entry.expiresAt > now()) return true;
+  try {
+    await fetchJwks(jwksUrl, fetchImpl, now, timeoutMs, keyCache, keyCacheKey);
+    return true;
+  } catch (error) {
+    if (error instanceof GoogleJwksUnavailableError && entry && entry.staleUntil > now()) return true;
+    throw error;
+  }
+}
+
 /**
  * Verify a Google Identity Services ID token locally using Google's rotating JWKS.
  *
@@ -265,6 +358,8 @@ export async function verifyGoogleIdToken(token, expectedAudience, options = {})
   if (typeof fetchImpl !== 'function') throw unavailable();
   const jwksUrl = options.jwksUrl || GOOGLE_JWKS_URL;
   const timeoutMs = options.timeoutMs == null ? GOOGLE_JWKS_TIMEOUT_MS : Number(options.timeoutMs);
+  const keyCache = options.keyCache;
+  const keyCacheKey = options.keyCacheKey || PERSISTED_JWKS_CACHE_KEY;
   const clockSkewSeconds = options.clockSkewSeconds == null
     ? DEFAULT_CLOCK_SKEW_SECONDS
     : Number(options.clockSkewSeconds);
@@ -278,6 +373,8 @@ export async function verifyGoogleIdToken(token, expectedAudience, options = {})
     fetchImpl,
     now,
     timeoutMs,
+    keyCache,
+    keyCacheKey,
   });
   const key = await importVerificationKey(entry, jwk);
   let signatureValid = false;

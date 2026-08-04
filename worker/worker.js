@@ -25,6 +25,7 @@ import {
   GoogleIdTokenInvalidError,
   GoogleJwksUnavailableError,
   verifyGoogleIdToken,
+  warmGoogleSigningKeys,
 } from './google-id-token.js';
 import {
   AuthStoreUnavailableError,
@@ -3873,8 +3874,12 @@ export default {
           sessionStoreHealth(env),
           authRateLimitHealth(env),
         ]);
+        if (ctx && typeof ctx.waitUntil === 'function' && env.GOOGLE_CLIENT_ID) {
+          ctx.waitUntil(warmGoogleSigningKeys({ keyCache: env.YC_KV })
+            .catch(error => console.error('google_signing_key_warmup_failed', error)));
+        }
         return J(env, {
-          ok: true, version: 'v9.1-d1-auth-sessions',
+          ok: true, version: 'v9.2-google-auth-resilience',
           kv: kvOk,
           feedback: feedbackOk,
           ledger: ledger.ready,
@@ -3983,7 +3988,9 @@ export default {
         if (!credential) return J(env, { error: '缺少憑證' }, 400);
         let t;
         try {
-          t = await verifyGoogleIdToken(credential, env.GOOGLE_CLIENT_ID);
+          t = await verifyGoogleIdToken(credential, env.GOOGLE_CLIENT_ID, {
+            keyCache: env.YC_KV,
+          });
         } catch (error) {
           if (error instanceof GoogleJwksUnavailableError) {
             return J(env, {

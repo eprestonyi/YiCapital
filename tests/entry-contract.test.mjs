@@ -99,7 +99,18 @@ test('member registration is progressive and Google sign-up exposes optional Ins
   assert.match(entry, /id="yc-entry-google-newsletter" type="checkbox" checked/);
   assert.match(entry, /newsletter: googleNewsletter \? googleNewsletter\.checked : false/);
   assert.match(entry, /googleConsent\.style\.display = providersVisible && GCID/);
+  assert.match(entry, /error\.code !== 'google_keys_unavailable'/);
+  assert.match(entry, /googleRetrying/);
   assert.doesNotMatch(entry, /id="yc-entry-password-2"/);
+});
+
+test('Google verification uses persistent signing-key resilience', async () => {
+  const worker = await read('worker/worker.js');
+  const verifier = await read('worker/google-id-token.js');
+  assert.match(worker, /verifyGoogleIdToken\(credential, env\.GOOGLE_CLIENT_ID, \{[\s\S]{0,100}keyCache: env\.YC_KV/);
+  assert.match(verifier, /PERSISTED_JWKS_CACHE_KEY = 'google:jwks:v1'/);
+  assert.match(verifier, /MAX_STALE_SECONDS = 48 \* 60 \* 60/);
+  assert.match(verifier, /GoogleJwksUnavailableError && stale/);
 });
 
 test('an expired admin session clears browser identity before redirecting', async () => {

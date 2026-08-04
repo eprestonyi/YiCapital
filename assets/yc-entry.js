@@ -85,7 +85,8 @@
       requestTimeout: '登入服務回應逾時，請重試。',
       networkError: '暫時無法連接登入服務，請檢查網絡後重試。',
       rateLimited: '登入嘗試過多，請稍後再試。',
-      googleUnavailable: 'Google 登入服務暫時不可用，請稍後再試。',
+      googleUnavailable: 'Google 登入暫時未能完成。請重試，或使用郵箱繼續。',
+      googleRetrying: 'Google 連線短暫中斷，正在自動重試…',
       googleChecking: '正在驗證 Google 帳號…',
       googleSetup: 'Google 身份已驗證，請設定用戶名。',
       codeSent: '驗證碼已發送，請檢查收件箱與垃圾郵件。',
@@ -155,7 +156,8 @@
       requestTimeout: '登录服务响应超时，请重试。',
       networkError: '暂时无法连接登录服务，请检查网络后重试。',
       rateLimited: '登录尝试过多，请稍后再试。',
-      googleUnavailable: 'Google 登录服务暂时不可用，请稍后再试。',
+      googleUnavailable: 'Google 登录暂时未能完成。请重试，或使用邮箱继续。',
+      googleRetrying: 'Google 连接短暂中断，正在自动重试…',
       googleChecking: '正在验证 Google 账号…',
       googleSetup: 'Google 身份已验证，请设置用户名。',
       codeSent: '验证码已发送，请检查收件箱与垃圾邮件。',
@@ -225,7 +227,8 @@
       requestTimeout: 'The identity service timed out. Please try again.',
       networkError: 'Unable to reach the identity service. Check your connection and try again.',
       rateLimited: 'Too many sign-in attempts. Please try again later.',
-      googleUnavailable: 'Google sign-in is temporarily unavailable. Please try again.',
+      googleUnavailable: 'Google sign-in could not finish. Try again or continue with email.',
+      googleRetrying: 'The Google connection was interrupted. Retrying…',
       googleChecking: 'Verifying your Google account…',
       googleSetup: 'Google identity verified. Choose a username.',
       codeSent: 'Verification code sent. Check your inbox and spam folder.',
@@ -499,13 +502,20 @@
         signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(
-        response.status === 429
+      if (!response.ok) {
+        const requestError = new Error(
+          response.status === 429
           ? copy.rateLimited
           : payload.code === 'google_keys_unavailable'
             ? copy.googleUnavailable
             : localizeServerError(payload.error)
-      );
+        );
+        requestError.code = String(payload.code || 'request_failed');
+        requestError.status = response.status;
+        const retryAfter = Number(response.headers.get('Retry-After') || 0);
+        requestError.retryAfterMs = Number.isFinite(retryAfter) ? retryAfter * 1000 : 0;
+        throw requestError;
+      }
       return payload;
     } catch (error) {
       if (error && error.name === 'AbortError') throw new Error(copy.requestTimeout);
@@ -666,13 +676,25 @@
     setMessage(copy.googleChecking);
     try {
       const googleNewsletter = $('yc-entry-google-newsletter');
-      const payload = await api('/api/google', {
+      const googleRequest = {
         credential: response && response.credential,
         autoCreate: authMode !== 'admin',
         terms: true,
         newsletter: googleNewsletter ? googleNewsletter.checked : false,
         locale,
-      });
+      };
+      let payload;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          payload = await api('/api/google', googleRequest);
+          break;
+        } catch (error) {
+          if (attempt > 0 || error.code !== 'google_keys_unavailable') throw error;
+          setMessage(copy.googleRetrying);
+          const retryDelay = Math.min(2000, Math.max(650, error.retryAfterMs || 1000));
+          await new Promise(resolve => window.setTimeout(resolve, retryDelay));
+        }
+      }
       if (authMode === 'admin' && payload.role !== 'admin') throw new Error(copy.adminDenied);
       if (payload.needSetup) {
         setupToken = payload.setupToken;

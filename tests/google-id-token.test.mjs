@@ -5,6 +5,7 @@ import {
   GoogleIdTokenInvalidError,
   GoogleJwksUnavailableError,
   verifyGoogleIdToken,
+  warmGoogleSigningKeys,
 } from '../worker/google-id-token.js';
 
 const encoder = new TextEncoder();
@@ -250,6 +251,62 @@ test('classifies JWKS network, HTTP, and payload failures as temporary upstream 
       );
     });
   }
+});
+
+test('persists Google keys and accepts a bounded stale key during an upstream outage', async () => {
+  let nowMs = 1_800_750_000_000;
+  const fixture = await keyFixture('persistent-key');
+  const token = await signToken(fixture, claims(Math.floor(nowMs / 1000)));
+  const values = new Map();
+  let putOptions = null;
+  const keyCache = {
+    async get(key) { return values.get(key) || null; },
+    async put(key, value, options) {
+      values.set(key, value);
+      putOptions = options;
+    },
+  };
+  const jwksUrl = 'https://keys.test/persistent-stale';
+  let fetches = 0;
+  const options = {
+    now: () => nowMs,
+    jwksUrl,
+    keyCache,
+    keyCacheKey: 'test:google:jwks',
+    fetch: async () => {
+      fetches += 1;
+      if (fetches > 1) throw new TypeError('simulated outage');
+      return jwksResponse([fixture.jwk], 'public, max-age=1');
+    },
+  };
+
+  await verifyGoogleIdToken(token, CLIENT_ID, options);
+  assert.equal(fetches, 1);
+  assert.ok(values.has('test:google:jwks'));
+  assert.ok(putOptions.expirationTtl > 48 * 60 * 60);
+  assert.equal(await warmGoogleSigningKeys(options), true);
+  assert.equal(fetches, 1);
+
+  nowMs += 1_001;
+  const staleVerified = await verifyGoogleIdToken(token, CLIENT_ID, options);
+  assert.equal(staleVerified.sub, 'google-subject-123');
+  assert.equal(fetches, 2);
+
+  const persisted = JSON.parse(values.get('test:google:jwks'));
+  const reloadedUrl = 'https://keys.test/persistent-reload';
+  const reloadedCache = {
+    async get() {
+      return JSON.stringify({ ...persisted, url: reloadedUrl, expiresAt: nowMs - 1 });
+    },
+    async put() { throw new Error('should not persist during an outage'); },
+  };
+  const reloaded = await verifyGoogleIdToken(token, CLIENT_ID, {
+    now: () => nowMs,
+    jwksUrl: reloadedUrl,
+    keyCache: reloadedCache,
+    fetch: async () => { throw new TypeError('simulated cold-start outage'); },
+  });
+  assert.equal(reloaded.email, 'investor@example.com');
 });
 
 test('aborts a stalled JWKS request at the configured deadline', async () => {

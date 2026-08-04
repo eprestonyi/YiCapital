@@ -48,7 +48,7 @@ test('health exposes the feedback store without leaking configuration', async ()
   );
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.version, 'v9.1-d1-auth-sessions');
+  assert.equal(body.version, 'v9.2-google-auth-resilience');
   assert.equal(body.admin_google, false);
   assert.equal(body.feedback, true);
   assert.equal(body.ledger, true);
@@ -59,19 +59,19 @@ test('health exposes the feedback store without leaking configuration', async ()
   assert.equal('database_id' in body, false);
 });
 
-test('live monitor and public release marker fail closed on the v9 ledger contract', async () => {
+test('live monitor and public release marker fail closed on the current auth contract', async () => {
   const [monitor, config] = await Promise.all([
     read('scripts/live-health.mjs'),
     read('assets/portal-config.js'),
   ]);
-  assert.match(monitor, /health\.version !== 'v9\.1-d1-auth-sessions'/);
+  assert.match(monitor, /health\.version !== 'v9\.2-google-auth-resilience'/);
   assert.match(monitor, /health\.auth_sessions !== true/);
   assert.match(monitor, /health\.auth_rate_limit !== true/);
   assert.match(monitor, /health\.ledger !== true/);
   assert.match(monitor, /Number\(health\.ledger_outbox_pending\) !== 0/);
   assert.match(monitor, /health\.admin_google !== false/);
   assert.doesNotMatch(monitor, /health\.version !== 'v8\.11-terminal-visuals'/);
-  assert.match(config, /window\.YC_RELEASE = 'v9\.1-d1-auth-sessions'/);
+  assert.match(config, /window\.YC_RELEASE = 'v9\.2-google-auth-resilience'/);
 });
 
 test('health fails closed when the D1 schema is incomplete', async () => {
