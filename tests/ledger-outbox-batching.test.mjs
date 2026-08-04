@@ -15,7 +15,10 @@ import {
   persistLedgerValuationBatch,
   portfolioDerivationState,
 } from '../worker/ledger-store.js';
-import worker, { updatePortfolioNav } from '../worker/worker.js';
+import worker, {
+  scheduledLedgerOutboxPortfolio,
+  updatePortfolioNav,
+} from '../worker/worker.js';
 
 const FIXED_NOW = Date.parse('2026-07-24T22:00:00.000Z');
 const now = () => FIXED_NOW;
@@ -328,6 +331,15 @@ test('automated NAV outbox defaults to one CPU-bounded session', async () => {
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-1').status, 'DONE');
 });
 
+test('minute automation rotates outbox portfolios without starving a market', () => {
+  const minute = Math.floor(Date.UTC(2026, 7, 4, 14, 0) / 60_000);
+  const alignedMinute = minute - (minute % 3);
+  assert.deepEqual([0, 1, 2, 3].map(offset =>
+    scheduledLedgerOutboxPortfolio((alignedMinute + offset) * 60_000)), [
+    'us', 'hk', 'a', 'us',
+  ]);
+});
+
 test('interactive admin outbox keeps a bounded five-session continuation', async () => {
   const env = await setup();
   env.FEEDBACK_DB.database.prepare(`
@@ -339,7 +351,7 @@ test('interactive admin outbox keeps a bounded five-session continuation', async
     new Request('https://ledger.test/api/admin/ledger/outbox', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ portfolio: 'us' }),
+      body: JSON.stringify({ portfolio: 'us', navBatchSize: 50 }),
     }),
     env,
     {
@@ -886,6 +898,7 @@ test('admin rebuild probes and appends a newer official EOD session', async () =
   const probeNow = () => Date.parse('2026-07-27T22:00:00.000Z');
   let drained = await drainLedgerOutbox(env, {
     portfolio: 'us',
+    navBatchSize: 5,
     refreshPortfolio: (runtimeEnv, portfolio, options) =>
       updatePortfolioNav(runtimeEnv, portfolio, {
         ...options,
@@ -907,6 +920,7 @@ test('admin rebuild probes and appends a newer official EOD session', async () =
   for (let index = 0; index < 10; index += 1) {
     drained = await drainLedgerOutbox(env, {
       portfolio: 'us',
+      navBatchSize: 5,
       refreshPortfolio: (runtimeEnv, portfolio, options) =>
         updatePortfolioNav(runtimeEnv, portfolio, {
           ...options,
