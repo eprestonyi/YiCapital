@@ -230,6 +230,10 @@
             <input id="rebuild-reason" type="text" maxlength="500" placeholder="重算原因（必填）">
             <button class="btn2" id="rebuild-derived" type="button">排隊完整重算</button>
           </div>
+          <div class="sync-row">
+            <button class="btn2" id="drain-outbox" type="button">繼續處理隊列</button>
+            <span class="form-state" id="drain-outbox-state">只續跑目前進度，不會重新排隊或重置 checkpoint。</span>
+          </div>
           <div class="log sync-log" id="rebuild-log" role="status">尚未排隊。</div>
         </div>
 
@@ -313,6 +317,6 @@
 
 <footer><div class="wrap"><div class="logo">Yi<b>Capital</b></div><p>© 2026 Yi Capital.</p></div></footer>
 
-<script src="assets/yc-ledger-admin.js?v=20260803l"></script>
+<script src="assets/yc-ledger-admin.js?v=20260804a"></script>
 </body>
 </html>

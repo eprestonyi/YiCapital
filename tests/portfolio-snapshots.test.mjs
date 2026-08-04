@@ -625,7 +625,7 @@ test('official calendar proves a closed weekend but rejects an incomplete future
   `).get().tape_through, '2026-07-24');
 });
 
-test('an open session is not frozen until the raw EOD watermark reaches that date', async () => {
+test('intraday replay stops at the raw EOD watermark and still rejects older gaps', async () => {
   const database = await ledgerDatabase();
   database.database.prepare(`
     UPDATE ledger_portfolios SET ledger_revision = 4 WHERE portfolio_id = 'us'
@@ -651,24 +651,44 @@ test('an open session is not frozen until the raw EOD watermark reaches that dat
     return { data: [
       { ts_code: 'AAA', trade_date: '20260723', close: 10 },
       { ts_code: 'AAA', trade_date: '20260724', close: 12 },
-    ] };
+    ].filter(row => row.trade_date >= request.params.start_date &&
+      row.trade_date <= request.params.end_date) };
   });
   const env = { FEEDBACK_DB: database };
+  const intraday = await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-24T17:00:00.000Z'),
+    affectedFrom: '2026-07-23', ledgerRevision: 4, batchSize: 50,
+  });
+  assert.equal(intraday.targetThrough, '2026-07-23');
+  assert.deepEqual({ ...database.database.prepare(`
+    SELECT tape_through, price_basis, adjusted FROM ledger_price_tapes
+    WHERE portfolio_id = 'us' AND ledger_revision = 4
+  `).get() }, {
+    tape_through: '2026-07-23', price_basis: 'raw_close', adjusted: 0,
+  });
+  assert.equal(database.database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_price_tape_rows
+    WHERE price_date = '2026-07-24'
+  `).get().count, 0);
+
   await assert.rejects(
     rebuildPortfolioNavHistory(env, 'us', led, {
       adapter,
-      now: () => Date.parse('2026-07-24T17:00:00.000Z'),
+      now: () => Date.parse('2026-07-25T17:00:00.000Z'),
       affectedFrom: '2026-07-23', ledgerRevision: 4, batchSize: 50,
     }),
     error => error && error.code === 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE',
   );
   assert.equal(database.database.prepare(`
-    SELECT COUNT(*) AS count FROM ledger_price_tapes WHERE portfolio_id = 'us'
-  `).get().count, 0);
+    SELECT tape_through FROM ledger_price_tapes
+    WHERE portfolio_id = 'us' AND ledger_revision = 4
+  `).get().tape_through, '2026-07-23');
+
   eodAvailable = true;
   const replay = await rebuildPortfolioNavHistory(env, 'us', led, {
     adapter,
-    now: () => Date.parse('2026-07-24T22:00:00.000Z'),
+    now: () => Date.parse('2026-07-25T17:00:00.000Z'),
     affectedFrom: '2026-07-23', ledgerRevision: 4, batchSize: 50,
   });
   assert.equal(replay.targetThrough, '2026-07-24');

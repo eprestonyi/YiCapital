@@ -36,6 +36,7 @@ test('admin ledger exposes the complete one-time legacy migration controls', asy
   assertElement(html, 'input', 'legacy-confirm-phrase');
   assertElement(html, 'button', 'confirm-legacy');
   assertElement(html, 'button', 'drain-legacy-outbox');
+  assertElement(html, 'button', 'drain-outbox');
   assertElement(html, 'button', 'rebuild-derived');
   assertElement(html, 'input', 'rebuild-reason');
   assertElement(html, 'dd', 'legacy-import-id');
@@ -61,6 +62,7 @@ test('legacy migration UI uses preview, signed confirm, and outbox contracts', a
   const preview = functionBlock(source, 'previewLegacyMigration');
   const confirm = functionBlock(source, 'confirmLegacyMigration');
   const drain = functionBlock(source, 'drainLegacyOutbox');
+  const genericDrain = functionBlock(source, 'drainPortfolioOutbox');
   const acknowledgement = functionBlock(source, 'legacyAcknowledgement');
   const confirmationGate = functionBlock(source, 'updateLegacyConfirmation');
 
@@ -97,6 +99,11 @@ test('legacy migration UI uses preview, signed confirm, and outbox contracts', a
   assert.match(source, /historical_price_rows:\s*\[\]/);
 
   assert.match(drain, /api\(\s*["']\/api\/admin\/ledger\/outbox["']/);
+  assert.match(genericDrain, /api\(\s*["']\/api\/admin\/ledger\/outbox["']/);
+  assert.match(genericDrain, /portfolio\s*\}\s*\)/);
+  assert.match(genericDrain, /result\.pending\s*===\s*true/);
+  assert.match(genericDrain, /item\.complete\s*===\s*false/);
+  assert.doesNotMatch(genericDrain, /legacyConfirmed/);
 
   const rebuild = functionBlock(source, 'rebuildDerived');
   assert.match(rebuild, /api\(\s*["']\/api\/admin\/ledger\/rebuild["']/);
