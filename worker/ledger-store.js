@@ -402,7 +402,7 @@ async function requestDerivedRebuild(db, body, actor) {
       )
     LIMIT 1
   `, [portfolio, ledgerRevision]);
-  const discardedPriceTapeId = unpublishedTape && unpublishedTape.price_tape_id || null;
+  const discardCandidatePriceTapeId = unpublishedTape && unpublishedTape.price_tape_id || null;
 
   const timestamp = now();
   const guardId = makeId('ltg');
@@ -410,14 +410,34 @@ async function requestDerivedRebuild(db, body, actor) {
   const kinds = ['RECALC_NAV', 'REBUILD_KV', 'REBUILD_EXCEL'];
   const payload = stableJson({ affectedFrom, reason });
   try {
-    await db.batch([
-      ...(discardedPriceTapeId ? [
-        db.prepare('DELETE FROM ledger_price_tape_rows WHERE price_tape_id = ?')
-          .bind(discardedPriceTapeId),
+    const batchResults = await db.batch([
+      ...(discardCandidatePriceTapeId ? [
+        db.prepare(`
+          DELETE FROM ledger_price_tape_rows
+          WHERE price_tape_id = ?
+            AND EXISTS (
+              SELECT 1 FROM ledger_price_tapes t
+              WHERE t.price_tape_id = ?
+                AND t.portfolio_id = ? AND t.ledger_revision = ?
+                AND NOT EXISTS (
+                  SELECT 1 FROM ledger_nav_snapshots n
+                  WHERE n.portfolio_id = t.portfolio_id
+                    AND n.ledger_revision = t.ledger_revision
+                )
+            )
+        `).bind(
+          discardCandidatePriceTapeId, discardCandidatePriceTapeId,
+          portfolio, ledgerRevision,
+        ),
         db.prepare(`
           DELETE FROM ledger_price_tapes
           WHERE price_tape_id = ? AND portfolio_id = ? AND ledger_revision = ?
-        `).bind(discardedPriceTapeId, portfolio, ledgerRevision),
+            AND NOT EXISTS (
+              SELECT 1 FROM ledger_nav_snapshots n
+              WHERE n.portfolio_id = ledger_price_tapes.portfolio_id
+                AND n.ledger_revision = ledger_price_tapes.ledger_revision
+            )
+        `).bind(discardCandidatePriceTapeId, portfolio, ledgerRevision),
       ] : []),
       db.prepare(`
         INSERT INTO ledger_transaction_guards (
@@ -458,10 +478,21 @@ async function requestDerivedRebuild(db, body, actor) {
       `).bind(
         makeId('lau'), portfolio, actor, portfolio,
         stableJson({ ledgerRevision, affectedFrom, kinds, status: 'PENDING' }),
-        stableJson({ requestId, reason, discardedPriceTapeId }), timestamp,
+        stableJson({ requestId, reason, discardCandidatePriceTapeId }), timestamp,
       ),
       db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
     ]);
+    const discardedPriceTapeId = discardCandidatePriceTapeId &&
+      changedRows(batchResults[1]) > 0 ? discardCandidatePriceTapeId : null;
+    return {
+      ok: true,
+      portfolio,
+      ledgerRevision,
+      affectedFrom,
+      kinds,
+      requestId,
+      discardedPriceTapeId,
+    };
   } catch (error) {
     const current = await portfolioRow(db, portfolio);
     if (Number(current.ledger_revision) !== ledgerRevision) {
@@ -474,15 +505,6 @@ async function requestDerivedRebuild(db, body, actor) {
     throw error;
   }
 
-  return {
-    ok: true,
-    portfolio,
-    ledgerRevision,
-    affectedFrom,
-    kinds,
-    requestId,
-    discardedPriceTapeId,
-  };
 }
 function replay(items, portfolio, options = {}) {
   try {
