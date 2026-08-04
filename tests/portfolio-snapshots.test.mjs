@@ -623,11 +623,87 @@ test('production-style US replay freezes Yahoo raw closes with a Tushare calenda
     SELECT price_source, price_basis, adjusted, price_row_count
     FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 2
   `).get() }, {
-    price_source: 'yahoo:query2-chart',
+    price_source: 'us-raw-close:yahoo+chartexchange',
     price_basis: 'raw_close',
     adjusted: 0,
     price_row_count: 2,
   });
+});
+
+test('inactive XHYH prefix comes from source-backed raw closes instead of book value', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 2, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-01-05',
+        shareholder: 'LP1', subscription: '30000', redemption: '0', unit_price: '1' },
+      { event_id: 'buy-1', type: 'BUY', date: '2026-01-06', ticker: 'XHYH',
+        quantity: 600, gross_amount: '21456', net_cash: '-21456' },
+    ],
+  };
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') {
+      return officialCalendar(request, ['20260105', '20260106']);
+    }
+    assert.equal(dataset, 'us_daily');
+    assert.equal(request.params.ts_code, 'AAPL');
+    return { data: [
+      { ts_code: 'AAPL', trade_date: '20260105', close: 300 },
+      { ts_code: 'AAPL', trade_date: '20260106', close: 301 },
+    ] };
+  });
+  const historyCalls = [];
+  const historyFetch = async url => {
+    const value = String(url);
+    historyCalls.push(value);
+    if (value.includes('chartexchange.com')) {
+      return {
+        ok: true,
+        async text() {
+          return `
+            <table>
+              <tr><td><a name="2026-01-06"></a><a href="#2026-01-06">2026-01-06</a></td>
+                <td>35.752200</td><td>35.803200</td><td>35.7522</td><td>35.8032</td></tr>
+              <tr><td><a name="2026-01-05"></a><a href="#2026-01-05">2026-01-05</a></td>
+                <td>35.950000</td><td>35.950000</td><td>35.7200</td><td>35.9272</td></tr>
+            </table>`;
+        },
+      };
+    }
+    return {
+      ok: true,
+      async json() {
+        return { chart: { error: null, result: [{
+          timestamp: [Date.parse('2026-05-15T20:00:00.000Z') / 1000],
+          indicators: { quote: [{ close: [35.27] }] },
+        }] } };
+      },
+    };
+  };
+
+  await rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
+    adapter,
+    historyFetch,
+    now: () => Date.parse('2026-01-06T22:00:00.000Z'),
+    affectedFrom: '2026-01-05',
+    ledgerRevision: 2,
+  });
+  assert.equal(historyCalls.length, 2);
+  assert.ok(historyCalls.some(url => url.includes('finance.yahoo.com')));
+  assert.ok(historyCalls.some(url => url.includes('chartexchange.com/symbol/nyse-xhyh')));
+  const rows = database.database.prepare(`
+    SELECT ticker, price_date, price_micros, source, source_ref
+    FROM ledger_price_tape_rows WHERE price_tape_id = 'raw-close:us:2'
+    ORDER BY price_date
+  `).all();
+  assert.deepEqual(rows.map(row => ({ ...row })), [
+    { ticker: 'XHYH', price_date: '2026-01-06', price_micros: 35803200,
+      source: 'us-raw-close:yahoo+chartexchange',
+      source_ref: 'https://chartexchange.com/symbol/nyse-xhyh/historical/:close:raw-unadjusted' },
+  ]);
 });
 
 test('a dividend-only ticker that was never held does not require a price tape row', async () => {

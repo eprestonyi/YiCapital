@@ -388,6 +388,22 @@ async function requestDerivedRebuild(db, body, actor) {
     throw new LedgerHttpError(409, '目前沒有可重算的 confirmed active event');
   }
 
+  // A tape that never produced even one NAV snapshot is a failed staging
+  // artifact, not published historical truth. A deliberate admin rebuild may
+  // discard exactly that current-revision artifact so a repaired provider can
+  // refreeze it; any tape with a persisted NAV row remains immutable.
+  const unpublishedTape = await dbFirst(db, `
+    SELECT price_tape_id FROM ledger_price_tapes t
+    WHERE portfolio_id = ? AND ledger_revision = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM ledger_nav_snapshots n
+        WHERE n.portfolio_id = t.portfolio_id
+          AND n.ledger_revision = t.ledger_revision
+      )
+    LIMIT 1
+  `, [portfolio, ledgerRevision]);
+  const discardedPriceTapeId = unpublishedTape && unpublishedTape.price_tape_id || null;
+
   const timestamp = now();
   const guardId = makeId('ltg');
   const requestId = makeId('ldr');
@@ -395,6 +411,14 @@ async function requestDerivedRebuild(db, body, actor) {
   const payload = stableJson({ affectedFrom, reason });
   try {
     await db.batch([
+      ...(discardedPriceTapeId ? [
+        db.prepare('DELETE FROM ledger_price_tape_rows WHERE price_tape_id = ?')
+          .bind(discardedPriceTapeId),
+        db.prepare(`
+          DELETE FROM ledger_price_tapes
+          WHERE price_tape_id = ? AND portfolio_id = ? AND ledger_revision = ?
+        `).bind(discardedPriceTapeId, portfolio, ledgerRevision),
+      ] : []),
       db.prepare(`
         INSERT INTO ledger_transaction_guards (
           guard_id, pending_id, expected_pending_version,
@@ -434,7 +458,7 @@ async function requestDerivedRebuild(db, body, actor) {
       `).bind(
         makeId('lau'), portfolio, actor, portfolio,
         stableJson({ ledgerRevision, affectedFrom, kinds, status: 'PENDING' }),
-        stableJson({ requestId, reason }), timestamp,
+        stableJson({ requestId, reason, discardedPriceTapeId }), timestamp,
       ),
       db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
     ]);
@@ -457,6 +481,7 @@ async function requestDerivedRebuild(db, body, actor) {
     affectedFrom,
     kinds,
     requestId,
+    discardedPriceTapeId,
   };
 }
 function replay(items, portfolio, options = {}) {
@@ -904,7 +929,8 @@ function rawTapeError(message, code = 'HISTORICAL_NAV_PRICE_TAPE_INVALID') {
 
 function trustedRawCloseSource(source) {
   const value = String(source || '');
-  return /^tushare:/.test(value) || value === 'yahoo:query2-chart';
+  return /^tushare:/.test(value) || value === 'yahoo:query2-chart' ||
+    value === 'us-raw-close:yahoo+chartexchange';
 }
 
 function rawTapeCanonicalRows(rows) {

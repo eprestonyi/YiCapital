@@ -800,6 +800,12 @@ test('admin derived rebuild requeues the current revision idempotently without c
   const beforeEvents = database.prepare(`
     SELECT COUNT(*) AS count FROM ledger_events WHERE portfolio_id = 'us'
   `).get();
+  const stagedTape = await freezeUsTape(env, beforePortfolio.ledger_revision, {
+    from: '2026-02-01',
+    through: '2026-02-03',
+    calendarDates: ['2026-02-01', '2026-02-03'],
+    prices: [{ ticker: 'AAA', date: '2026-02-03', close: 10 }],
+  });
   database.prepare(`
     UPDATE ledger_outbox
     SET status = 'DONE', attempts = 7, last_error = 'old failure', processed_at = 123456
@@ -817,6 +823,14 @@ test('admin derived rebuild requeues the current revision idempotently without c
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.equal(first.body.ledgerRevision, beforePortfolio.ledger_revision);
   assert.equal(first.body.affectedFrom, '2026-02-01');
+  assert.equal(first.body.discardedPriceTapeId, stagedTape.priceTapeId);
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_price_tapes
+    WHERE portfolio_id = 'us' AND ledger_revision = ?
+  `).get(beforePortfolio.ledger_revision).count, 0);
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_price_tape_rows WHERE price_tape_id = ?
+  `).get(stagedTape.priceTapeId).count, 0);
 
   const resetRows = database.prepare(`
     SELECT kind, outbox_id, payload_json, status, attempts, last_error, processed_at
@@ -889,6 +903,12 @@ test('admin derived rebuild defers an ordered outbox drain when refresh is avail
     subscription: '1000.00', redemption: '0', unit_price: '1.00',
   });
   await freezeUsTape(env, 1, { from: '2026-02-01' });
+  await persistLedgerValuation(env, 'us', {
+    date: '2026-02-01', cash: 1000, marketValue: 0, totalAssets: 1000,
+    liability: 0, netValue: 1000, units: 1000, unitNav: 1,
+    sourceRef: 'unit-test-published-tape',
+    valuation: { priceBasis: 'raw_close', adjusted: false }, warnings: [],
+  }, [], 1);
   const deferred = [];
   const refreshCalls = [];
   const response = await handleLedgerAdminRequest(new Request(
