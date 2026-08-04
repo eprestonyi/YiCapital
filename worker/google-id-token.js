@@ -195,7 +195,9 @@ async function fetchJwks(url, fetchImpl, now, timeoutMs, keyCache, keyCacheKey) 
       raw = await response.text();
     } catch (error) {
       if (error instanceof GoogleJwksUnavailableError) throw error;
-      throw unavailable('google_jwks_fetch_' + String(error && error.name || 'failed'));
+      throw unavailable(('google_jwks_fetch_' + String(
+        error && (error.message || error.name) || 'failed'
+      )).slice(0, 120));
     } finally {
       clearTimeout(timer);
     }
@@ -455,9 +457,13 @@ export async function probeGoogleTokenInfo(options = {}) {
       ? { ok: reachable, status: response ? response.status : null, error: null }
       : reachable;
   } catch (error) {
-    console.error('google_tokeninfo_probe_request_failed', error && error.name);
+    console.error('google_tokeninfo_probe_request_failed', error && error.name, error && error.message);
     return options.diagnostic
-      ? { ok: false, status: null, error: String(error && error.name || 'request_failed') }
+      ? {
+        ok: false,
+        status: null,
+        error: String(error && (error.message || error.name) || 'request_failed').slice(0, 80),
+      }
       : false;
   } finally {
     clearTimeout(timer);
