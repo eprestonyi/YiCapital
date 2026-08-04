@@ -358,6 +358,41 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
   assert.equal(cache.navRows.length, 5);
   assert.equal(cache.as_of, '2026-07-24');
+  assert.deepEqual(cache.base, {
+    date: '2026-07-24',
+    unitNav: 1.02,
+    marketValue: 120,
+    totalAssets: 1020,
+    netValue: 1020,
+    cash: 900,
+    liability: 0,
+    units: 1000,
+  });
+  assert.deepEqual(cache.holdings.map(row => ({
+    ticker: row.t,
+    quantity: row.q,
+    price: row.price,
+    marketValue: row.marketValue,
+    date: row.date,
+    priceBasis: row.priceBasis,
+    adjusted: row.adjusted,
+  })), [{
+    ticker: 'AAA',
+    quantity: 10,
+    price: 12,
+    marketValue: 120,
+    date: '2026-07-24',
+    priceBasis: 'raw_close',
+    adjusted: false,
+  }]);
+  const publicResponse = await worker.fetch(
+    new Request('https://portal.test/api/nav/us'), env,
+  );
+  assert.equal(publicResponse.status, 200);
+  const publicSnapshot = await publicResponse.json();
+  assert.equal(publicSnapshot.base.marketValue, 120);
+  assert.equal(publicSnapshot.holdings[0].price, 12);
+  assert.equal(publicSnapshot.holdings[0].marketValue, 120);
 
   const beforeIdempotent = navRows(env);
   const callsBeforeIdempotent = adapter.calls.length;

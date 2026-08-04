@@ -20,6 +20,7 @@ import worker, {
   tusharePortfolioQuote,
   updatePortfolioNav,
   yahooUsCounterQuote,
+  yahooUsPortfolioHistory,
 } from '../worker/worker.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -213,6 +214,63 @@ test('Yahoo counter rejects an intraday print older than fifteen minutes', async
     }),
     /yahoo_counter_payload_invalid/,
   );
+});
+
+test('Yahoo US history keeps raw Close and restores pre-split traded prices', async () => {
+  const calls = [];
+  const history = await yahooUsPortfolioHistory(
+    'BRK.B.US',
+    '2026-07-29',
+    '2026-07-31',
+    () => Date.parse('2026-08-01T00:00:00.000Z'),
+    {
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init });
+        return {
+          ok: true,
+          async json() {
+            return { chart: { error: null, result: [{
+              timestamp: [
+                Date.parse('2026-07-29T20:00:00.000Z') / 1000,
+                Date.parse('2026-07-30T20:00:00.000Z') / 1000,
+                Date.parse('2026-07-31T20:00:00.000Z') / 1000,
+              ],
+              meta: {
+                regularMarketTime: Date.parse('2026-07-31T20:00:00.000Z') / 1000,
+                regularMarketPrice: 35,
+              },
+              indicators: { quote: [{ close: [25, 30, null] }] },
+              events: { splits: {
+                split: {
+                  date: Date.parse('2026-07-30T13:30:00.000Z') / 1000,
+                  numerator: 4,
+                  denominator: 1,
+                  splitRatio: '4:1',
+                },
+              } },
+            }] } };
+          },
+        };
+      },
+    },
+  );
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /finance\/chart\/BRK-B/);
+  assert.match(calls[0].url, /includeAdjustedClose=false/);
+  assert.deepEqual(history.rows.map(row => ({
+    date: row.date,
+    close: row.close,
+    source: row.source,
+    priceBasis: row.valuation.priceBasis,
+    adjusted: row.valuation.adjusted,
+  })), [
+    { date: '2026-07-29', close: 100, source: 'yahoo:query2-chart',
+      priceBasis: 'raw_close', adjusted: false },
+    { date: '2026-07-30', close: 30, source: 'yahoo:query2-chart',
+      priceBasis: 'raw_close', adjusted: false },
+    { date: '2026-07-31', close: 35, source: 'yahoo:query2-chart',
+      priceBasis: 'raw_close', adjusted: false },
+  ]);
 });
 
 test('dateless HK realtime never inherits a weekend wall-clock date', async () => {
@@ -506,6 +564,70 @@ test('historical NAV rejects a successful empty raw-close response instead of us
   assert.equal(database.database.prepare(`
     SELECT COUNT(*) AS count FROM ledger_nav_snapshots WHERE portfolio_id = 'us'
   `).get().count, 0);
+});
+
+test('production-style US replay freezes Yahoo raw closes with a Tushare calendar', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 2, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-1', type: 'CAPITAL', date: '2026-07-20',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+      { event_id: 'buy-1', type: 'BUY', date: '2026-07-21', ticker: 'AAA',
+        quantity: 10, gross_amount: '100', net_cash: '-100' },
+    ],
+  };
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') {
+      return officialCalendar(request, ['20260720', '20260721', '20260730']);
+    }
+    assert.equal(dataset, 'us_daily');
+    assert.equal(request.params.ts_code, 'AAPL');
+    return { data: [
+      { ts_code: 'AAPL', trade_date: '20260720', close: 600 },
+      { ts_code: 'AAPL', trade_date: '20260721', close: 601 },
+      { ts_code: 'AAPL', trade_date: '20260730', close: 610 },
+    ] };
+  });
+  const historyCalls = [];
+  const historyFetch = async url => {
+    historyCalls.push(String(url));
+    return {
+      ok: true,
+      async json() {
+        return { chart: { error: null, result: [{
+          timestamp: [
+            Date.parse('2026-07-21T20:00:00.000Z') / 1000,
+            Date.parse('2026-07-30T20:00:00.000Z') / 1000,
+          ],
+          indicators: { quote: [{ close: [10, 12] }] },
+        }] } };
+      },
+    };
+  };
+
+  const replay = await rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
+    adapter,
+    historyFetch,
+    now,
+    affectedFrom: '2026-07-20',
+    ledgerRevision: 2,
+  });
+  assert.equal(replay.complete, false);
+  assert.equal(historyCalls.length, 1);
+  assert.match(historyCalls[0], /finance\/chart\/AAA/);
+  assert.deepEqual({ ...database.database.prepare(`
+    SELECT price_source, price_basis, adjusted, price_row_count
+    FROM ledger_price_tapes WHERE portfolio_id = 'us' AND ledger_revision = 2
+  `).get() }, {
+    price_source: 'yahoo:query2-chart',
+    price_basis: 'raw_close',
+    adjusted: 0,
+    price_row_count: 2,
+  });
 });
 
 test('a dividend-only ticker that was never held does not require a price tape row', async () => {

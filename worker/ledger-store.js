@@ -902,6 +902,11 @@ function rawTapeError(message, code = 'HISTORICAL_NAV_PRICE_TAPE_INVALID') {
   return new LedgerHttpError(409, message, { code });
 }
 
+function trustedRawCloseSource(source) {
+  const value = String(source || '');
+  return /^tushare:/.test(value) || value === 'yahoo:query2-chart';
+}
+
 function rawTapeCanonicalRows(rows) {
   return rows.map(row => [
     row.ticker,
@@ -987,7 +992,7 @@ export async function loadFrozenLedgerPriceTape(
       !/^\d{4}-\d{2}-\d{2}$/.test(tapeFrom) ||
       !/^\d{4}-\d{2}-\d{2}$/.test(tapeThrough) || tapeFrom > tapeThrough ||
       !/^\d{4}-\d{2}-\d{2}$/.test(calendarFrom) || calendarFrom > tapeThrough ||
-      !datesAreValid || !/^tushare:/.test(priceSource) ||
+      !datesAreValid || !trustedRawCloseSource(priceSource) ||
       !/^raw-close:[a-z]+:\d+$/.test(tapeId) ||
       (parentPriceTapeId == null) !== (inheritedThrough == null) ||
       parentPriceTapeId && !/^raw-close:[a-z]+:\d+$/.test(parentPriceTapeId) ||
@@ -1193,7 +1198,7 @@ export async function freezeLedgerPriceTape(
       !calendarDates.length || calendarDates.at(-1) !== tapeThrough ||
       calendarDates.some((date, index) => !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
         date < calendarFrom || date > tapeThrough || index > 0 && calendarDates[index - 1] >= date) ||
-      !/^tushare:/.test(priceSource) || !/^tushare:/.test(calendarSource) ||
+      !trustedRawCloseSource(priceSource) || !/^tushare:/.test(calendarSource) ||
       (parentPriceTapeId == null) !== (inheritedThrough == null) ||
       parentPriceTapeId && !/^raw-close:[a-z]+:\d+$/.test(parentPriceTapeId) ||
       inheritedThrough && (!/^\d{4}-\d{2}-\d{2}$/.test(inheritedThrough) ||
