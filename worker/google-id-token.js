@@ -1,6 +1,9 @@
 const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+const GOOGLE_TOKENINFO_URL = 'https://oauth2.googleapis.com/tokeninfo';
 const GOOGLE_JWKS_TIMEOUT_MS = 5_000;
+const GOOGLE_TOKENINFO_TIMEOUT_MS = 5_000;
 const MAX_JWKS_BYTES = 256 * 1024;
+const MAX_TOKENINFO_BYTES = 64 * 1024;
 const MAX_JWKS_KEYS = 64;
 const MAX_TOKEN_BYTES = 16 * 1024;
 const DEFAULT_CLOCK_SKEW_SECONDS = 60;
@@ -343,6 +346,112 @@ export async function warmGoogleSigningKeys(options = {}) {
   } catch (error) {
     if (error instanceof GoogleJwksUnavailableError && entry && entry.staleUntil > now()) return true;
     throw error;
+  }
+}
+
+function normalizedTokenInfoClaims(payload) {
+  if (!isPlainObject(payload)) throw invalid();
+  return {
+    ...payload,
+    exp: typeof payload.exp === 'string' && /^\d+$/.test(payload.exp)
+      ? Number(payload.exp)
+      : payload.exp,
+    nbf: typeof payload.nbf === 'string' && /^\d+$/.test(payload.nbf)
+      ? Number(payload.nbf)
+      : payload.nbf,
+    email_verified: payload.email_verified === true || payload.email_verified === 'true',
+  };
+}
+
+/**
+ * Emergency verifier used only when Google's JWKS host is unreachable.
+ * Google validates the signature; YiCapital still validates audience, issuer,
+ * expiry and identity claims locally before accepting the result.
+ */
+export async function verifyGoogleIdTokenWithTokenInfo(token, expectedAudience, options = {}) {
+  const parsed = parseToken(token);
+  const audience = expectedAudiences(expectedAudience);
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+  const fetchImpl = options.fetch || globalThis.fetch;
+  if (typeof fetchImpl !== 'function') throw unavailable();
+  const tokenInfoUrl = options.tokenInfoUrl || GOOGLE_TOKENINFO_URL;
+  const timeoutMs = options.timeoutMs == null ? GOOGLE_TOKENINFO_TIMEOUT_MS : Number(options.timeoutMs);
+  const clockSkewSeconds = options.clockSkewSeconds == null
+    ? DEFAULT_CLOCK_SKEW_SECONDS
+    : Number(options.clockSkewSeconds);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0
+      || !Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
+    throw new TypeError('Google tokeninfo verifier options are invalid');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  let raw;
+  try {
+    response = await fetchImpl(tokenInfoUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      },
+      body: 'id_token=' + encodeURIComponent(token),
+      redirect: 'error',
+      signal: controller.signal,
+    });
+    if (!response || !response.ok) {
+      if (response && (response.status === 400 || response.status === 401)) throw invalid();
+      throw unavailable();
+    }
+    raw = await response.text();
+  } catch (error) {
+    if (error instanceof GoogleIdTokenInvalidError || error instanceof GoogleJwksUnavailableError) {
+      throw error;
+    }
+    throw unavailable();
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!raw || raw.length > MAX_TOKENINFO_BYTES) throw unavailable();
+
+  let payload;
+  try {
+    payload = normalizedTokenInfoClaims(JSON.parse(raw));
+  } catch (error) {
+    if (error instanceof GoogleIdTokenInvalidError) throw error;
+    throw unavailable();
+  }
+  const email = validateClaims(payload, audience, Math.floor(now() / 1000), clockSkewSeconds);
+  if (payload.sub !== parsed.payload.sub
+      || email !== String(parsed.payload.email || '').trim().toLowerCase()
+      || payload.exp !== parsed.payload.exp) {
+    throw invalid('Google tokeninfo identity does not match the submitted token');
+  }
+  return Object.freeze({ ...payload, email, email_verified: true });
+}
+
+/** Check that Google's emergency verification host is reachable without a user token. */
+export async function probeGoogleTokenInfo(options = {}) {
+  const fetchImpl = options.fetch || globalThis.fetch;
+  if (typeof fetchImpl !== 'function') return false;
+  const tokenInfoUrl = options.tokenInfoUrl || GOOGLE_TOKENINFO_URL;
+  const timeoutMs = options.timeoutMs == null ? GOOGLE_TOKENINFO_TIMEOUT_MS : Number(options.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(tokenInfoUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: 'id_token=probe',
+      redirect: 'error',
+      signal: controller.signal,
+    });
+    return !!response && (response.status === 400 || response.status === 401);
+  } catch (error) {
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

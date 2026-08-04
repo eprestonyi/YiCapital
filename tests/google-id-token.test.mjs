@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   GoogleIdTokenInvalidError,
   GoogleJwksUnavailableError,
+  probeGoogleTokenInfo,
   verifyGoogleIdToken,
+  verifyGoogleIdTokenWithTokenInfo,
   warmGoogleSigningKeys,
 } from '../worker/google-id-token.js';
 
@@ -307,6 +309,51 @@ test('persists Google keys and accepts a bounded stale key during an upstream ou
     fetch: async () => { throw new TypeError('simulated cold-start outage'); },
   });
   assert.equal(reloaded.email, 'investor@example.com');
+});
+
+test('tokeninfo fallback revalidates identity claims and uses POST without putting the token in the URL', async () => {
+  const nowMs = 1_800_780_000_000;
+  const fixture = await keyFixture('tokeninfo-key');
+  const expectedClaims = claims(Math.floor(nowMs / 1000));
+  const token = await signToken(fixture, expectedClaims);
+  let observedBody = '';
+  const verified = await verifyGoogleIdTokenWithTokenInfo(token, CLIENT_ID, {
+    now: () => nowMs,
+    fetch: async (url, init) => {
+      assert.equal(String(url), 'https://oauth2.googleapis.com/tokeninfo');
+      assert.equal(init.method, 'POST');
+      assert.equal(String(url).includes(token), false);
+      observedBody = init.body;
+      return new Response(JSON.stringify({
+        ...expectedClaims,
+        exp: String(expectedClaims.exp),
+        email_verified: 'true',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  assert.match(observedBody, /^id_token=/);
+  assert.equal(verified.email, 'investor@example.com');
+  assert.equal(verified.sub, 'google-subject-123');
+});
+
+test('tokeninfo fallback rejects invalid tokens and exposes only a reachability probe', async () => {
+  const nowMs = 1_800_790_000_000;
+  const fixture = await keyFixture('tokeninfo-invalid-key');
+  const token = await signToken(fixture, claims(Math.floor(nowMs / 1000)));
+  await assert.rejects(
+    verifyGoogleIdTokenWithTokenInfo(token, CLIENT_ID, {
+      now: () => nowMs,
+      fetch: async () => new Response(JSON.stringify({ error: 'invalid_token' }), { status: 400 }),
+    }),
+    GoogleIdTokenInvalidError,
+  );
+  assert.equal(await probeGoogleTokenInfo({
+    fetch: async (url, init) => {
+      assert.equal(String(url), 'https://oauth2.googleapis.com/tokeninfo');
+      assert.equal(init.body, 'id_token=probe');
+      return new Response('{}', { status: 400 });
+    },
+  }), true);
 });
 
 test('aborts a stalled JWKS request at the configured deadline', async () => {

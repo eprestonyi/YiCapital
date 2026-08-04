@@ -24,7 +24,9 @@ import { replayPortfolioLedger } from './portfolio-ledger.js';
 import {
   GoogleIdTokenInvalidError,
   GoogleJwksUnavailableError,
+  probeGoogleTokenInfo,
   verifyGoogleIdToken,
+  verifyGoogleIdTokenWithTokenInfo,
   warmGoogleSigningKeys,
 } from './google-id-token.js';
 import {
@@ -3911,12 +3913,15 @@ export default {
         }
         try {
           await warmGoogleSigningKeys({ keyCache: env.YC_KV });
-          return J(env, { ok: true }, 200, { 'Cache-Control': 'no-store' });
+          return J(env, { ok: true, mode: 'local' }, 200, { 'Cache-Control': 'no-store' });
         } catch (error) {
-          return J(env, { ok: false, code: 'google_keys_unavailable' }, 503, {
-            'Cache-Control': 'no-store',
-            'Retry-After': '5',
-          });
+          if (await probeGoogleTokenInfo()) {
+            return J(env, { ok: true, mode: 'remote-fallback' }, 200, {
+              'Cache-Control': 'no-store',
+            });
+          }
+          return J(env, { ok: false, code: 'google_keys_unavailable' }, 503,
+            { 'Cache-Control': 'no-store', 'Retry-After': '5' });
         }
       }
 
@@ -4012,15 +4017,22 @@ export default {
           });
         } catch (error) {
           if (error instanceof GoogleJwksUnavailableError) {
-            return J(env, {
-              error: 'Google 身份驗證暫時不可用，請稍後再試',
-              code: 'google_keys_unavailable',
-            }, 503, { 'Retry-After': '5' });
+            try {
+              t = await verifyGoogleIdTokenWithTokenInfo(credential, env.GOOGLE_CLIENT_ID);
+            } catch (fallbackError) {
+              if (fallbackError instanceof GoogleIdTokenInvalidError) {
+                return J(env, { error: 'Google 憑證無效', code: 'google_credential_invalid' }, 401);
+              }
+              return J(env, {
+                error: 'Google 身份驗證暫時不可用，請稍後再試',
+                code: 'google_keys_unavailable',
+              }, 503, { 'Retry-After': '5' });
+            }
           }
-          if (error instanceof GoogleIdTokenInvalidError) {
+          else if (error instanceof GoogleIdTokenInvalidError) {
             return J(env, { error: 'Google 憑證無效', code: 'google_credential_invalid' }, 401);
           }
-          throw error;
+          else throw error;
         }
         const email = t.email;
         const mapped = await env.YC_KV.get('email:' + email);

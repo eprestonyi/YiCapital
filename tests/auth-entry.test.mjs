@@ -28,7 +28,7 @@ async function googleCredential(overrides = {}) {
     use: 'sig',
   };
   const header = base64Url(encoder.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid })));
-  const payload = base64Url(encoder.encode(JSON.stringify({
+  const claims = {
     aud: GOOGLE_CLIENT_ID,
     iss: 'https://accounts.google.com',
     sub: 'google-subject-123',
@@ -37,14 +37,15 @@ async function googleCredential(overrides = {}) {
     email: 'member@example.com',
     name: 'Test Investor',
     ...overrides,
-  })));
+  };
+  const payload = base64Url(encoder.encode(JSON.stringify(claims)));
   const signed = header + '.' + payload;
   const signature = await crypto.subtle.sign(
     { name: 'RSASSA-PKCS1-v1_5' },
     pair.privateKey,
     encoder.encode(signed),
   );
-  return { token: signed + '.' + base64Url(signature), jwk };
+  return { token: signed + '.' + base64Url(signature), jwk, claims };
 }
 
 function googleJwksResponse(jwk) {
@@ -288,6 +289,50 @@ test('Google endpoint distinguishes invalid credentials from a temporary JWKS ou
     assert.equal(unavailableResponse.status, 503);
     assert.equal(unavailableResponse.headers.get('Retry-After'), '5');
     assert.equal((await unavailableResponse.json()).code, 'google_keys_unavailable');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Google endpoint uses tokeninfo only when the local JWKS host is unavailable', async () => {
+  const originalFetch = globalThis.fetch;
+  const kv = kvStore();
+  const google = await googleCredential({ email: 'fallback@example.com' });
+  globalThis.fetch = async (url, init) => {
+    if (String(url) === 'https://www.googleapis.com/oauth2/v3/certs') {
+      throw new TypeError('simulated JWKS network outage');
+    }
+    assert.equal(String(url), 'https://oauth2.googleapis.com/tokeninfo');
+    assert.equal(init.method, 'POST');
+    return new Response(JSON.stringify({
+      ...google.claims,
+      exp: String(google.claims.exp),
+      email_verified: 'true',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const response = await worker.fetch(
+      new Request('https://portal.test/api/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.15' },
+        body: JSON.stringify({
+          credential: google.token,
+          autoCreate: true,
+          terms: true,
+          newsletter: false,
+        }),
+      }),
+      {
+        YC_KV: kv,
+        GOOGLE_CLIENT_ID,
+        ADMIN_USERNAME: 'site-admin',
+        ALLOWED_ORIGIN: 'https://www.yicapital.co',
+      },
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(kv.values.get('email:fallback@example.com'), body.username);
   } finally {
     globalThis.fetch = originalFetch;
   }

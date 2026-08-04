@@ -81,7 +81,7 @@ test('Google readiness endpoint warms the persistent signing-key cache', async (
       }),
     );
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { ok: true });
+    assert.deepEqual(await response.json(), { ok: true, mode: 'local' });
     assert.ok(values.has('google:jwks:v1'));
   } finally {
     globalThis.fetch = originalFetch;
