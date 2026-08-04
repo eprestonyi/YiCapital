@@ -3098,6 +3098,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
   const adapter = options.adapter || createTushareAdapter(env, options);
   const ledgerRevision = Number(options.ledgerRevision ?? led.ledgerRevision);
   let cachedPublicUsable = false;
+  let cachedStressReusable = false;
   if (!continuationRequested && cachedPublic &&
       Number(cachedPublic.ledgerRevision) === ledgerRevision) {
     const cachedHistory = normalizeHistory(cachedPublic.history);
@@ -3111,14 +3112,29 @@ async function updatePortfolioNav(env, pf, options = {}) {
     const cachedLastHistory = cachedHistory.at(-1);
     const ledgerLastDate = String(led.lastDate || '').slice(0, 10);
     const cachedLastDate = String(cachedLastNav && cachedLastNav.date || '').slice(0, 10);
-    cachedPublicUsable = cachedHistory.length > 0 && cachedNavRows.length > 0 &&
-      isoDatePattern.test(cachedLastDate) &&
-      String(cachedLastHistory && cachedLastHistory.date || '').slice(0, 10) === cachedLastDate &&
+    cachedPublicUsable = cachedNavRows.length > 0 && isoDatePattern.test(cachedLastDate) &&
       (!isoDatePattern.test(ledgerLastDate) || cachedLastDate >= ledgerLastDate);
     if (cachedPublicUsable) {
+      const navDerivedHistory = cachedNavRows.map((row, index) => {
+        const suppliedReturn = Number(row && row.ret);
+        if (Number.isFinite(suppliedReturn) && suppliedReturn > -1) {
+          return { date: row.date, ret: suppliedReturn };
+        }
+        if (index === 0) return null;
+        const previousNav = Number(cachedNavRows[index - 1].unitNav);
+        const currentNav = Number(row.unitNav);
+        const dividendPerUnit = Number(row.divPerUnit) || 0;
+        const derivedReturn = previousNav > 0
+          ? (currentNav + dividendPerUnit) / previousNav - 1
+          : NaN;
+        return Number.isFinite(derivedReturn) && derivedReturn > -1
+          ? { date: row.date, ret: derivedReturn }
+          : null;
+      }).filter(Boolean);
       const mergedHistory = normalizeHistory([
         ...(Array.isArray(led.history) ? led.history : []),
         ...cachedHistory,
+        ...navDerivedHistory,
       ]);
       const mergedNavRows = normalizeNavRows([
         ...(Array.isArray(led.navRows) ? led.navRows : []),
@@ -3132,6 +3148,8 @@ async function updatePortfolioNav(env, pf, options = {}) {
         lastDate: mergedLastNav && mergedLastNav.date || led.lastDate,
         lastUnitNav: mergedLastNav && Number(mergedLastNav.unitNav) || led.lastUnitNav,
       };
+      cachedStressReusable = cachedHistory.length > 0 &&
+        String(cachedLastHistory && cachedLastHistory.date || '').slice(0, 10) === cachedLastDate;
     }
   }
   if (!continuationRequested && !cachedPublicUsable && live &&
@@ -3389,7 +3407,10 @@ async function updatePortfolioNav(env, pf, options = {}) {
   ].filter(row => row && row.date === marketDate).at(-1) || null;
   const priorMarketFreshness = priorMarketRow && priorMarketRow.valuation &&
     priorMarketRow.valuation.freshness_class ||
-    (live.marketDate === marketDate && live.sourceMeta && live.sourceMeta.freshness_class) || null;
+    (live.marketDate === marketDate && live.sourceMeta && live.sourceMeta.freshness_class) ||
+    (cachedPublic && cachedPublic.marketDate === marketDate
+      ? cachedPublic.freshness_class || null
+      : null);
   const sameDayOfficialEodRefresh = marketDate === lastDate && fetched.length > 0 &&
     priorMarketFreshness === 'intraday_snapshot' &&
     fetched.every(item => item.q && item.q.date === marketDate &&
@@ -3641,7 +3662,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
   // the same NAV date is never maintained in two independent stores.
   live.rows = [];
   live.ledgerRevision = ledgerRevision;
-  const reusableStress = cachedPublicUsable
+  const reusableStress = cachedStressReusable
     ? cachedPublic.stress ?? null
     : null;
   await assertLedgerRevision(env, pf, ledgerRevision);
