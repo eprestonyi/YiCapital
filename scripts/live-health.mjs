@@ -44,6 +44,9 @@ async function checkPortal() {
     if (health.feedback_rate_limit !== true) throw new Error('feedback rate-limit secret is unavailable');
     if (health.kv !== true) throw new Error('KV binding is unavailable');
     if (health.google !== true) throw new Error('Google OAuth is unavailable');
+    const googleKeysResponse = await fetchChecked(`${PORTAL_BASE}/api/google/health`);
+    const googleKeys = await googleKeysResponse.json();
+    if (googleKeys.ok !== true) throw new Error('Google signing keys are unavailable');
     if (health.admin_google !== false) throw new Error('Google admin authentication must be disabled');
     if (health.tushare !== true) throw new Error('Tushare market source is unavailable');
     console.log(`PASS portal ${health.version}`);

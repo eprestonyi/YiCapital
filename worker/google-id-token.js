@@ -333,7 +333,10 @@ export async function warmGoogleSigningKeys(options = {}) {
     entry = await loadPersistedJwks(jwksUrl, keyCache, keyCacheKey, now);
     if (entry) jwksCache.set(jwksUrl, entry);
   }
-  if (entry && entry.expiresAt > now()) return true;
+  if (entry && entry.expiresAt > now()) {
+    await persistJwks(jwksUrl, entry, keyCache, keyCacheKey, now);
+    return true;
+  }
   try {
     await fetchJwks(jwksUrl, fetchImpl, now, timeoutMs, keyCache, keyCacheKey);
     return true;

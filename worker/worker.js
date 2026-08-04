@@ -3901,6 +3901,25 @@ export default {
         }, 200, { 'Cache-Control': 'no-store' });
       }
 
+      /* Google signing-key readiness: fetches and persists the public JWKS cache. */
+      if (path === '/api/google/health' && request.method === 'GET') {
+        if (!env.GOOGLE_CLIENT_ID) {
+          return J(env, { ok: false, code: 'google_not_configured' }, 503, {
+            'Cache-Control': 'no-store',
+            'Retry-After': '30',
+          });
+        }
+        try {
+          await warmGoogleSigningKeys({ keyCache: env.YC_KV });
+          return J(env, { ok: true }, 200, { 'Cache-Control': 'no-store' });
+        } catch (error) {
+          return J(env, { ok: false, code: 'google_keys_unavailable' }, 503, {
+            'Cache-Control': 'no-store',
+            'Retry-After': '5',
+          });
+        }
+      }
+
       /* ════ 註冊：用戶名 + 密碼 + 郵箱 ════ */
       if (path === '/api/signup' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'signup', 8, 3600)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);

@@ -59,6 +59,35 @@ test('health exposes the feedback store without leaking configuration', async ()
   assert.equal('database_id' in body, false);
 });
 
+test('Google readiness endpoint warms the persistent signing-key cache', async () => {
+  const originalFetch = globalThis.fetch;
+  const values = new Map();
+  globalThis.fetch = async url => {
+    assert.equal(String(url), 'https://www.googleapis.com/oauth2/v3/certs');
+    return new Response(JSON.stringify({
+      keys: [{ kid: 'health-key', kty: 'RSA', alg: 'RS256', use: 'sig', n: 'abc', e: 'AQAB' }],
+    }), { status: 200, headers: { 'Cache-Control': 'public, max-age=3600' } });
+  };
+  try {
+    const response = await worker.fetch(
+      new Request('https://portal.test/api/google/health'),
+      testEnv({
+        GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com',
+        YC_KV: {
+          get: async key => values.get(key) || null,
+          put: async (key, value) => { values.set(key, value); },
+          delete: async () => {},
+        },
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.ok(values.has('google:jwks:v1'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('live monitor and public release marker fail closed on the current auth contract', async () => {
   const [monitor, config] = await Promise.all([
     read('scripts/live-health.mjs'),
@@ -69,6 +98,7 @@ test('live monitor and public release marker fail closed on the current auth con
   assert.match(monitor, /health\.auth_rate_limit !== true/);
   assert.match(monitor, /health\.ledger !== true/);
   assert.match(monitor, /Number\(health\.ledger_outbox_pending\) !== 0/);
+  assert.match(monitor, /\/api\/google\/health/);
   assert.match(monitor, /health\.admin_google !== false/);
   assert.doesNotMatch(monitor, /health\.version !== 'v8\.11-terminal-visuals'/);
   assert.match(config, /window\.YC_RELEASE = 'v9\.2-google-auth-resilience'/);
