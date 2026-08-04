@@ -1576,7 +1576,10 @@ async function tusharePortfolioCalendarTape(
   nowValue = Date.now(),
 ) {
   const request = {
-    us: { dataset: 'us_tradecal', watermarkDataset: 'us_daily', watermarkTicker: 'SPY' },
+    // Tushare's us_daily coverage does not publish SPY. AAPL is the provider's
+    // documented liquid US example and gives the independent raw-EOD
+    // watermark needed before a session can enter the immutable price tape.
+    us: { dataset: 'us_tradecal', watermarkDataset: 'us_daily', watermarkTicker: 'AAPL' },
     hk: { dataset: 'hk_tradecal', watermarkDataset: 'index_global', watermarkTicker: 'HSI' },
     a: {
       dataset: 'trade_cal', exchange: 'SSE',
@@ -1643,7 +1646,7 @@ async function tusharePortfolioCalendarTape(
 
 async function tusharePortfolioCalendar(adapter, market, startDate, endDate) {
   const request = {
-    us: { dataset: 'us_daily', tsCode: 'SPY' },
+    us: { dataset: 'us_daily', tsCode: 'AAPL' },
     hk: { dataset: 'index_global', tsCode: 'HSI' },
     a: { dataset: 'index_daily', tsCode: '000300.SH' },
   }[market];
@@ -2312,7 +2315,13 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
         nowFn(),
       );
     } catch (cause) {
-      const error = new Error('historical_nav_calendar_unavailable');
+      const causeCode = String(cause && cause.code || 'CALENDAR_QUERY_FAILED')
+        .replace(/[^A-Z0-9_:-]/gi, '_').slice(0, 96);
+      const causeMessage = String(cause && cause.message || 'calendar query failed')
+        .replace(/[\r\n\t]+/g, ' ').slice(0, 300);
+      const error = new Error(
+        `historical_nav_calendar_unavailable:${causeCode}:${causeMessage}`,
+      );
       error.code = 'HISTORICAL_NAV_CALENDAR_UNAVAILABLE';
       error.cause = cause;
       throw error;
@@ -2481,7 +2490,7 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       sourceRef: 'python-parity-historical-replay:raw-close',
       valuation: {
         source: 'tushare',
-        calendar: market === 'us' ? 'SPY' : market === 'hk' ? 'HSI' : '000300.SH',
+        calendar: market === 'us' ? 'AAPL' : market === 'hk' ? 'HSI' : '000300.SH',
         calendarFallback: false,
         priceBasis: 'raw_close',
         adjusted: false,
