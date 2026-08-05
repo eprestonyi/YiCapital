@@ -16,6 +16,7 @@ import {
 } from '../worker/ledger-store.js';
 import worker, {
   benchmarkSnapshotIsTushare,
+  bootstrapMissingPortfolioStorage,
   bootstrapPortfolioStorageFromLegacyKv,
   portfolioDataset,
   persistPortfolioCache,
@@ -135,6 +136,11 @@ test('validated same-revision legacy read snapshots bootstrap into D1 without ch
     }),
   };
 
+  const automated = await bootstrapMissingPortfolioStorage(env);
+  assert.equal(automated.length, 1);
+  assert.equal(automated[0].portfolio, 'us');
+  assert.equal(automated[0].ok, true);
+  assert.deepEqual(await bootstrapMissingPortfolioStorage(env), []);
   const result = await bootstrapPortfolioStorageFromLegacyKv(env, 'us');
   assert.equal(result.ok, true);
   assert.equal(result.ledgerRevision, 1);

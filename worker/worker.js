@@ -3522,6 +3522,43 @@ export async function bootstrapPortfolioStorageFromLegacyKv(env, requestedPortfo
   };
 }
 
+export async function bootstrapMissingPortfolioStorage(env) {
+  if (!portfolioSnapshotDbAvailable(env)) return [];
+  const db = env.LEDGER_DB || env.FEEDBACK_DB;
+  const missing = await db.prepare(`
+    SELECT portfolio.portfolio_id
+    FROM ledger_portfolios portfolio
+    LEFT JOIN ledger_materialized_projections projection
+      ON projection.portfolio_id = portfolio.portfolio_id
+    LEFT JOIN ledger_public_snapshots snapshot
+      ON snapshot.portfolio_id = portfolio.portfolio_id
+    WHERE portfolio.ledger_revision > 0
+      AND (
+        projection.ledger_revision IS NULL OR
+        projection.ledger_revision != portfolio.ledger_revision OR
+        snapshot.ledger_revision IS NULL OR
+        snapshot.ledger_revision != portfolio.ledger_revision
+      )
+    ORDER BY portfolio.portfolio_id
+  `).all();
+  const results = [];
+  for (const row of missing.results || []) {
+    try {
+      results.push(await bootstrapPortfolioStorageFromLegacyKv(
+        env,
+        row.portfolio_id,
+      ));
+    } catch (error) {
+      results.push({
+        ok: false,
+        portfolio: row.portfolio_id,
+        error: String(error && (error.code || error.message) || 'bootstrap_failed'),
+      });
+    }
+  }
+  return results;
+}
+
 async function reusableHistoricalPublishStress(cacheRaw, ledger, portfolio, ledgerRevision) {
   let cache;
   try {
@@ -5588,6 +5625,14 @@ export default {
     if (cron === '* * * * *') {
       ctx.waitUntil((async () => {
         const nowValue = Date.now();
+        const bootstrap = await bootstrapMissingPortfolioStorage(env)
+          .catch(error => [{
+            ok: false,
+            error: String(error && (error.code || error.message) || 'bootstrap_failed'),
+          }]);
+        for (const item of bootstrap.filter(result => result.ok !== true)) {
+          console.error('portfolio_storage_bootstrap_failed', item.portfolio, item.error);
+        }
         const realtimePortfolios = ['us', 'hk', 'a']
           .filter(portfolio => portfolioRealtimeWindowOpen(nowValue, portfolio));
         if (!realtimePortfolios.length) return;
