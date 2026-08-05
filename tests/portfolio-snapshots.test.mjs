@@ -14,6 +14,7 @@ import {
 import worker, {
   benchmarkSnapshotIsTushare,
   portfolioDataset,
+  persistPortfolioCache,
   portfolioRealtimeDataset,
   prewarmBenchmark,
   rebuildPortfolioNavHistory,
@@ -41,6 +42,47 @@ class MockKV {
     this.puts.push({ key, value });
     this.values.set(key, value);
   }
+}
+
+function renderablePortfolioCache({
+  revision = 1,
+  snapshotId = `portfolio-revision-${revision}`,
+  portfolio = 'us',
+} = {}) {
+  const dates = ['2026-07-25', '2026-07-26', '2026-07-27', '2026-07-28', '2026-07-29'];
+  const path = [1, 1.01];
+  const scenario = {
+    model: 'noncentral-t', nDays: 2, p50: 0, p5: -0.01, p1: -0.02,
+    probHalf: 0, pathP5: path, pathP50: path, pathP95: path,
+  };
+  return {
+    ok: true,
+    enabled: true,
+    portfolio,
+    ledgerRevision: revision,
+    snapshot_id: snapshotId,
+    source: 'portfolio-ledger',
+    as_of: dates.at(-1),
+    freshness_class: 'eod',
+    freshness: { class: 'eod', stale: false, fallback: null },
+    cacheVersion: 3,
+    historyComplete: true,
+    history: dates.map((date, index) => ({ date, ret: index ? 0.001 : 0 })),
+    navRows: dates.map((date, index) => ({ date, nav: 1 + index * 0.001 })),
+    curve: dates.map((date, index) => ({ date, v: 10000 + index * 10 })),
+    metrics: {
+      days: dates.length, totalRet: 0.004, annRet: 0.1, vol: 0.02,
+      sharpe: 1, sortino: 1, calmar: 1, maxDD: -0.01, winRate: 0.6,
+      plRatio: 1, var95: -0.01, cvar95: -0.02, skew: 0, kurt: 0,
+    },
+    hist: { lo: -0.01, width: 0.01, counts: [2, 3], normal: [2.2, 2.8] },
+    varTable: [0.95, 0.98, 0.99].map(level => ({
+      level, normal: -0.01, cf: -0.011, empirical: -0.012, cvar: -0.013,
+    })),
+    stress: {
+      model: 'noncentral-t', crash: scenario, bear: scenario, grind: scenario,
+    },
+  };
 }
 
 class D1Statement {
@@ -448,7 +490,7 @@ test('a failed portfolio refresh leaves the previous navcache byte-for-byte unch
   );
 });
 
-test('ordinary NAV refresh and public cache fail closed while derived ledger work is pending', async () => {
+test('ordinary NAV refresh serves the immutable same-revision snapshot while derived work is pending', async () => {
   const database = await ledgerDatabase();
   database.database.prepare(`
     UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
@@ -467,11 +509,9 @@ test('ordinary NAV refresh and public cache fail closed while derived ledger wor
       lastUnitNav: 1, baseNetValue: 1000, ledgerRevision: 1,
       navRecalculationRequired: [],
     }),
-    'navcache:us': JSON.stringify({
-      ok: true, enabled: true, portfolio: 'us', ledgerRevision: 1,
-      navRows: [{ date: '2026-07-29', nav: 1 }], history: [],
-      cacheVersion: 3,
-    }),
+    'navcache:us': JSON.stringify(renderablePortfolioCache({
+      revision: 1, snapshotId: 'portfolio-last-success',
+    })),
   });
   const adapter = adapterWith(async () => {
     throw new Error('ordinary price refresh must not run while outbox is pending');
@@ -488,6 +528,164 @@ test('ordinary NAV refresh and public cache fail closed while derived ledger wor
   `).get().count, 0);
 
   const response = await worker.fetch(new Request('https://portal.test/api/nav/us'), env);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.snapshot_id, 'portfolio-last-success');
+  assert.equal(body.pending, true);
+  assert.equal(body.fallback, true);
+  assert.equal(body.freshness.stale, true);
+  assert.equal(body.freshness.fallback, 'last_successful_snapshot');
+  assert.equal(body.servedRevision, 1);
+  assert.equal(body.targetRevision, 1);
+});
+
+test('public NAV atomically serves an older complete snapshot only while its new revision is pending', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  database.database.prepare(`
+    INSERT INTO ledger_outbox (
+      outbox_id, portfolio_id, ledger_revision, kind, payload_json,
+      status, attempts, available_at, created_at
+    ) VALUES ('nav-2', 'us', 2, 'RECALC_NAV', '{"affectedFrom":"2026-07-30"}',
+      'PENDING', 0, 0, 1)
+  `).run();
+  const kv = new MockKV({
+    'navcache:us': JSON.stringify(renderablePortfolioCache({
+      revision: 1, snapshotId: 'portfolio-revision-1',
+    })),
+  });
+  const env = { YC_KV: kv, FEEDBACK_DB: database };
+
+  const pendingResponse = await worker.fetch(
+    new Request('https://portal.test/api/nav/us'), env,
+  );
+  assert.equal(pendingResponse.status, 200);
+  const pending = await pendingResponse.json();
+  assert.equal(pending.snapshot_id, 'portfolio-revision-1');
+  assert.equal(pending.pending, true);
+  assert.equal(pending.freshness.stale, true);
+  assert.equal(pending.servedRevision, 1);
+  assert.equal(pending.targetRevision, 2);
+
+  database.database.prepare(`
+    UPDATE ledger_outbox SET status = 'DONE' WHERE outbox_id = 'nav-2'
+  `).run();
+  const mismatchedResponse = await worker.fetch(
+    new Request('https://portal.test/api/nav/us'), env,
+  );
+  assert.equal(mismatchedResponse.status, 200);
+  const propagating = await mismatchedResponse.json();
+  assert.equal(propagating.snapshot_id, 'portfolio-revision-1');
+  assert.equal(propagating.pending, true);
+  assert.equal(propagating.derived_work_pending, false);
+  assert.equal(propagating.revision_sync_pending, true);
+  assert.equal(propagating.freshness.stale, true);
+  assert.equal(propagating.freshness.reason, 'ledger_revision_snapshot_propagating');
+
+  await kv.put('navcache:us', JSON.stringify(renderablePortfolioCache({
+    revision: 2, snapshotId: 'portfolio-revision-2',
+  })));
+  const currentResponse = await worker.fetch(
+    new Request('https://portal.test/api/nav/us'), env,
+  );
+  assert.equal(currentResponse.status, 200);
+  const current = await currentResponse.json();
+  assert.equal(current.snapshot_id, 'portfolio-revision-2');
+  assert.equal(current.pending, false);
+  assert.equal(current.fallback, false);
+  assert.equal(current.freshness.stale, false);
+  assert.equal(current.servedRevision, 2);
+  assert.equal(current.targetRevision, 2);
+});
+
+test('public NAV rejects an incomplete or wrong-portfolio fallback cache', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+  `).run();
+  database.database.prepare(`
+    INSERT INTO ledger_outbox (
+      outbox_id, portfolio_id, ledger_revision, kind, payload_json,
+      status, attempts, available_at, created_at
+    ) VALUES ('nav-invalid-fallback', 'us', 2, 'RECALC_NAV', '{}',
+      'PENDING', 0, 0, 1)
+  `).run();
+  const invalidCaches = [
+    { ...renderablePortfolioCache({ revision: 1 }), stress: null },
+    renderablePortfolioCache({ revision: 1, portfolio: 'hk' }),
+    { ...renderablePortfolioCache({ revision: 1 }), hist: null },
+    { ...renderablePortfolioCache({ revision: 1 }),
+      hist: { lo: 0, width: 1, counts: [1], normal: null } },
+    { ...renderablePortfolioCache({ revision: 1 }), varTable: [] },
+    { ...renderablePortfolioCache({ revision: 1 }), metrics: { days: 5 } },
+  ];
+  for (const cache of invalidCaches) {
+    const response = await worker.fetch(
+      new Request('https://portal.test/api/nav/us'),
+      {
+        YC_KV: new MockKV({ 'navcache:us': JSON.stringify(cache) }),
+        FEEDBACK_DB: database,
+      },
+    );
+    assert.equal(response.status, 503);
+  }
+});
+
+test('public cache release barrier preserves the last renderable snapshot', async () => {
+  const previous = JSON.stringify(renderablePortfolioCache({
+    revision: 1, snapshotId: 'last-renderable',
+  }));
+  const kv = new MockKV({ 'navcache:us': previous });
+  const dates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23'];
+  await assert.rejects(
+    persistPortfolioCache(
+      { YC_KV: kv },
+      'us',
+      {
+        portfolio: 'us', currency: 'USD', ledgerRevision: 1,
+        history: dates.map((date, index) => ({ date, ret: index ? 0.001 : 0 })),
+        navRows: dates.map((date, index) => ({ date, nav: 1 + index * 0.001 })),
+        sourceHoldings: [], cash: 1000, liability: 0, units: 1000,
+        baseMarketValue: 0, baseTotalAssets: 1000, baseNetValue: 1000,
+        lastDate: dates.at(-1), lastUnitNav: 1.003,
+        savedAt: '2026-07-23T22:00:00.000Z',
+      },
+      {
+        rows: [], holdings: [], ledgerRevision: 1,
+        sourceMeta: {
+          source: 'portfolio-ledger', source_endpoint: 'portfolio-ledger',
+          as_of: dates.at(-1), fetched_at: '2026-07-23T22:00:00.000Z',
+          freshness_class: 'eod',
+        },
+      },
+      { ledgerRevision: 1, ranAt: '2026-07-23T22:00:00.000Z' },
+    ),
+    error => error && error.code === 'PORTFOLIO_PUBLIC_CACHE_NOT_RENDERABLE',
+  );
+  assert.equal(kv.values.get('navcache:us'), previous);
+  assert.equal(kv.values.has('live:us'), false);
+  assert.equal(kv.values.has('navstatus:us'), false);
+});
+
+test('public NAV still fails closed when pending work has no last successful snapshot', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  database.database.prepare(`
+    INSERT INTO ledger_outbox (
+      outbox_id, portfolio_id, ledger_revision, kind, payload_json,
+      status, attempts, available_at, created_at
+    ) VALUES ('nav-missing-cache', 'us', 1, 'RECALC_NAV', '{}',
+      'PENDING', 0, 0, 1)
+  `).run();
+  const response = await worker.fetch(
+    new Request('https://portal.test/api/nav/us'),
+    { YC_KV: new MockKV(), FEEDBACK_DB: database },
+  );
   assert.equal(response.status, 503);
   assert.equal((await response.json()).pending, true);
 });
@@ -673,15 +871,7 @@ test('inactive XHYH prefix comes from source-backed raw closes instead of book v
         },
       };
     }
-    return {
-      ok: true,
-      async json() {
-        return { chart: { error: null, result: [{
-          timestamp: [Date.parse('2026-05-15T20:00:00.000Z') / 1000],
-          indicators: { quote: [{ close: [35.27] }] },
-        }] } };
-      },
-    };
+    return { ok: false };
   };
 
   await rebuildPortfolioNavHistory({ FEEDBACK_DB: database }, 'us', led, {
@@ -691,7 +881,8 @@ test('inactive XHYH prefix comes from source-backed raw closes instead of book v
     affectedFrom: '2026-01-05',
     ledgerRevision: 2,
   });
-  assert.equal(historyCalls.length, 2);
+  assert.equal(historyCalls.length, 3);
+  assert.equal(historyCalls.filter(url => url.includes('finance.yahoo.com')).length, 2);
   assert.ok(historyCalls.some(url => url.includes('finance.yahoo.com')));
   assert.ok(historyCalls.some(url => url.includes('chartexchange.com/symbol/nyse-xhyh')));
   const rows = database.database.prepare(`
@@ -1022,6 +1213,7 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
     confirmedEvents: events, navRows: [],
   };
   let supplierRevisedOldHistory = false;
+  let activeExtensionEmpty = false;
   const adapter = adapterWith(async (dataset, request) => {
     const extension = request.params.start_date === '20260722';
     const extensionTarget = request.params.end_date === '20260723';
@@ -1048,8 +1240,14 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
       }] };
     }
     if (request.params.start_date === '20260724') {
+      if (activeExtensionEmpty && request.params.ts_code === 'AAA') {
+        return { data: [] };
+      }
       if (request.params.ts_code === 'AAA') {
         return { data: [{ ts_code: 'AAA', trade_date: '20260724', close: 14 }] };
+      }
+      if (request.params.ts_code === 'SUSP') {
+        return { data: [{ ts_code: 'SUSP', trade_date: '20260724', close: 5 }] };
       }
       if (request.params.ts_code === 'NEW') {
         return { data: [{ ts_code: 'NEW', trade_date: '20260724', close: 20 }] };
@@ -1072,8 +1270,13 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
         { ts_code: 'AAA', trade_date: '20260723', close: 13, adjusted_close: 999 },
       ] };
     }
-    // OLD was fully sold; SUSP remains held but had no counter print. Both
-    // legitimately carry their already-frozen prior raw close forward.
+    if (request.params.ts_code === 'SUSP') {
+      return { data: [
+        { ts_code: 'SUSP', trade_date: '20260722', close: 5, adjusted_close: 999 },
+        { ts_code: 'SUSP', trade_date: '20260723', close: 5, adjusted_close: 999 },
+      ] };
+    }
+    // OLD was fully sold, so the extension must not request it at all.
     return { data: [] };
   });
   const env = { FEEDBACK_DB: database };
@@ -1105,6 +1308,7 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
   assert.deepEqual(repeatedManifest, firstManifest);
   assert.equal(adapter.calls.length, 5);
 
+  const extensionCallStart = adapter.calls.length;
   const extended = await rebuildPortfolioNavHistory(env, 'us', led, {
     adapter,
     now: () => Date.parse('2026-07-23T22:00:00.000Z'),
@@ -1134,8 +1338,21 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
       source: 'tushare:us_daily', source_ref: 'us_daily:close:raw-unadjusted' },
     { ticker: 'AAA', price_date: '2026-07-23', price_micros: 13_000_000,
       source: 'tushare:us_daily', source_ref: 'us_daily:close:raw-unadjusted' },
+    { ticker: 'SUSP', price_date: '2026-07-22', price_micros: 5_000_000,
+      source: 'tushare:us_daily', source_ref: 'us_daily:close:raw-unadjusted' },
+    { ticker: 'SUSP', price_date: '2026-07-23', price_micros: 5_000_000,
+      source: 'tushare:us_daily', source_ref: 'us_daily:close:raw-unadjusted' },
   ]);
-  assert.equal(adapter.calls.length, 10);
+  const extensionCalls = adapter.calls.slice(extensionCallStart);
+  assert.equal(adapter.calls.length, 9);
+  assert.equal(extensionCalls.some(call => call.request.params.ts_code === 'OLD'), false);
+  assert.deepEqual(
+    extensionCalls
+      .map(call => call.request.params.ts_code)
+      .filter(Boolean)
+      .sort(),
+    ['AAA', 'AAPL', 'SUSP'],
+  );
   const lastNav = database.database.prepare(`
     SELECT nav_date, market_value_minor, net_value_minor
     FROM ledger_nav_snapshots WHERE portfolio_id = 'us' ORDER BY nav_date DESC LIMIT 1
@@ -1143,6 +1360,22 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
   assert.deepEqual({ ...lastNav }, {
     nav_date: '2026-07-23', market_value_minor: 18_000, net_value_minor: 303_000,
   });
+
+  activeExtensionEmpty = true;
+  await assert.rejects(
+    rebuildPortfolioNavHistory(env, 'us', led, {
+      adapter,
+      now: () => Date.parse('2026-07-24T22:00:00.000Z'),
+      affectedFrom: '2026-07-20', ledgerRevision: 5, batchSize: 50,
+    }),
+    error => error && error.code === 'HISTORICAL_NAV_PRICE_HISTORY_UNAVAILABLE' &&
+      /AAA/.test(error.message),
+  );
+  activeExtensionEmpty = false;
+  assert.equal(database.database.prepare(`
+    SELECT tape_through FROM ledger_price_tapes
+    WHERE portfolio_id = 'us' AND ledger_revision = 5
+  `).get().tape_through, '2026-07-23');
 
   // A mutable same-day counter quote is isolated in ledger_prices and cannot
   // alter the historical tape or its hash.
@@ -1218,6 +1451,84 @@ test('same-revision raw tape is deterministic, then only appends future EOD rows
   `).get() }, {
     nav_date: '2026-07-24', market_value_minor: 21_000, net_value_minor: 304_000,
   });
+});
+
+test('raw tape extension follows a RENAME from the old security into its live output', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 7 WHERE portfolio_id = 'us'
+  `).run();
+  const led = {
+    market: 'us', portfolio: 'us', ledgerRevision: 7, navRows: [],
+    confirmedEvents: [
+      { event_id: 'capital-rename', type: 'CAPITAL', date: '2026-07-20',
+        shareholder: 'LP1', subscription: '1000', redemption: '0', unit_price: '1' },
+      { event_id: 'buy-old', type: 'BUY', date: '2026-07-20', ticker: 'OLD',
+        quantity: 10, gross_amount: '100', net_cash: '-100' },
+      { event_id: 'rename', type: 'CORPORATE_ACTION', date: '2026-07-22',
+        ticker: 'OLD', action_type: 'RENAME',
+        outputs: [{ ticker: 'NEW', quantity: 10, allocation: 1 }] },
+    ],
+  };
+  const allDates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23'];
+  const adapter = adapterWith(async (dataset, request) => {
+    if (dataset === 'us_tradecal') return officialCalendar(request, allDates);
+    const end = request.params.end_date;
+    if (request.params.ts_code === 'AAPL') {
+      return { data: allDates
+        .filter(date => date.replaceAll('-', '') <= end)
+        .map((date, index) => ({
+          ts_code: 'AAPL', trade_date: date.replaceAll('-', ''), close: 600 + index,
+        })) };
+    }
+    if (request.params.ts_code === 'OLD' && request.params.start_date >= '20260722') {
+      return { data: [] };
+    }
+    const dates = allDates.filter(date => {
+      const compact = date.replaceAll('-', '');
+      return compact >= request.params.start_date && compact <= request.params.end_date;
+    });
+    const base = request.params.ts_code === 'NEW' ? 20 : 10;
+    return { data: dates.map((date, index) => ({
+      ts_code: request.params.ts_code,
+      trade_date: date.replaceAll('-', ''),
+      close: base + index,
+      adjusted_close: 999,
+    })) };
+  });
+  const env = { FEEDBACK_DB: database };
+
+  await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-21T22:00:00.000Z'),
+    affectedFrom: '2026-07-20', ledgerRevision: 7, batchSize: 50,
+  });
+  const extensionCallStart = adapter.calls.length;
+  await rebuildPortfolioNavHistory(env, 'us', led, {
+    adapter,
+    now: () => Date.parse('2026-07-23T22:00:00.000Z'),
+    affectedFrom: '2026-07-20', ledgerRevision: 7, batchSize: 50,
+  });
+
+  const latest = database.database.prepare(`
+    SELECT nav_date, market_value_minor, net_value_minor, valuation_json
+    FROM ledger_nav_snapshots WHERE portfolio_id = 'us' ORDER BY nav_date DESC LIMIT 1
+  `).get();
+  assert.equal(latest.nav_date, '2026-07-23');
+  assert.equal(latest.market_value_minor, 21_000);
+  assert.equal(latest.net_value_minor, 111_000);
+  assert.equal(JSON.parse(latest.valuation_json).adjusted, false);
+  const extendedTickers = database.database.prepare(`
+    SELECT DISTINCT ticker FROM ledger_price_tape_rows
+    WHERE price_tape_id = 'raw-close:us:7' AND price_date >= '2026-07-22'
+    ORDER BY ticker
+  `).all().map(row => row.ticker);
+  assert.deepEqual(extendedTickers, ['NEW']);
+  const extensionCalls = adapter.calls.slice(extensionCallStart);
+  assert.equal(extensionCalls.some(call =>
+    call.request.params.ts_code === 'OLD'), false);
+  assert.equal(extensionCalls.some(call =>
+    call.request.params.ts_code === 'NEW'), true);
 });
 
 test('dirty historical NAV rows are rebuilt from confirmed events and market-day prices', async () => {

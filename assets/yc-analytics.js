@@ -34,6 +34,13 @@
     const fetchedAt = String(
       payload.fetched_at || payload.updatedAt || '',
     ).slice(0, 40);
+    const risk = payload.risk_snapshot && typeof payload.risk_snapshot === 'object'
+      ? payload.risk_snapshot : null;
+    const riskStatus = risk && ['current', 'stale', 'pending', 'invalidated', 'unavailable']
+      .includes(String(risk.status)) ? String(risk.status) : null;
+    const riskAsOf = risk
+      ? String(risk.input_as_of || risk.history_through || '').slice(0, 10)
+      : '';
     if (!asOf || !source || !SNAPSHOT_FRESHNESS.has(freshnessClass)) return null;
     return {
       snapshotId: String(payload.snapshot_id || '').slice(0, 120) || null,
@@ -43,6 +50,8 @@
       freshnessClass,
       stale: freshness.stale === true || payload.stale === true || payload.fallback === true,
       fallback: freshness.fallback || (payload.fallback === true ? 'last_successful_snapshot' : null),
+      riskStatus,
+      riskAsOf: riskAsOf || null,
     };
   }
 
@@ -61,7 +70,14 @@
     const freshnessLabel = ({
       tw: '新鮮度', cn: '新鲜度', en: 'freshness',
     }[lang] || 'freshness');
-    return `${sourceLabel} ${meta.source} · ${freshnessLabel} ${meta.freshnessClass}${stale}`;
+    const risk = meta.riskStatus === 'stale'
+      ? ({
+          tw: ` · 風險分析截至 ${meta.riskAsOf || '上一正式收盤'}`,
+          cn: ` · 风险分析截至 ${meta.riskAsOf || '上一正式收盘'}`,
+          en: ` · risk analytics as of ${meta.riskAsOf || 'last official close'}`,
+        }[lang] || '')
+      : '';
+    return `${sourceLabel} ${meta.source} · ${freshnessLabel} ${meta.freshnessClass}${stale}${risk}`;
   }
 
   /* ───────────── 基礎統計 ───────────── */

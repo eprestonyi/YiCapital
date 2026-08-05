@@ -605,16 +605,21 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
 
   const materializedLedgerRaw = env.YC_KV.values.get('ledger:us');
   const materializedLedger = JSON.parse(materializedLedgerRaw);
+  const sentinelScenario = {
+    model: 'noncentral-t', sentinel: 'same-revision-prefix', nDays: 2,
+    p50: 0, p5: -0.01, p1: -0.02, probHalf: 0,
+    pathP5: [1, 0.99], pathP50: [1, 1], pathP95: [1, 1.01],
+  };
   const sentinelStress = {
     model: 'noncentral-t',
-    crash: { model: 'noncentral-t', sentinel: 'same-revision-prefix' },
-    bear: { model: 'noncentral-t', sentinel: 'same-revision-prefix' },
-    grind: { model: 'noncentral-t', sentinel: 'same-revision-prefix' },
+    crash: sentinelScenario,
+    bear: sentinelScenario,
+    grind: sentinelScenario,
   };
   env.YC_KV.values.set('navcache:us', JSON.stringify({
     portfolio: 'us',
     ledgerRevision: 2,
-    history: materializedLedger.history.slice(0, -1),
+    history: materializedLedger.history,
     stress: sentinelStress,
   }));
 
@@ -628,7 +633,10 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.ok(outboxRows(env).every(row => row.status === 'DONE'));
   assert.equal(env.YC_KV.values.get('ledger:us'), materializedLedgerRaw);
   const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
-  assert.deepEqual(cache.stress, sentinelStress);
+  assert.equal(cache.stress, null);
+  assert.equal(cache.risk_snapshot.status, 'unavailable');
+  assert.equal(cache.risk_snapshot.model_version, 'yc-risk-js-v2');
+  assert.equal(cache.risk_snapshot.output_sha256, null);
   assert.equal(cache.navRows.length, 5);
   assert.equal(cache.as_of, '2026-07-24');
   assert.deepEqual(cache.base, {
@@ -661,11 +669,12 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   const publicResponse = await worker.fetch(
     new Request('https://portal.test/api/nav/us'), env,
   );
-  assert.equal(publicResponse.status, 200);
+  // Five NAV observations yield only four returns, below the public chart
+  // contract's five-return minimum. The accounting cache exists, but the
+  // public route must not advertise it as a renderable snapshot yet.
+  assert.equal(publicResponse.status, 503);
   const publicSnapshot = await publicResponse.json();
-  assert.equal(publicSnapshot.base.marketValue, 120);
-  assert.equal(publicSnapshot.holdings[0].price, 12);
-  assert.equal(publicSnapshot.holdings[0].marketValue, 120);
+  assert.equal(publicSnapshot.pending, true);
 
   const beforeIdempotent = navRows(env);
   const callsBeforeIdempotent = adapter.calls.length;
@@ -680,6 +689,97 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   });
   assert.deepEqual(navRows(env), beforeIdempotent);
   assert.equal(adapter.calls.length, callsBeforeIdempotent);
+});
+
+test('historical publish rebuilds stress instead of promoting lineage-less output', async () => {
+  const env = await setup();
+  seedEvents(env);
+  const dates = [
+    '2026-07-20', '2026-07-21', '2026-07-22',
+    '2026-07-23', '2026-07-24', '2026-07-27',
+  ];
+  const prices = [10, 10, 11, 11.5, 12, 13];
+  await persistLedgerValuationBatch(env, 'us', {
+    replaceFrom: dates[0],
+    replaceThrough: dates.at(-1),
+    navRows: dates.map((date, index) => {
+      const marketValue = index === 0 ? 0 : prices[index] * 10;
+      const cash = index === 0 ? 1000 : 900;
+      const netValue = cash + marketValue;
+      return {
+        date, cash, market_value: marketValue, total_assets: netValue,
+        liability: 0, net_value: netValue, units: 1000,
+        unit_nav: netValue / 1000, sourceRef: 'stress-rebuild-regression',
+        valuation: { priceBasis: 'raw_close', adjusted: false },
+      };
+    }),
+    priceRows: dates.slice(1).map((date, index) => ({
+      ticker: 'AAA', date, price: prices[index + 1],
+      source: 'tushare:us_daily',
+      sourceRef: 'us_daily:close:raw-unadjusted',
+      valuation: { priceBasis: 'raw_close', adjusted: false },
+    })),
+  }, 2);
+  await freezeLedgerPriceTape(env, 'us', {
+    tapeFrom: dates[0], tapeThrough: dates.at(-1), calendarFrom: dates[0],
+    calendarDates: dates,
+    calendarSource: 'tushare:us_tradecal+us_daily',
+    calendarSourceRef: 'us_tradecal:is_open+us_daily:AAPL:eod-watermark',
+    requiredTickers: ['AAA'], priceSource: 'tushare:us_daily',
+    priceBasis: 'raw_close', adjusted: false,
+    priceRows: dates.map((date, index) => ({
+      ticker: 'AAA', date, close: prices[index],
+      source: 'tushare:us_daily',
+      sourceRef: 'us_daily:close:raw-unadjusted',
+    })),
+  }, 2);
+  const ledger = await materializeLedgerKv(env, 'us', {
+    expectedLedgerRevision: 2,
+  });
+  assert.equal(ledger.history.length, 5);
+  env.YC_KV.values.set('navcache:us', JSON.stringify({
+    portfolio: 'us', ledgerRevision: 2, history: ledger.history,
+    stress: {
+      model: 'noncentral-t',
+      crash: { model: 'noncentral-t', sentinel: 'stale' },
+      bear: { model: 'noncentral-t', sentinel: 'stale' },
+      grind: { model: 'noncentral-t', sentinel: 'stale' },
+    },
+  }));
+
+  const status = await updatePortfolioNav(env, 'us', {
+    adapter: { async query() { throw new Error('publish must not fetch'); } },
+    now: () => Date.parse('2026-07-27T22:00:00.000Z'),
+    ledgerRevision: 2,
+    affectedFrom: dates[0],
+    phase: 'publish',
+    targetThrough: dates.at(-1),
+    lastNavDate: dates.at(-1),
+    previousUnitNav: 1.03,
+  });
+  assert.equal(status.complete, true, JSON.stringify(status));
+  assert.equal(status.phase, 'publish');
+  const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  assert.equal(cache.history.length, 5);
+  assert.equal(cache.stress.model, 'noncentral-t');
+  assert.equal(cache.stress.crash.sentinel, undefined);
+  assert.ok(cache.stress.crash.pathP50.length >= 2);
+  assert.ok(cache.varTable.some(row => row.level === 0.99));
+  assert.equal(cache.risk_snapshot.status, 'current');
+  assert.equal(cache.risk_snapshot.model_version, 'yc-risk-js-v2');
+  assert.equal(cache.risk_snapshot.history_sha256.length, 64);
+  assert.equal(cache.risk_snapshot.history_sha256,
+    cache.risk_snapshot.current_history_sha256);
+  assert.equal(cache.risk_snapshot.input_as_of, dates.at(-1));
+  assert.equal(cache.stress_as_of, dates.at(-1));
+  const response = await worker.fetch(
+    new Request('https://portal.test/api/nav/us'), env,
+  );
+  assert.equal(response.status, 200);
+  const publicSnapshot = await response.json();
+  assert.equal(publicSnapshot.ok, true);
+  assert.equal(publicSnapshot.pending, false);
+  assert.equal(publicSnapshot.fallback, false);
 });
 
 test('materialize coverage restarts replay from the earliest missing trading session', async () => {
