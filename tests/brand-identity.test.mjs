@@ -69,7 +69,7 @@ test('entry, terminal and shared styles carry the current cache key', async () =
     assert.match(html, /href="\/favicon\.svg\?v=20260802a" type="image\/svg\+xml"/);
     assert.match(html, /href="\/apple-touch-icon\.png\?v=20260802a"/);
     if (html.includes('assets/style.css')) {
-      assert.match(html, /assets\/style\.css\?v=20260802a/);
+      assert.match(html, /assets\/style\.css\?v=20260805c/);
     }
     if (html.includes('yc-entry.css')) {
       assert.match(html, /yc-entry\.css\?v=20260804b/);

@@ -16,7 +16,6 @@
   });
   let token = localStorage.getItem('yc-token') || '';
   const storedUser = localStorage.getItem('yc-user') || '';
-  const role = localStorage.getItem('yc-role') || '';
   const isMember = /^[a-f0-9]{64}$/i.test(token) && Boolean(storedUser);
   const isGuest = !isMember && localStorage.getItem('yc-guest') === '1';
   if (!isMember && !isGuest) return;
@@ -42,6 +41,8 @@
       inviteTitle: '邀請', inviteBody: '把你的專屬註冊連結分享給同樣重視深度研究的人。',
       copy: '複製連結', copied: '已複製', save: '儲存變更', saving: '正在儲存…',
       saved: '帳戶設定已更新。', genericError: '暫時無法完成操作，請稍後重試。',
+      sessionError: '登入已失效，請重新登入。', forbiddenError: '此帳戶目前不可使用。',
+      conflictError: '這個 YiCapital ID 已被使用。', rateError: '操作過於頻繁，請稍後再試。',
       connectTitle: '連接 MCP 與 API', connectBody: '未來可在這裡連接研究工具、資料服務與個人工作流。目前正在設計安全授權與權限管理。',
       contactKicker: '網站營運', contactTitle: '聯絡網站營運者', contactRole: '創辦人兼網站營運者 · Yi Capital',
       philosophyTitle: '投資哲學',
@@ -52,7 +53,7 @@
       appTitle: '應用程式', appBody: 'YiCapital 應用程式尚未開放。我們會先把網頁端的研究、組合與帳戶體驗做好。',
       helpKicker: '支援', helpTitle: '支援與協助', helpMore: '仍需要協助？', helpEmail: '傳送電子郵件',
       faqAccount: '註冊帳戶有甚麼用途？',
-      faqAccountA: '帳戶可解鎖完整研報、組合檔案與後續個人化功能；訪客仍可查看公開預覽。',
+      faqAccountA: '公開研究與組合毋須帳戶即可閱讀；帳戶用於管理身份、頭像、Insights 與後續個人化功能。',
       faqNews: 'Insights 訂閱會寄甚麼？', faqNewsA: '只寄精選研究、重要文章與有實質內容的組合更新。你可隨時在帳戶設定取消。',
       faqIdentity: '可以更改登入郵箱或 Google 帳號嗎？', faqIdentityA: '目前不可以。為避免帳號被錯誤轉移，已綁定的郵箱與 Google 身份保持鎖定；顯示名稱、ID 與頭像可以修改。',
       faqResearch: '網站內容是投資建議嗎？', faqResearchA: '不是。所有內容僅供研究與學習，不構成任何證券的買賣要約、招攬或投資建議。',
@@ -84,6 +85,8 @@
       inviteTitle: '邀请', inviteBody: '把你的专属注册链接分享给同样重视深度研究的人。',
       copy: '复制链接', copied: '已复制', save: '保存更改', saving: '正在保存…',
       saved: '账户设置已更新。', genericError: '暂时无法完成操作，请稍后重试。',
+      sessionError: '登录已失效，请重新登录。', forbiddenError: '此账户目前不可使用。',
+      conflictError: '这个 YiCapital ID 已被使用。', rateError: '操作过于频繁，请稍后再试。',
       connectTitle: '连接 MCP 与 API', connectBody: '未来可在这里连接研究工具、数据服务与个人工作流。目前正在设计安全授权与权限管理。',
       contactKicker: '网站运营', contactTitle: '联系网站运营者', contactRole: '创办人兼网站运营者 · Yi Capital',
       philosophyTitle: '投资哲学',
@@ -94,7 +97,7 @@
       appTitle: '应用程序', appBody: 'YiCapital 应用程序尚未开放。我们会先把网页端的研究、组合与账户体验做好。',
       helpKicker: '支持', helpTitle: '支持与帮助', helpMore: '仍需要帮助？', helpEmail: '发送电子邮件',
       faqAccount: '注册账户有什么用途？',
-      faqAccountA: '账户可解锁完整研报、组合档案与后续个性化功能；访客仍可查看公开预览。',
+      faqAccountA: '公开研究与组合无需账户即可阅读；账户用于管理身份、头像、Insights 与后续个性化功能。',
       faqNews: 'Insights 订阅会寄什么？', faqNewsA: '只寄精选研究、重要文章与有实质内容的组合更新。你可随时在账户设置取消。',
       faqIdentity: '可以更改登录邮箱或 Google 账号吗？', faqIdentityA: '目前不可以。为避免账户被错误转移，已绑定的邮箱与 Google 身份保持锁定；显示名称、ID 与头像可以修改。',
       faqResearch: '网站内容是投资建议吗？', faqResearchA: '不是。所有内容仅供研究与学习，不构成任何证券的买卖要约、招揽或投资建议。',
@@ -126,6 +129,8 @@
       inviteTitle: 'Invite', inviteBody: 'Share your personal registration link with someone who values deep research.',
       copy: 'Copy link', copied: 'Copied', save: 'Save changes', saving: 'Saving…',
       saved: 'Your account settings have been updated.', genericError: 'Unable to complete this action. Please try again.',
+      sessionError: 'Your session is no longer valid. Sign in again.', forbiddenError: 'This account is not currently available.',
+      conflictError: 'That YiCapital ID is already in use.', rateError: 'Too many attempts. Try again later.',
       connectTitle: 'Connect MCPs & APIs', connectBody: 'Connect research tools, data services and personal workflows here in the future. Secure authorization and permission controls are in development.',
       contactKicker: 'OPERATOR', contactTitle: 'Contact Site Operator', contactRole: 'Founder & Site Operator · Yi Capital',
       philosophyTitle: 'Investment philosophy',
@@ -136,7 +141,7 @@
       appTitle: 'App', appBody: 'The YiCapital app is not available yet. We are finishing the web research, portfolio and account experience first.',
       helpKicker: 'SUPPORT', helpTitle: 'Support & Help', helpMore: 'Still need help?', helpEmail: 'Email',
       faqAccount: 'What does a registered account unlock?',
-      faqAccountA: 'An account unlocks full research, portfolio profiles and future personalized features. Guest access still includes the public preview.',
+      faqAccountA: 'Public research and portfolios require no account. Accounts manage identity, avatars, Insights and future personalized features.',
       faqNews: 'What will Insights send me?', faqNewsA: 'Only selected research, important essays and meaningful portfolio updates. You can unsubscribe here at any time.',
       faqIdentity: 'Can I change my sign-in email or Google account?', faqIdentityA: 'Not currently. Bound email and Google identities stay locked to prevent an accidental account transfer. You can change your display name, ID and avatar.',
       faqResearch: 'Is this site investment advice?', faqResearchA: 'No. Everything is for research and education only and is not an offer, solicitation or investment advice.',
@@ -174,6 +179,7 @@
   let overlay;
   let main;
   let subscribeCard;
+  let externalSyncTimer = 0;
 
   function initials() {
     const source = String(profile.displayName || profile.username || 'Yi').trim();
@@ -200,6 +206,9 @@
     .yc-ava-wrap{position:relative;display:inline-flex;align-items:center;margin-left:18px;font-family:var(--sans,"Space Grotesk",sans-serif)}
     .yc-ava-button{width:38px;height:38px;border-radius:50%;border:1px solid rgba(117,167,255,.7);padding:0;background:#0a1424;color:#f5f2ea;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 0 rgba(117,167,255,0);transition:border-color .16s ease,box-shadow .16s ease}
     .yc-ava-button:hover,.yc-ava-button:focus-visible{border-color:#75a7ff;box-shadow:0 0 0 4px rgba(117,167,255,.12);outline:none}
+    .yc-guest-button{min-height:38px;border:1px solid #31405a;border-radius:999px;padding:8px 12px;background:#0a1424;color:#cbd5e3;cursor:pointer;display:inline-flex;align-items:center;gap:8px;font:650 12px/1 var(--sans,"Space Grotesk",sans-serif);white-space:nowrap;transition:border-color .16s ease,color .16s ease,box-shadow .16s ease}
+    .yc-guest-button:hover,.yc-guest-button:focus-visible{border-color:#75a7ff;color:#fff;box-shadow:0 0 0 4px rgba(117,167,255,.12);outline:none}.yc-guest-chevron{color:#75a7ff;font-size:11px}
+    .yc-account-pending{border-style:dashed}.yc-account-dot{width:9px;height:9px;border-radius:50%;background:#75a7ff;box-shadow:0 0 0 4px rgba(117,167,255,.13)}
     .yc-avatar,.yc-avatar-lg{display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:50%;background:#10233e;color:#f5f2ea;font-weight:720;letter-spacing:-.02em}
     .yc-avatar{width:32px;height:32px;font-size:12px;flex:0 0 32px}.yc-avatar-lg{width:66px;height:66px;font-size:19px;flex:0 0 auto}
     .yc-avatar img,.yc-avatar-lg img{width:100%;height:100%;object-fit:cover}
@@ -248,7 +257,7 @@
     .yc-faq{border-top:1px solid #2b3749}.yc-faq details{border-bottom:1px solid #2b3749;padding:0 2px}.yc-faq summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 0;color:#e6ecf5;font-size:13.5px;font-weight:650;cursor:pointer}.yc-faq summary::-webkit-details-marker{display:none}.yc-faq summary::after{content:"+";color:#75a7ff;font-size:18px}.yc-faq details[open] summary::after{content:"−"}.yc-faq p{margin:-4px 32px 18px 0;color:#8b98aa;font-size:12.5px;line-height:1.75}
     .yc-subscribe-card{position:fixed;left:max(18px,env(safe-area-inset-left));bottom:max(18px,env(safe-area-inset-bottom));z-index:1170;width:min(340px,calc(100vw - 28px));box-sizing:border-box;border:1px solid rgba(117,167,255,.45);border-radius:14px;padding:17px;background:rgba(8,15,26,.96);color:#e8edf5;box-shadow:0 18px 52px rgba(0,0,0,.5);backdrop-filter:blur(14px)}.yc-subscribe-card.hide{display:none}.yc-subscribe-kicker{color:#75a7ff;font:650 8.5px var(--mono,"IBM Plex Mono",monospace);letter-spacing:1.5px}.yc-subscribe-card h3{margin:7px 0 6px;color:#f5f2ea;font-size:15px;line-height:1.35}.yc-subscribe-card p{margin:0 0 12px;color:#8794a7;font-size:11.5px;line-height:1.55}.yc-subscribe-card button{border:0;border-radius:7px;background:#75a7ff;color:#07101c;padding:8px 12px;font:700 11.5px inherit;cursor:pointer}.yc-subscribe-card button:disabled{opacity:.6;cursor:wait}
     @keyframes yc-menu-in{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
-    @media(max-width:760px){.yc-ava-wrap{margin-left:auto}.yc-account-menu{position:fixed;top:74px;left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));width:auto;max-height:calc(100vh - 92px)}.yc-account-overlay{padding:0}.yc-account-dialog{display:flex;flex-direction:column;width:100%;height:100%;border:0;border-radius:0}.yc-account-side{display:block;flex:0 0 auto;padding:18px 14px 9px;border-right:0;border-bottom:1px solid #263144;overflow:hidden}.yc-account-brand{padding:0 8px 14px}.yc-account-nav{flex-direction:row;overflow-x:auto;padding-bottom:5px;scrollbar-width:none}.yc-account-nav::-webkit-scrollbar{display:none}.yc-account-nav button{flex:0 0 auto;width:auto;border-left:0;border-bottom:2px solid transparent;padding:8px 10px;white-space:nowrap}.yc-account-nav button.active{border-left:0;border-bottom-color:#75a7ff}.yc-account-side-spacer,.yc-side-admin,.yc-side-logout{display:none!important}.yc-account-main{padding:24px 18px 40px}.yc-section-title{font-size:23px}.yc-form-grid,.yc-connections{grid-template-columns:1fr}.yc-profile-hero{align-items:flex-start;padding:17px}.yc-invite{align-items:flex-start;flex-direction:column}.yc-invite .yc-secondary-button{width:100%}.yc-social-grid{grid-template-columns:1fr}.yc-subscribe-card{bottom:max(70px,calc(env(safe-area-inset-bottom) + 60px));left:14px}}
+    @media(max-width:760px){.yc-ava-wrap{margin-left:auto}.yc-account-menu{position:fixed;top:74px;left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));width:auto;max-height:calc(100vh - 92px)}.yc-account-overlay{padding:0}.yc-account-dialog{display:flex;flex-direction:column;width:100%;height:100%;border:0;border-radius:0}.yc-account-side{display:block;flex:0 0 auto;padding:18px 14px 9px;border-right:0;border-bottom:1px solid #263144;overflow:hidden}.yc-account-brand{padding:0 8px 14px}.yc-account-nav{flex-direction:row;overflow-x:auto;padding-bottom:5px;scrollbar-width:none}.yc-account-nav::-webkit-scrollbar{display:none}.yc-account-nav button{flex:0 0 auto;width:auto;border-left:0;border-bottom:2px solid transparent;padding:8px 10px;white-space:nowrap}.yc-account-nav button.active{border-left:0;border-bottom-color:#75a7ff}.yc-account-side-spacer,.yc-side-admin,.yc-side-logout{display:none!important}.yc-account-main{padding:24px 18px 40px}.yc-section-title{font-size:23px}.yc-form-grid,.yc-connections{grid-template-columns:1fr}.yc-profile-hero{align-items:flex-start;padding:17px}.yc-invite{align-items:stretch;flex-direction:column}.yc-invite-copy{width:100%;max-width:100%}.yc-invite .yc-secondary-button{width:100%}.yc-social-grid{grid-template-columns:1fr}.yc-subscribe-card{bottom:max(70px,calc(env(safe-area-inset-bottom) + 60px));left:14px}}
     @media(max-width:420px){.yc-account-menu{top:66px}.yc-avatar-lg{width:56px;height:56px}.yc-profile-hero{gap:12px}.yc-preference{align-items:flex-start}.yc-empty-card{padding:34px 22px}.yc-account-close{top:14px;right:13px}}
     @media(prefers-reduced-motion:reduce){.yc-account-menu.open{animation:none}.yc-switch span,.yc-switch span::after{transition:none}}
   `;
@@ -264,7 +273,16 @@
     try {
       const response = await fetch(API + path, init);
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || L.genericError);
+      if (!response.ok) {
+        const localized = response.status === 401 ? L.sessionError
+          : response.status === 403 ? L.forbiddenError
+          : response.status === 409 ? L.conflictError
+          : response.status === 429 ? L.rateError
+          : locale === 'tw' && payload.error ? payload.error : L.genericError;
+        const error = new Error(localized);
+        error.status = response.status;
+        throw error;
+      }
       return payload;
     } finally {
       window.clearTimeout(timeout);
@@ -276,20 +294,46 @@
     profileLoaded = true;
     if (payload.token && /^[a-f0-9]{64}$/i.test(payload.token)) {
       token = payload.token;
+      sessionStorage.removeItem('yc-token');
       localStorage.setItem('yc-token', token);
     }
-    if (payload.username) localStorage.setItem('yc-user', payload.username);
+    if (payload.username) {
+      sessionStorage.removeItem('yc-user');
+      localStorage.setItem('yc-user', payload.username);
+    }
+    if (payload.role === 'admin' || payload.role === 'guest') {
+      sessionStorage.removeItem('yc-role');
+      localStorage.setItem('yc-role', payload.role);
+    }
+    window.__YC_SESSION_VERIFIED__ = { token: token.toLowerCase(), role: profile.role || '' };
+    window.dispatchEvent(new CustomEvent('yc:session-valid', { detail: window.__YC_SESSION_VERIFIED__ }));
     refreshIdentity();
     syncSubscribePrompt();
   }
 
   function refreshIdentity() {
     if (!wrap) return;
+    if (isGuest) {
+      avatarButton.title = L.guestRole;
+      avatarButton.setAttribute('aria-label', L.guestRole);
+      identityBox.innerHTML = '<div class="yc-menu-identity-copy"><b>' + esc(L.guest) + '</b><span>' + esc(L.guestRole) + '</span></div>';
+      return;
+    }
+    if (!profileLoaded) {
+      avatarButton.innerHTML = '<span class="yc-account-dot" aria-hidden="true"></span>';
+      avatarButton.title = L.loading;
+      avatarButton.setAttribute('aria-label', L.loading);
+      identityBox.innerHTML = '<div class="yc-menu-identity-copy"><b>' + esc(L.loading) + '</b></div>';
+      return;
+    }
+    avatarButton.classList.remove('yc-account-pending');
     avatarButton.innerHTML = avatarMarkup('yc-avatar');
     avatarButton.title = profile.displayName || profile.username;
+    avatarButton.setAttribute('aria-label', profile.displayName || profile.username);
     identityBox.innerHTML = avatarMarkup('yc-avatar') +
       '<div class="yc-menu-identity-copy"><b>' + esc(profile.displayName || profile.username) + '</b>' +
       '<span>' + esc(profile.email || (profile.role === 'admin' ? L.adminRole : profile.username)) + '</span></div>';
+    syncAdminLinks();
   }
 
   function menuItem(section, icon, label, future) {
@@ -306,21 +350,33 @@
   }
 
   function adminLink(className) {
-    if (role !== 'admin') return '';
+    if (!profileLoaded || profile.role !== 'admin') return '';
     return '<a class="yc-menu-item ' + (className || '') + '" href="/admin"><span class="yc-menu-icon" aria-hidden="true">◆</span>' +
       '<span class="yc-menu-label">' + esc(L.admin) + '</span></a>';
+  }
+
+  function syncAdminLinks() {
+    if (!wrap) return;
+    const menuSlot = wrap.querySelector('[data-admin-menu-slot]');
+    if (menuSlot) menuSlot.innerHTML = adminLink('yc-menu-admin');
+    if (overlay) {
+      const sideSlot = overlay.querySelector('[data-admin-side-slot]');
+      if (sideSlot) sideSlot.innerHTML = adminLink('yc-side-admin');
+    }
   }
 
   function shell() {
     wrap = document.createElement('div');
     wrap.className = 'yc-ava-wrap';
-    wrap.innerHTML =
-      '<button class="yc-ava-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="' + esc(L.account) + '">' + avatarMarkup('yc-avatar') + '</button>' +
+    const trigger = isGuest
+      ? '<button class="yc-guest-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="' + esc(L.guestRole) + '"><span>' + esc(L.guestRole) + '</span><span class="yc-guest-chevron" aria-hidden="true">⌄</span></button>'
+      : '<button class="yc-ava-button yc-account-pending" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="' + esc(L.loading) + '"><span class="yc-account-dot" aria-hidden="true"></span></button>';
+    wrap.innerHTML = trigger +
       '<div class="yc-account-menu" role="menu"><div class="yc-menu-identity"></div>' +
         (isGuest
           ? '<a class="yc-menu-item" href="' + loginPath + '"><span class="yc-menu-icon">↗</span><span class="yc-menu-label">' + esc(L.signIn) + '</span></a>' +
             '<a class="yc-menu-item" href="' + portfolioPath + '"><span class="yc-menu-icon">⌁</span><span class="yc-menu-label">' + esc(L.portfolio) + '</span></a>'
-          : adminLink('yc-menu-admin') +
+          : '<span data-admin-menu-slot></span>' +
             menuItem('account', '◎', L.accountTitle, false) +
             menuItem('connect', '⌁', L.connectTitle, true) +
             menuItem('contact', '@', L.contactTitle, false) +
@@ -329,7 +385,7 @@
             menuItem('help', '?', L.helpTitle, false)) +
         '<div class="yc-menu-divider"></div><button class="yc-menu-item yc-logout" type="button" data-account-logout><span class="yc-menu-icon">↪</span><span class="yc-menu-label">' +
         esc(isGuest ? L.exit : L.logout) + '</span></button></div>';
-    avatarButton = wrap.querySelector('.yc-ava-button');
+    avatarButton = wrap.querySelector('.yc-ava-button, .yc-guest-button');
     menu = wrap.querySelector('.yc-account-menu');
     identityBox = wrap.querySelector('.yc-menu-identity');
     refreshIdentity();
@@ -378,7 +434,7 @@
       '<section class="yc-account-dialog" role="dialog" aria-modal="true" aria-labelledby="yc-account-page-title" tabindex="-1">' +
         '<button class="yc-account-close" type="button" aria-label="' + esc(L.close) + '">×</button>' +
         '<aside class="yc-account-side"><div class="yc-account-brand">YiCapital</div><nav class="yc-account-nav" aria-label="' + esc(L.account) + '"></nav>' +
-          '<div class="yc-account-side-spacer"></div>' + adminLink('yc-side-admin') +
+          '<div class="yc-account-side-spacer"></div><span data-admin-side-slot></span>' +
           '<button class="yc-menu-item yc-logout yc-side-logout" type="button" data-account-logout><span class="yc-menu-icon">↪</span><span class="yc-menu-label">' + esc(L.logout) + '</span></button></aside>' +
         '<main class="yc-account-main"></main></section>';
     main = overlay.querySelector('.yc-account-main');
@@ -387,6 +443,7 @@
     overlay.addEventListener('mousedown', event => { if (event.target === overlay) closeAccount(); });
     overlay.addEventListener('keydown', trapDialogKeys);
     document.body.appendChild(overlay);
+    syncAdminLinks();
   }
 
   function renderSide() {
@@ -631,7 +688,7 @@
   }
 
   function syncSubscribePrompt() {
-    if (!isMember || !profileLoaded || role === 'admin') return;
+    if (!isMember || !profileLoaded || profile.role === 'admin') return;
     if (profile.newsletter) {
       if (subscribeCard) subscribeCard.remove();
       subscribeCard = null;
@@ -659,13 +716,25 @@
     document.body.appendChild(subscribeCard);
   }
 
-  async function loadProfile() {
+  async function loadProfile(attempt = 0) {
     if (!isMember) return;
     try {
       const result = await api('/api/me', { cache: 'no-store' });
       updateProfile(result);
       if (overlay && overlay.classList.contains('open') && activeSection === 'account') renderAccount();
     } catch (error) {
+      if (error && (error.status === 401 || error.status === 403)) {
+        if (attempt < 1) {
+          window.setTimeout(() => loadProfile(attempt + 1), 750);
+          return;
+        }
+        clearSession();
+        window.__YC_SESSION_VERIFIED__ = null;
+        window.dispatchEvent(new CustomEvent('yc:session-invalid', { detail: { status: error.status } }));
+        location.replace(loginPath + '?reason=' + (error.status === 403 ? 'disabled' : 'expired'));
+        return;
+      }
+      window.dispatchEvent(new CustomEvent('yc:session-unavailable'));
       if (overlay && overlay.classList.contains('open') && activeSection === 'account') {
         main.innerHTML = pageHeading(L.accountKicker, L.accountTitle, L.accountIntro) +
           '<div class="yc-empty-panel"><div class="yc-empty-card"><p>' + esc(L.loadError) + '</p></div></div>';
@@ -686,27 +755,89 @@
     nav.appendChild(shell());
     if (isMember) {
       createOverlay();
-      loadProfile();
+      loadProfile(0);
     }
   }
 
   if (isMember && API) {
     const sameToken = () => String(localStorage.getItem('yc-token') || '').toLowerCase() === token.toLowerCase();
+    const reconcileStoredIdentity = () => {
+      const nextToken = String(localStorage.getItem('yc-token') || '');
+      const nextUser = String(localStorage.getItem('yc-user') || '');
+      const nextMember = /^[a-f0-9]{64}$/i.test(nextToken) && Boolean(nextUser);
+      if (nextMember && nextToken.toLowerCase() === token.toLowerCase() && nextUser === storedUser) return true;
+      if (nextMember || localStorage.getItem('yc-guest') === '1') {
+        location.reload();
+        return false;
+      }
+      clearSession();
+      location.replace(loginPath + '?reason=signedout');
+      return false;
+    };
     const validate = attempt => {
       if (!sameToken()) return Promise.resolve();
-      return fetch(API + '/api/me', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' }).then(response => {
-        if (response.status !== 401) return;
+      return fetch(API + '/api/me', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' }).then(async response => {
+        if (response.ok) {
+          const payload = await response.json().catch(() => null);
+          if (payload && sameToken()) updateProfile(payload);
+          return;
+        }
+        if (response.status >= 500) {
+          window.dispatchEvent(new CustomEvent('yc:session-unavailable', { detail: { status: response.status } }));
+          return;
+        }
+        if (response.status !== 401 && response.status !== 403) return;
         if (attempt < 1) {
           window.setTimeout(() => validate(attempt + 1), 750);
           return;
         }
         if (!sameToken()) return;
         clearSession();
-        location.replace(loginPath + '?reason=expired');
-      }).catch(() => {});
+        window.__YC_SESSION_VERIFIED__ = null;
+        window.dispatchEvent(new CustomEvent('yc:session-invalid', { detail: { status: response.status } }));
+        location.replace(loginPath + '?reason=' + (response.status === 403 ? 'disabled' : 'expired'));
+      }).catch(() => { window.dispatchEvent(new CustomEvent('yc:session-unavailable')); });
     };
-    validate(0);
+    window.addEventListener('pageshow', event => {
+      if (event.persisted && reconcileStoredIdentity()) validate(0);
+    });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) validate(0); });
   }
+
+  if (isGuest) {
+    window.addEventListener('pageshow', event => {
+      if (!event.persisted) return;
+      const nextToken = String(localStorage.getItem('yc-token') || '');
+      const nextUser = String(localStorage.getItem('yc-user') || '');
+      if (/^[a-f0-9]{64}$/i.test(nextToken) && nextUser) {
+        location.reload();
+        return;
+      }
+      if (localStorage.getItem('yc-guest') !== '1') location.replace(homePath);
+    });
+  }
+
+  window.addEventListener('storage', event => {
+    if (event.storageArea && event.storageArea !== localStorage) return;
+    if (event.key && !['yc-token', 'yc-user', 'yc-guest'].includes(event.key)) return;
+    window.clearTimeout(externalSyncTimer);
+    externalSyncTimer = window.setTimeout(() => {
+      const nextToken = String(localStorage.getItem('yc-token') || '');
+      const nextUser = String(localStorage.getItem('yc-user') || '');
+      const nextMember = /^[a-f0-9]{64}$/i.test(nextToken) && Boolean(nextUser);
+      const nextGuest = !nextMember && localStorage.getItem('yc-guest') === '1';
+      if (nextMember) {
+        if (!isMember || nextToken.toLowerCase() !== token.toLowerCase() || nextUser !== storedUser) location.reload();
+        return;
+      }
+      if (nextGuest) {
+        if (!isGuest) location.reload();
+        return;
+      }
+      clearSession();
+      location.replace(isMember ? loginPath + '?reason=signedout' : homePath);
+    }, 0);
+  });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
   else mount();

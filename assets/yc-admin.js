@@ -86,10 +86,18 @@
     const cur = (location.pathname.split('/').pop() || 'admin').replace(/\.html$/, '') || 'admin';
     host.className = 'adminnav';
     host.innerHTML = NAV.map(([p, t]) => `<a href="${p}" class="${cur === p ? 'on' : ''}">${t}</a>`).join('')
-      + `<a href="./" target="_blank">前台 ↗</a><a href="#" id="yca-logout" class="exit">登出</a>`;
+      + `<a href="./" target="_blank" rel="noopener">前台 ↗</a><a href="#" id="yca-logout" class="exit">登出</a>`;
     $('yca-logout').onclick = async e => {
       e.preventDefault();
-      try { await api('/api/logout', { method: 'POST' }); } catch (err) {}
+      const link = e.currentTarget;
+      link.setAttribute('aria-disabled', 'true');
+      try {
+        await api('/api/logout', { method: 'POST' });
+      } catch (err) {
+        link.removeAttribute('aria-disabled');
+        link.textContent = '登出失敗，點擊重試';
+        return;
+      }
       ['yc-token', 'yc-role', 'yc-user', 'yc-guest'].forEach(k => {
         localStorage.removeItem(k);
         sessionStorage.removeItem(k);
@@ -107,7 +115,13 @@
     try {
       const me = await api('/api/me');
       if (me.role !== 'admin') { if (gm) gm.textContent = '此帳號不是管理員。'; setTimeout(() => location.href = 'login', 1500); return; }
-      const who = $('who'); if (who) who.innerHTML = '已登入：<b>' + me.username + '</b>（admin）';
+      const who = $('who');
+      if (who) {
+        who.replaceChildren('已登入：');
+        const name = document.createElement('b');
+        name.textContent = String(me.username || '');
+        who.append(name, '（admin）');
+      }
       const g = $('gate'); if (g) g.style.display = 'none';
       const p = $('panel'); if (p) p.style.display = 'block';
       if (cb) cb(me);

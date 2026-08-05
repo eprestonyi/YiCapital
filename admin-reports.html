@@ -8,9 +8,9 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="assets/style.css?v=20260802a">
-<script src="assets/portal-config.js"></script>
-<script src="assets/yc-admin.js?v=8.12"></script>
+<link rel="stylesheet" href="assets/style.css?v=20260805c">
+<script src="assets/portal-config.js?v=9.4"></script>
+<script src="assets/yc-admin.js?v=8.14"></script>
 </head>
 <body>
 
@@ -104,6 +104,7 @@
   YCAdmin.gate(load);
 
   const P=(v)=>typeof v==='string'?{tw:v,cn:'',en:''}:(v||{tw:'',cn:'',en:''});
+  const H=(v)=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const ensureIds=(list=ITEMS)=>{ const used=new Set(); (list||[]).forEach((it,i)=>{
     let id=String(it.id||'').trim() || ('rep-'+String(it.url||it.date||i).replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').toLowerCase());
     let u=id,n=2; while(used.has(u))u=id+'-'+n++; it.id=u; used.add(u);
@@ -148,7 +149,7 @@
 
   async function loadSeed(){
     try{
-      const txt=await (await fetch('assets/reports.js?v='+Date.now(),{cache:'no-store'})).text();
+      const txt=await (await fetch('assets/reports.js?v=2.1&t='+Date.now(),{cache:'no-store'})).text();
       const m=txt.match(/const REPORTS = (\[[\s\S]*?\n\]);/);
       if(!m) throw new Error('無法解析內置條目');
       return ensureIds(Function('return '+m[1])());
@@ -162,17 +163,17 @@
     el.innerHTML='<table class="m"><thead><tr><th>日期</th><th>標題（繁）</th><th>代號</th><th>類型</th><th>報告頁</th><th>PDF</th><th>狀態</th><th>操作</th></tr></thead><tbody>'+
       ITEMS.filter(it=>!it.deleted).slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).map(it=>{
         const t=P(it.title).tw||P(it.title).en||'';
-        return `<tr style="${it.disabled?'opacity:.45':''}"><td style="white-space:nowrap">${it.date||''}</td>
-          <td style="max-width:340px">${t.replace(/</g,'&lt;')}</td>
-          <td>${it.ticker||''}</td>
-          <td>${(it.genre||[]).map(g=>GENRE_TW[g]||g).join('、')}</td>
-          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:11px">${it.url||''}</td>
-          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:11px">${it.pdf||((/\.pdf(?:$|[?#])/i.test(it.url||''))?it.url:'—')}</td>
+        return `<tr style="${it.disabled?'opacity:.45':''}"><td style="white-space:nowrap">${H(it.date)}</td>
+          <td style="max-width:340px">${H(t)}</td>
+          <td>${H(it.ticker)}</td>
+          <td>${H((it.genre||[]).map(g=>GENRE_TW[g]||g).join('、'))}</td>
+          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:11px">${H(it.url)}</td>
+          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:11px">${H(it.pdf||((/\.pdf(?:$|[?#])/i.test(it.url||''))?it.url:'—'))}</td>
           <td><span class="badge ${it.disabled?'off':'on'}">${it.disabled?'停用':'啟用'}</span></td>
           <td>
-            <button class="btn2" data-a="edit" data-id="${it.id}">編輯</button>
-            <button class="btn2" data-a="toggle" data-id="${it.id}">${it.disabled?'啟用':'停用'}</button>
-            <button class="btn2 danger" data-a="del" data-id="${it.id}">刪除</button>
+            <button class="btn2" data-a="edit" data-id="${H(it.id)}">編輯</button>
+            <button class="btn2" data-a="toggle" data-id="${H(it.id)}">${it.disabled?'啟用':'停用'}</button>
+            <button class="btn2 danger" data-a="del" data-id="${H(it.id)}">刪除</button>
           </td></tr>`;
       }).join('')+'</tbody></table>';
     el.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>{

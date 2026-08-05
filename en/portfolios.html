@@ -8,7 +8,7 @@
 <title>Our Portfolios | Yi Capital</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/style.css?v=20260802a">
+<link rel="stylesheet" href="../assets/style.css?v=20260805c">
 </head>
 <body>
 
@@ -199,23 +199,11 @@ document.querySelectorAll('.tab[data-tab]').forEach(btn=>{
   });
 });
 </script>
-<script src="../assets/portal-config.js"></script>
-<script src="../assets/yc-i18n.js"></script>
-<script>
-
-window.ensureXLSX=function(){return new Promise(function(res,rej){
-  if(window.XLSX)return res();
-  var urls=['https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'],i=0;
-  (function next(){ if(window.XLSX)return res();
-    if(i>=urls.length)return rej(new Error('Spreadsheet parser failed to load — refresh or switch browsers'));
-    var s=document.createElement('script');s.src=urls[i++];s.onload=function(){window.XLSX?res():next()};s.onerror=next;document.head.appendChild(s);
-  })();
-});}
-</script>
+<script src="../assets/portal-config.js?v=9.4"></script>
+<script src="../assets/yc-i18n.js?v=20260805c"></script>
 <script src="../assets/yc-analytics.js"></script>
 <script src="../assets/yc-charts.js"></script>
 <script src="../assets/yc-portfolios.js"></script>
-<script src="../assets/yc-gate.js"></script>
-<script src="../assets/yc-session.js?v=10.2"></script>
+<script src="../assets/yc-session.js?v=10.6"></script>
 </body>
 </html>

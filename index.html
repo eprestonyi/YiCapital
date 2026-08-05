@@ -12,20 +12,20 @@
 <meta property="og:image" content="/og-entry.png?v=20260802a"><meta property="og:image:alt" content="YiCapital — Be Like Us, Not Them"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="/og-entry.png?v=20260802a">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="assets/style.css?v=20260802a">
+<link rel="stylesheet" href="assets/style.css?v=20260805c">
 <link rel="stylesheet" href="assets/yc-entry.css?v=20260804b">
 <script>
 window.YC_ENTRY_MODE='gate';
 (()=>{try{const q=new URLSearchParams(location.search);if(q.get('guest')==='1')localStorage.setItem('yc-guest','1');const token=localStorage.getItem('yc-token')||sessionStorage.getItem('yc-token')||'';const user=localStorage.getItem('yc-user')||sessionStorage.getItem('yc-user')||'';const member=/^[a-f0-9]{64}$/i.test(token)&&!!user;const guest=localStorage.getItem('yc-guest')==='1';document.documentElement.classList.add(member||guest?'yc-dashboard-requested':'yc-entry-pending');}catch(e){document.documentElement.classList.add('yc-entry-pending');}})();
 </script>
-<script src="assets/portal-config.js?v=9.2"></script>
-<script src="assets/yc-entry.js?v=9.3" defer></script>
+<script src="assets/portal-config.js?v=9.4"></script>
+<script src="assets/yc-entry.js?v=9.8" defer></script>
 </head>
 <body>
 <div class="yc-entry-fallback" role="status"><div class="yc-entry-fallback-card">
   <a class="yc-entry-fallback-logo" href="/">Yi<b>Capital</b></a>
-  <p>登入介面暫時未能載入。你仍可按 Guest 權限進入目前的 Dashboard。</p>
-  <a class="yc-entry-fallback-action" href="?dashboard=1&amp;guest=1">以 Guest 繼續</a>
+  <p>登入介面暫時未能載入。你仍可以訪客權限進入目前的工作台。</p>
+  <a class="yc-entry-fallback-action" href="?dashboard=1&amp;guest=1">以訪客模式繼續</a>
 </div></div>
 
 <!-- 頂部工具列：滑到首頁對應位置 -->
@@ -69,7 +69,7 @@ window.YC_ENTRY_MODE='gate';
       <div class="slog" data-i18n="hero.slog">Key to <b>Extraordinary Research</b><br>and Opensource Portfolio</div>
       <p class="sub" data-i18n="hero.sub">一個人的研究所：深度研報、三個實盤組合、全部方法論公開。買方立場，賣方紀律——每一個判斷背後都有真金白銀的倉位。</p>
       <div class="row yc-authcta">
-        <a class="cta primary" href="login#signup" data-i18n="hero.cta1">免費註冊 · 解鎖完整研報庫與實時組合 →</a>
+        <a class="cta primary" href="login#signup" data-i18n="hero.cta1">免費建立帳號 · 管理身份與 Insights →</a>
         <a class="cta ghost" href="login" data-i18n="hero.cta2">登入</a>
         <span class="free" data-i18n="hero.free">FREE · 30 秒完成 · 歡迎抄作業</span>
       </div>
@@ -163,14 +163,14 @@ window.YC_ENTRY_MODE='gate';
   <p>© 2026 Yi Capital. 未經書面許可，不得以任何形式翻版、複製或引用；如引用請註明出處。</p>
 </div></footer>
 
-<script src="assets/posts.js"></script>
-<script src="assets/reports.js"></script>
+<script src="assets/posts.js?v=2.1"></script>
+<script src="assets/reports.js?v=2.1"></script>
 <script>
 renderPosts("home-posts",{limit:3});document.addEventListener("yc-content-posts",()=>renderPosts("home-posts",{limit:3}));
 renderReports("home-reports","","");document.addEventListener("yc-content-reports",()=>{renderReports("home-reports","","");});
 </script>
 <script src="assets/yc-home-live.js"></script>
-<script src="assets/yc-i18n.js"></script>
-<script src="assets/yc-session.js?v=10.2"></script>
+<script src="assets/yc-i18n.js?v=20260805c"></script>
+<script src="assets/yc-session.js?v=10.6"></script>
 </body>
 </html>

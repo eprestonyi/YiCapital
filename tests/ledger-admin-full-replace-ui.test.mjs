@@ -24,6 +24,21 @@ function testApi() {
   const window = {
     XLSX,
     YC_LEDGER_TEST_MODE: true,
+    YC_LEDGER_IMPORT_READER: async buffer => {
+      const workbook = XLSX.read(buffer, {
+        type: 'array', cellDates: false, cellStyles: false, WTF: false,
+      });
+      return {
+        ok: true,
+        sheetNames: workbook.SheetNames.slice(),
+        sheets: Object.fromEntries(workbook.SheetNames.map(name => [
+          name,
+          XLSX.utils.sheet_to_json(workbook.Sheets[name], {
+            header: 1, raw: true, defval: null, blankrows: false,
+          }),
+        ])),
+      };
+    },
     YCAdmin: { api: async () => ({}), $: () => null, gate: () => {} },
   };
   vm.runInNewContext(SOURCE, {

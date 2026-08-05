@@ -13,20 +13,20 @@
 <meta property="og:image" content="/og-entry.png?v=20260802a"><meta property="og:image:alt" content="YiCapital — Be Like Us, Not Them"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="/og-entry.png?v=20260802a">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/style.css?v=20260802a">
+<link rel="stylesheet" href="../assets/style.css?v=20260805c">
 <link rel="stylesheet" href="../assets/yc-entry.css?v=20260804b">
 <script>
 window.YC_ENTRY_MODE='gate';
 (()=>{try{const q=new URLSearchParams(location.search);if(q.get('guest')==='1')localStorage.setItem('yc-guest','1');const token=localStorage.getItem('yc-token')||sessionStorage.getItem('yc-token')||'';const user=localStorage.getItem('yc-user')||sessionStorage.getItem('yc-user')||'';const member=/^[a-f0-9]{64}$/i.test(token)&&!!user;const guest=localStorage.getItem('yc-guest')==='1';document.documentElement.classList.add(member||guest?'yc-dashboard-requested':'yc-entry-pending');}catch(e){document.documentElement.classList.add('yc-entry-pending');}})();
 </script>
-<script src="../assets/portal-config.js?v=9.2"></script>
-<script src="../assets/yc-entry.js?v=9.3" defer></script>
+<script src="../assets/portal-config.js?v=9.4"></script>
+<script src="../assets/yc-entry.js?v=9.8" defer></script>
 </head>
 <body>
 <div class="yc-entry-fallback" role="status"><div class="yc-entry-fallback-card">
   <a class="yc-entry-fallback-logo" href="/cn/">Yi<b>Capital</b></a>
-  <p>登录界面暂时无法载入。你仍可按 Guest 权限进入目前的 Dashboard。</p>
-  <a class="yc-entry-fallback-action" href="?dashboard=1&amp;guest=1">以 Guest 继续</a>
+  <p>登录界面暂时无法载入。你仍可按访客权限进入当前的工作台。</p>
+  <a class="yc-entry-fallback-action" href="?dashboard=1&amp;guest=1">以访客模式继续</a>
 </div></div>
 
 <!-- 顶部工具列：滑到首页对应位置 -->
@@ -35,7 +35,7 @@ window.YC_ENTRY_MODE='gate';
   <a href="#sec-forum" data-i18n="ut.forum">研报库</a>
   <a href="#sec-insights" data-i18n="ut.insights">最新观点</a>
   <a href="about" data-i18n="ut.contact">关于我们</a>
-  <a href="login" style="color:var(--cyan)" data-i18n="ut.login">登入</a>
+  <a href="login" style="color:var(--cyan)" data-i18n="ut.login">登录</a>
 </div></div>
 
 <header><div class="wrap nav">
@@ -70,8 +70,8 @@ window.YC_ENTRY_MODE='gate';
       <div class="slog" data-i18n="hero.slog">Key to <b>Extraordinary Research</b><br>and Opensource Portfolio</div>
       <p class="sub" data-i18n="hero.sub">一个人的研究所：深度研报、三个实盘组合、全部方法论公开。买方立场，卖方纪律——每一个判断背后都有真金白银的仓位。</p>
       <div class="row yc-authcta">
-        <a class="cta primary" href="login#signup" data-i18n="hero.cta1">免费注册 · 解锁完整研报库与实时组合 →</a>
-        <a class="cta ghost" href="login" data-i18n="hero.cta2">登入</a>
+        <a class="cta primary" href="login#signup" data-i18n="hero.cta1">免费创建账号 · 管理身份与 Insights →</a>
+        <a class="cta ghost" href="login" data-i18n="hero.cta2">登录</a>
         <span class="free" data-i18n="hero.free">FREE · 30 秒完成 · 欢迎抄作业</span>
       </div>
     </div>
@@ -152,7 +152,7 @@ window.YC_ENTRY_MODE='gate';
   <div class="wrap">
     <div class="sec">
       <h2><small>研究观点</small>研究观点・精选</h2>
-      <p>从研报库中節选的核心判断与方法论。<a href="insights">查看全部精选 →</a></p>
+      <p>从研报库中节选的核心判断与方法论。<a href="insights">查看全部精选 →</a></p>
     </div>
     <div class="cards" id="home-posts"></div>
   </div>
@@ -160,18 +160,18 @@ window.YC_ENTRY_MODE='gate';
 
 <footer><div class="wrap">
   <div class="logo">Yi<b>Capital</b></div>
-  <p>免责声明：本网站所載之研究报告、组合數据与论坛内容，均基于公开资料与个人判断撰写，仅供研究与学习参考，不构成任何证券之买卖要约、招揽或投资建议。相关证券之价格可升可跌，过往表现不应作为日后表现之依据。任何人因使用本站内容所引致之损失，本站概不负责。</p>
+  <p>免责声明：本网站所载之研究报告、组合数据与论坛内容，均基于公开资料与个人判断撰写，仅供研究与学习参考，不构成任何证券之买卖要约、招揽或投资建议。相关证券之价格可升可跌，过往表现不应作为日后表现之依据。任何人因使用本站内容所引致之损失，本站概不负责。</p>
   <p>© 2026 Yi Capital. 未经书面许可，不得以任何形式翻版、复制或引用；如引用请注明出处。</p>
 </div></footer>
 
-<script src="../assets/posts.js"></script>
-<script src="../assets/reports.js"></script>
+<script src="../assets/posts.js?v=2.1"></script>
+<script src="../assets/reports.js?v=2.1"></script>
 <script>
 renderPosts("home-posts",{limit:3});document.addEventListener("yc-content-posts",()=>renderPosts("home-posts",{limit:3}));
 renderReports("home-reports","","");document.addEventListener("yc-content-reports",()=>{renderReports("home-reports","","");});
 </script>
 <script src="../assets/yc-home-live.js"></script>
-<script src="../assets/yc-i18n.js"></script>
-<script src="../assets/yc-session.js?v=10.2"></script>
+<script src="../assets/yc-i18n.js?v=20260805c"></script>
+<script src="../assets/yc-session.js?v=10.6"></script>
 </body>
 </html>

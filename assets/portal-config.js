@@ -4,7 +4,7 @@ if (window.location.hostname === 'yicapital.co') {
   window.location.replace('https://www.yicapital.co' + window.location.pathname + window.location.search + window.location.hash);
 }
 window.YC_API = 'https://yicapital-portal.eprestonyi.workers.dev';
-window.YC_RELEASE = 'v9.3-account-center';
+window.YC_RELEASE = 'v9.4-auth-safety';
 window.YC_FEATURES = Object.assign({ feedback: true }, window.YC_FEATURES || {});
 
 /* Google 登入（可選）：在 console.cloud.google.com 創建 OAuth Client ID 後填入。

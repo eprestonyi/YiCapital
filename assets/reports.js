@@ -34,21 +34,30 @@ const REPORTS = [
 const _LANG = () => (window.YCI && YCI.lang) || window.YC_LANG || 'tw';
 const _RT = (k, fb) => (window.YCI ? YCI.t(k) : fb);
 const _RF = (o) => (typeof o === 'string') ? o : (o[_LANG()] || o.tw);
+const _RE = value => String(value == null ? '' : value)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+const _RH = value => {
+  try {
+    const url = new URL(String(value || ''), document.baseURI);
+    return url.origin === location.origin && /^https?:$/.test(url.protocol) ? _RE(url.href) : '#';
+  } catch (error) { return '#'; }
+};
 let _activeGenres = new Set();
 function renderReports(listId, keyword, prefix) {
   const el = document.getElementById(listId); if (!el) return;
   const kw = (keyword || "").trim().toLowerCase();
   const hits = REPORTS.filter(r =>
-    (!kw || (r.ticker + " " + _RF(r.title) + " " + r.title.tw + " " + r.tags).toLowerCase().includes(kw)) &&
+    (!kw || [r.ticker, _RF(r.title || {}), r.title && r.title.tw, r.tags].map(value => String(value || '')).join(' ').toLowerCase().includes(kw)) &&
     (!_activeGenres.size || (r.genre || []).some(g => _activeGenres.has(g))));
-  if (!hits.length) { el.innerHTML = '<div class="no-result">' + _RT('forum.noresult','沒有找到相關研報。') + '</div>'; return; }
+  if (!hits.length) { el.innerHTML = '<div class="no-result">' + _RE(_RT('forum.noresult','沒有找到相關研報。')) + '</div>'; return; }
   el.innerHTML = '<ul class="forum">' + hits.map((r, i) => `
-    <li><a href="${ (r.url||"").indexOf("assets/")===0 ? "/"+r.url : (prefix||"")+r.url }">
+    <li><a href="${_RH((r.url||"").indexOf("assets/")===0 ? "/"+r.url : (prefix||"")+(r.url||""))}">
       <span class="f-num">${String(i+1).padStart(2,"0")}</span>
-      <span class="f-num" style="color:#8b98ac">${r.ticker}</span>
-      <span>${_RF(r.title)}${(r.genre||[]).map(g=>'<span class="g-tag">'+_RT('g.'+g,g)+'</span>').join('')}</span>
+      <span class="f-num" style="color:#8b98ac">${_RE(r.ticker)}</span>
+      <span>${_RE(_RF(r.title || {}))}${(r.genre||[]).filter(g=>REPORT_GENRES.includes(g)).map(g=>'<span class="g-tag">'+_RE(_RT('g.'+g,g))+'</span>').join('')}</span>
       <span class="f-dots"></span>
-      <span class="f-meta">${_RF(r.meta)} · ${r.date}</span>
+      <span class="f-meta">${_RE(_RF(r.meta || {}))} · ${_RE(r.date)}</span>
     </a></li>`).join("") + '</ul>';
 }
 function bindSearch(inputId, listId, prefix) {
@@ -58,8 +67,8 @@ function bindSearch(inputId, listId, prefix) {
 function renderGenreChips(chipId, inputId, listId, prefix) {
   const box = document.getElementById(chipId); if (!box) return;
   const draw = () => {
-    box.innerHTML = '<span class="g-chip'+(!_activeGenres.size?' on':'')+'" data-g="__all">'+_RT('g.all','全部')+'</span>'
-      + REPORT_GENRES.map(g=>'<span class="g-chip'+(_activeGenres.has(g)?' on':'')+'" data-g="'+g+'">'+_RT('g.'+g,g)+'</span>').join('');
+    box.innerHTML = '<span class="g-chip'+(!_activeGenres.size?' on':'')+'" data-g="__all">'+_RE(_RT('g.all','全部'))+'</span>'
+      + REPORT_GENRES.map(g=>'<span class="g-chip'+(_activeGenres.has(g)?' on':'')+'" data-g="'+g+'">'+_RE(_RT('g.'+g,g))+'</span>').join('');
   };
   box.addEventListener('click', e => {
     const g = e.target.dataset && e.target.dataset.g; if (!g) return;

@@ -8,10 +8,10 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="assets/style.css?v=20260802a">
-<script src="assets/portal-config.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
-<script src="assets/yc-admin.js"></script>
+<link rel="stylesheet" href="assets/style.css?v=20260805c">
+<script src="assets/portal-config.js?v=9.4"></script>
+<script src="assets/vendor/xlsx-js-style-1.2.0/xlsx.min.js" data-purpose="excel-export-only"></script>
+<script src="assets/yc-admin.js?v=8.14"></script>
 <style>
   .ledger-switch{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
   .ledger-switch button{background:var(--bg);border:1px solid var(--line);border-radius:999px;color:#9aa7ba;
@@ -84,6 +84,8 @@
   .pipeline-stage[data-state="waiting"] b{color:#fbbf24}
   .drop2 strong{color:#dbe4f0;display:block;font-family:var(--sans);font-size:15px;margin-bottom:7px}
   .drop2 small{display:block;line-height:1.7}
+  .drop2.import-disabled{background:rgba(248,113,113,.035);border-color:rgba(248,113,113,.28);cursor:not-allowed}
+  .drop2.import-disabled strong{color:#fca5a5}
   .import-controls{display:grid;grid-template-columns:1fr 170px;gap:10px;margin:14px 0}
   .import-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin:14px 0}
   .import-summary div{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:10px;text-align:center}
@@ -253,19 +255,19 @@
           <div class="log sync-log" id="rebuild-log" role="status">尚未排隊。</div>
         </div>
 
-        <div class="card">
-          <h3>Excel 反向同步 · Excel → Database</h3>
-          <p class="sync-note">只讀取 7 張事件 sheet，並把它們視為一份完整事件賬本。Preview 會列出 CREATE、UPDATE、MISSING 與 blockers；確認後以單一 CAS 建立新的 active ledger revision。舊事件版本永久保留在歷史中，不刪除、不 truncate。四張派生表不反寫。</p>
+        <div class="card" aria-labelledby="excel-import-title">
+          <h3 id="excel-import-title">Excel 反向同步 · Excel → Database</h3>
+          <p class="sync-note">只讀取 7 張事件 sheet，並把它們視為一份完整事件賬本。外部工作簿只在一次性隔離解析程序中打開，解析程序接觸不到管理員會話或頁面。Preview 會列出 CREATE、UPDATE、MISSING 與 blockers；確認後以單一 CAS 建立新的 active ledger revision。舊事件版本永久保留在歷史中，不刪除、不 truncate。四張派生表不反寫。</p>
           <label class="drop2" id="import-drop">
             <strong>點此或拖入 .xlsx</strong>
-            <small>最大 8 MB · 瀏覽器先算 SHA-256 · 上傳前只做本地解析</small>
+            <small>最大 8 MB · 本地 SHA-256 · 隔離解析 · 不上傳原文件</small>
             <input class="sr-only" id="import-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
           </label>
           <div class="import-controls">
-            <input id="import-file-name" type="text" readonly placeholder="尚未選擇文件">
+            <input id="import-file-name" type="text" readonly placeholder="尚未選擇完整工作簿">
             <button class="btn" id="preview-import" type="button" disabled>建立差異預覽</button>
           </div>
-          <div class="log" id="import-log">選擇文件後才會啟用預覽。</div>
+          <div class="log" id="import-log" role="status">選擇文件後才會啟用預覽；原始 .xlsx 不會傳到後台。</div>
           <div id="import-preview" style="display:none">
             <div class="import-summary" id="import-summary"></div>
             <div class="import-list" id="import-operations"></div>
@@ -340,6 +342,6 @@
 
 <footer><div class="wrap"><div class="logo">Yi<b>Capital</b></div><p>© 2026 Yi Capital.</p></div></footer>
 
-<script src="assets/yc-ledger-admin.js?v=20260805e"></script>
+<script src="assets/yc-ledger-admin.js?v=20260805f"></script>
 </body>
 </html>

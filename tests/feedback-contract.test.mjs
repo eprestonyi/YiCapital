@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -48,7 +49,7 @@ test('health exposes the feedback store without leaking configuration', async ()
   );
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.version, 'v9.3-account-center');
+  assert.equal(body.version, 'v9.4-auth-bridge');
   assert.equal(body.admin_google, false);
   assert.equal(body.feedback, true);
   assert.equal(body.ledger, true);
@@ -93,7 +94,7 @@ test('live monitor and public release marker fail closed on the current auth con
     read('scripts/live-health.mjs'),
     read('assets/portal-config.js'),
   ]);
-  assert.match(monitor, /health\.version !== 'v9\.3-account-center'/);
+  assert.match(monitor, /health\.version !== 'v9\.4-auth-bridge'/);
   assert.match(monitor, /health\.auth_sessions !== true/);
   assert.match(monitor, /health\.auth_rate_limit !== true/);
   assert.match(monitor, /health\.ledger !== true/);
@@ -101,9 +102,10 @@ test('live monitor and public release marker fail closed on the current auth con
   assert.match(monitor, /health\.ledger_storage_ready !== true/);
   assert.match(monitor, /storage\?\.projectionCurrent !== true \|\| storage\?\.publicCurrent !== true/);
   assert.match(monitor, /\/api\/google\/health/);
+  assert.match(config, /window\.YC_RELEASE = 'v9\.4-auth-safety'/);
   assert.match(monitor, /health\.admin_google !== false/);
   assert.doesNotMatch(monitor, /health\.version !== 'v8\.11-terminal-visuals'/);
-  assert.match(config, /window\.YC_RELEASE = 'v9\.3-account-center'/);
+  assert.doesNotMatch(config, /window\.YC_RELEASE = 'v9\.3-account-center'/);
 });
 
 test('health fails closed when the D1 schema is incomplete', async () => {
@@ -308,13 +310,35 @@ test('all three terms pages disclose feedback data handling', async () => {
   }
 });
 
-test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fallback', async () => {
-  const [page, ledgerAdmin] = await Promise.all([
+test('ledger Excel UI isolates external parsing while keeping export and print layout', async () => {
+  const [page, ledgerAdmin, importWorker, vendorReadme] = await Promise.all([
     read('admin-ledger.html'),
     read('assets/yc-ledger-admin.js'),
+    read('assets/yc-xlsx-import-worker.js'),
+    read('assets/vendor/xlsx-js-style-1.2.0/README.md'),
   ]);
-  assert.match(page, /xlsx-js-style@1\.2\.0\/dist\/xlsx\.min\.js/);
-  assert.match(page, /yc-ledger-admin\.js\?v=20260805e/);
+  assert.match(page, /assets\/vendor\/xlsx-js-style-1\.2\.0\/xlsx\.min\.js/);
+  assert.match(page, /yc-ledger-admin\.js\?v=20260805f/);
+  assert.match(page, /data-purpose="excel-export-only"/);
+  assert.doesNotMatch(page, /cdn\.jsdelivr\.net|unpkg\.com/);
+  assert.doesNotMatch(ledgerAdmin, /cdn\.jsdelivr\.net|unpkg\.com/);
+  assert.match(page, /id="import-file"[^>]*type="file"/);
+  assert.doesNotMatch(page, /id="import-file"[^>]*\bdisabled\b/);
+  assert.match(page, /一次性隔離解析程序/);
+  assert.doesNotMatch(ledgerAdmin, /\bXLSX\.read\s*\(/);
+  assert.doesNotMatch(ledgerAdmin, /\bXLSX_EXPORT\.read\s*\(/);
+  assert.match(ledgerAdmin, /const XLSX_EXPORT = window\.XLSX;/);
+  assert.match(ledgerAdmin, /delete window\.XLSX/);
+  assert.match(ledgerAdmin, /\$\('import-file'\)\.addEventListener/);
+  assert.match(ledgerAdmin, /new Worker\(XLSX_IMPORT_WORKER\)/);
+  assert.match(ledgerAdmin, /function readWorkbookInIsolatedWorker\(/);
+  assert.match(importWorker, /importScripts\('vendor\/xlsx-js-style-1\.2\.0\/xlsx\.min\.js'\)/);
+  assert.match(importWorker, /function preflightZip\(/);
+  assert.match(importWorker, /\['fetch', denyNetwork\]/);
+  assert.match(importWorker, /\['indexedDB', undefined\]/);
+  assert.match(importWorker, /XLSX\.read\(message\.buffer/);
+  assert.match(ledgerAdmin, /function readTrustedTemplateLayouts\(/);
+  assert.match(vendorReadme, /Never call `XLSX\.read` on the main admin page/);
   assert.match(ledgerAdmin, /\['trade_no', 'tradeNo', 'sequence_no', 'sequence'\]/);
   assert.match(ledgerAdmin, /Hidden:\s*2/);
   assert.match(ledgerAdmin, /'2F5B7C'/);
@@ -322,7 +346,7 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
   assert.match(ledgerAdmin, /\['pre_quantity', 'preQuantity', 'quantity', 'qty'\]/);
   assert.match(ledgerAdmin, /function corporateActionOutput\(event, field\)/);
   assert.match(ledgerAdmin, /function preserveTemplateWorkbookLayout\(/);
-  assert.match(ledgerAdmin, /XLSX\.CFB\.read\(new Uint8Array\(templateBuffer\)/);
+  assert.match(ledgerAdmin, /XLSX_EXPORT\.CFB\.read\(new Uint8Array\(templateBuffer\)/);
   assert.match(ledgerAdmin, /'sheetFormatPr'/);
   assert.match(ledgerAdmin, /'pageMargins'/);
   assert.match(ledgerAdmin, /'bookViews'/);
@@ -330,5 +354,10 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
   assert.match(ledgerAdmin, /function remapGeneratedCellStyles\(/);
   assert.match(ledgerAdmin, /templateStyleCount !== CANONICAL_CELL_STYLES\.length/);
   assert.match(ledgerAdmin, /writeXml\(generatedStyles\.entry, templateStyles\.xml\)/);
-  assert.match(ledgerAdmin, /XLSX\.write\(workbook/);
+  assert.match(ledgerAdmin, /XLSX_EXPORT\.write\(workbook/);
+  const vendor = await readFile(path.join(ROOT, 'assets/vendor/xlsx-js-style-1.2.0/xlsx.min.js'));
+  assert.equal(
+    createHash('sha384').update(vendor).digest('hex'),
+    '4cacdd631abfb7d5292eb25c210bb68697d083ea12a0954392159c4b8ceecd09b3413071e6048c8483570f6b86bf48f0',
+  );
 });

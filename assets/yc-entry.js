@@ -1,5 +1,5 @@
 /* YiCapital market-led entry experience.
-   Anonymous Guest receives no bearer token, so the existing content gate remains authoritative. */
+   Anonymous Guest receives no bearer token. Server APIs remain the only authorization authority. */
 (function () {
   'use strict';
 
@@ -35,18 +35,22 @@
   const copy = {
     tw: {
       language: '繁',
+      languageNav: '語言',
+      marketNav: '組合市場',
+      sloganLead: '成為少數，',
+      sloganAccent: '不隨多數',
       intro: '投資市場裡，真正賺錢的只有少數人。',
       fullHistory: '全部可追溯歷史 · 共同收市日',
       closes: '個共同收市日',
-      live: 'LIVE · VERIFIED SNAPSHOT',
-      review: 'LIVE · DATA REVIEW',
+      live: '即時 · 已驗證快照',
+      review: '即時 · 資料檢查',
       gap: '資料缺口',
       portfolio: '組合',
       benchmark: '基準',
       alpha: '相對收益',
-      authKicker: 'INVESTOR ACCESS',
-      authTitle: '進入 Dashboard',
-      authCopy: '登入解鎖完整研報與組合；Guest 保留目前的公開預覽權限。',
+      authKicker: '投資者入口',
+      authTitle: '進入工作台',
+      authCopy: '登入可管理帳戶、頭像與 Insights；訪客也可閱讀全部公開研究與組合。',
       login: '登入',
       register: '註冊',
       googleWait: 'Google 登入正在配置',
@@ -58,14 +62,14 @@
       password: '密碼',
       confirmPassword: '確認密碼',
       code: '6 位郵箱驗證碼',
-      continueLogin: '登入並進入 Dashboard',
+      continueLogin: '登入並進入工作台',
       createAccount: '創建帳號',
       continueEmail: '繼續使用郵箱',
       backOptions: '返回註冊方式',
-      verify: '驗證並進入 Dashboard',
+      verify: '驗證並進入工作台',
       completeGoogle: '完成 Google 註冊',
-      guest: '以 Guest 繼續',
-      guestNote: 'Guest 可瀏覽 Dashboard；完整研報、組合頁面與後台功能仍受限制。',
+      guest: '以訪客模式繼續',
+      guestNote: '訪客可瀏覽全部公開研究與組合；帳戶設定及管理後台仍需相應身份。',
       forgot: '忘記密碼？',
       resetTitle: '重設密碼',
       sendCode: '發送驗證碼',
@@ -76,48 +80,61 @@
       terms: '我同意《服務條款》',
       newsletter: '訂閱 Yi Capital Insights（可隨時取消）',
       googleNewsletter: '首次以 Google 建立帳號時訂閱 Insights（可隨時取消）',
-      legal: '繼續即表示你同意服務條款與私隱政策。',
+      legal: '只有建立新帳號時才會要求明確同意服務條款；登入或訪客瀏覽不視為同意。',
       required: '請完整填寫必填欄位。',
       mismatch: '兩次密碼不一致。',
       termsRequired: '必須同意服務條款才能註冊。',
       invalidCode: '請輸入 6 位數字驗證碼。',
       backendMissing: '身份服務暫時不可用。',
+      storeUnavailable: '帳號服務暫時繁忙，請稍後再試。',
       requestTimeout: '登入服務回應逾時，請重試。',
       networkError: '暫時無法連接登入服務，請檢查網絡後重試。',
       rateLimited: '登入嘗試過多，請稍後再試。',
       googleUnavailable: 'Google 登入暫時未能完成。請重試，或使用郵箱繼續。',
+      googleInvalid: 'Google 憑證無效，請重新登入。',
+      googleMismatch: '這個 Google 身份與既有帳號不匹配。',
+      googleSetupExpired: 'Google 註冊設定已過期，請重新登入。',
+      googleNotConfigured: 'Google 登入尚未配置，請使用郵箱繼續。',
       googleRetrying: 'Google 連線短暫中斷，正在自動重試…',
       googleChecking: '正在驗證 Google 帳號…',
       googleSetup: 'Google 身份已驗證，請設定用戶名。',
       codeSent: '驗證碼已發送，請檢查收件箱與垃圾郵件。',
-      signedIn: '登入成功，正在進入 Dashboard…',
-      guestEntering: '正在以 Guest 身份進入 Dashboard…',
+      signedIn: '登入成功，正在進入工作台…',
+      guestEntering: '正在以訪客身份進入工作台…',
       resetSent: '如郵箱已註冊，驗證碼將發送至該地址。',
       resetDone: '密碼已重設，請重新登入。',
       genericError: '暫時無法完成操作，請稍後重試。',
+      sessionExpired: '登入已過期，請重新登入。',
+      accountDisabled: '此帳號已停用，請聯絡網站營運者。',
+      signedOutElsewhere: '你已在另一個分頁登出。',
+      signOutFailed: '無法安全退出目前帳號，請重試。',
       adminDenied: '此 Google 帳號沒有管理員權限。',
-      dataPending: 'MARKET DATA SYNCHRONIZING',
+      dataPending: '市場資料同步中',
       dataUnavailable: '真實資料暫時不可用，未使用模擬數據。',
       scene: {
-        hk: { eyebrow: '01 / 03 · HONG KONG', market: 'Yi Capital HK', benchmark: 'HANG SENG INDEX · HSI' },
-        us: { eyebrow: '02 / 03 · UNITED STATES', market: 'Yi Capital US', benchmark: 'S&P 500' },
-        a: { eyebrow: '03 / 03 · A SHARE', market: 'Yi Capital A', benchmark: 'CSI 300' },
+        hk: { eyebrow: '01 / 03 · 香港', market: 'Yi Capital HK', benchmark: '恒生指數 · HSI' },
+        us: { eyebrow: '02 / 03 · 美國', market: 'Yi Capital US', benchmark: '標普 500' },
+        a: { eyebrow: '03 / 03 · A 股', market: 'Yi Capital A', benchmark: '滬深 300' },
       },
     },
     cn: {
       language: '简',
+      languageNav: '语言',
+      marketNav: '组合市场',
+      sloganLead: '成为少数，',
+      sloganAccent: '不随多数',
       intro: '投资市场里，真正赚钱的只有少数人。',
       fullHistory: '全部可追溯历史 · 共同收市日',
       closes: '个共同收市日',
-      live: 'LIVE · VERIFIED SNAPSHOT',
-      review: 'LIVE · DATA REVIEW',
+      live: '实时 · 已验证快照',
+      review: '实时 · 数据检查',
       gap: '数据缺口',
       portfolio: '组合',
       benchmark: '基准',
       alpha: '相对收益',
-      authKicker: 'INVESTOR ACCESS',
-      authTitle: '进入 Dashboard',
-      authCopy: '登录解锁完整研报与组合；Guest 保留目前的公开预览权限。',
+      authKicker: '投资者入口',
+      authTitle: '进入工作台',
+      authCopy: '登录可管理账户、头像与 Insights；访客也可阅读全部公开研究与组合。',
       login: '登录',
       register: '注册',
       googleWait: 'Google 登录正在配置',
@@ -129,14 +146,14 @@
       password: '密码',
       confirmPassword: '确认密码',
       code: '6 位邮箱验证码',
-      continueLogin: '登录并进入 Dashboard',
+      continueLogin: '登录并进入工作台',
       createAccount: '创建账号',
       continueEmail: '继续使用邮箱',
       backOptions: '返回注册方式',
-      verify: '验证并进入 Dashboard',
+      verify: '验证并进入工作台',
       completeGoogle: '完成 Google 注册',
-      guest: '以 Guest 继续',
-      guestNote: 'Guest 可浏览 Dashboard；完整研报、组合页面与后台功能仍受限制。',
+      guest: '以访客模式继续',
+      guestNote: '访客可浏览全部公开研究与组合；账户设置及管理后台仍需相应身份。',
       forgot: '忘记密码？',
       resetTitle: '重设密码',
       sendCode: '发送验证码',
@@ -147,36 +164,49 @@
       terms: '我同意《服务条款》',
       newsletter: '订阅 Yi Capital Insights（可随时取消）',
       googleNewsletter: '首次以 Google 建立账号时订阅 Insights（可随时取消）',
-      legal: '继续即表示你同意服务条款与隐私政策。',
+      legal: '只有创建新账号时才会要求明确同意服务条款；登录或访客浏览不视为同意。',
       required: '请完整填写必填字段。',
       mismatch: '两次密码不一致。',
       termsRequired: '必须同意服务条款才能注册。',
       invalidCode: '请输入 6 位数字验证码。',
       backendMissing: '身份服务暂时不可用。',
+      storeUnavailable: '账号服务暂时繁忙，请稍后再试。',
       requestTimeout: '登录服务响应超时，请重试。',
       networkError: '暂时无法连接登录服务，请检查网络后重试。',
       rateLimited: '登录尝试过多，请稍后再试。',
       googleUnavailable: 'Google 登录暂时未能完成。请重试，或使用邮箱继续。',
+      googleInvalid: 'Google 凭证无效，请重新登录。',
+      googleMismatch: '这个 Google 身份与现有账号不匹配。',
+      googleSetupExpired: 'Google 注册设置已过期，请重新登录。',
+      googleNotConfigured: 'Google 登录尚未配置，请使用邮箱继续。',
       googleRetrying: 'Google 连接短暂中断，正在自动重试…',
       googleChecking: '正在验证 Google 账号…',
       googleSetup: 'Google 身份已验证，请设置用户名。',
       codeSent: '验证码已发送，请检查收件箱与垃圾邮件。',
-      signedIn: '登录成功，正在进入 Dashboard…',
-      guestEntering: '正在以 Guest 身份进入 Dashboard…',
+      signedIn: '登录成功，正在进入工作台…',
+      guestEntering: '正在以访客身份进入工作台…',
       resetSent: '如邮箱已注册，验证码将发送至该地址。',
       resetDone: '密码已重设，请重新登录。',
       genericError: '暂时无法完成操作，请稍后重试。',
+      sessionExpired: '登录已过期，请重新登录。',
+      accountDisabled: '此账号已停用，请联系网站运营者。',
+      signedOutElsewhere: '你已在另一个标签页退出登录。',
+      signOutFailed: '无法安全退出当前账号，请重试。',
       adminDenied: '此 Google 账号没有管理员权限。',
-      dataPending: 'MARKET DATA SYNCHRONIZING',
+      dataPending: '市场数据同步中',
       dataUnavailable: '真实数据暂时不可用，未使用模拟数据。',
       scene: {
-        hk: { eyebrow: '01 / 03 · HONG KONG', market: 'Yi Capital HK', benchmark: 'HANG SENG INDEX · HSI' },
-        us: { eyebrow: '02 / 03 · UNITED STATES', market: 'Yi Capital US', benchmark: 'S&P 500' },
-        a: { eyebrow: '03 / 03 · A SHARE', market: 'Yi Capital A', benchmark: 'CSI 300' },
+        hk: { eyebrow: '01 / 03 · 香港', market: 'Yi Capital HK', benchmark: '恒生指数 · HSI' },
+        us: { eyebrow: '02 / 03 · 美国', market: 'Yi Capital US', benchmark: '标普 500' },
+        a: { eyebrow: '03 / 03 · A 股', market: 'Yi Capital A', benchmark: '沪深 300' },
       },
     },
     en: {
       language: 'EN',
+      languageNav: 'Language',
+      marketNav: 'Portfolio market',
+      sloganLead: 'Be Like Us,',
+      sloganAccent: 'Not Them',
       intro: 'Only a few make money in investing.',
       fullHistory: 'Full trackable history · common closes',
       closes: 'common closes',
@@ -188,7 +218,7 @@
       alpha: 'Relative return',
       authKicker: 'INVESTOR ACCESS',
       authTitle: 'Enter the Dashboard',
-      authCopy: 'Sign in for full research and portfolios. Guest keeps the existing restricted preview.',
+      authCopy: 'Sign in to manage your account, avatar and Insights. Guests can read all public research and portfolios.',
       login: 'Sign in',
       register: 'Register',
       googleWait: 'Google sign-in is being configured',
@@ -207,7 +237,7 @@
       verify: 'Verify and enter Dashboard',
       completeGoogle: 'Complete Google registration',
       guest: 'Continue as Guest',
-      guestNote: 'Guest can view the Dashboard; full research, portfolio pages and admin functions remain restricted.',
+      guestNote: 'Guests can browse all public research and portfolios. Account settings and administration still require the appropriate identity.',
       forgot: 'Forgot password?',
       resetTitle: 'Reset password',
       sendCode: 'Send verification code',
@@ -218,16 +248,21 @@
       terms: 'I agree to the Terms of Service',
       newsletter: 'Subscribe to Yi Capital Insights (unsubscribe anytime)',
       googleNewsletter: 'For a new Google account, subscribe to Insights (unsubscribe anytime)',
-      legal: 'By continuing, you agree to the Terms of Service and Privacy Policy.',
+      legal: 'Explicit Terms acceptance is required only when creating an account; signing in or browsing as Guest does not record consent.',
       required: 'Please complete all required fields.',
       mismatch: 'The passwords do not match.',
       termsRequired: 'You must accept the Terms of Service to register.',
       invalidCode: 'Enter the 6-digit verification code.',
       backendMissing: 'The identity service is temporarily unavailable.',
+      storeUnavailable: 'The account service is temporarily busy. Please try again later.',
       requestTimeout: 'The identity service timed out. Please try again.',
       networkError: 'Unable to reach the identity service. Check your connection and try again.',
       rateLimited: 'Too many sign-in attempts. Please try again later.',
       googleUnavailable: 'Google sign-in could not finish. Try again or continue with email.',
+      googleInvalid: 'The Google credential is invalid. Sign in again.',
+      googleMismatch: 'This Google identity does not match the existing account.',
+      googleSetupExpired: 'Google registration setup expired. Sign in again.',
+      googleNotConfigured: 'Google sign-in is not configured. Continue with email.',
       googleRetrying: 'The Google connection was interrupted. Retrying…',
       googleChecking: 'Verifying your Google account…',
       googleSetup: 'Google identity verified. Choose a username.',
@@ -237,6 +272,10 @@
       resetSent: 'If the email is registered, a verification code will be sent.',
       resetDone: 'Password reset. Sign in with the new password.',
       genericError: 'Unable to complete the request. Please try again.',
+      sessionExpired: 'Your session expired. Please sign in again.',
+      accountDisabled: 'This account is disabled. Contact the site operator.',
+      signedOutElsewhere: 'You signed out in another tab.',
+      signOutFailed: 'Unable to sign out of the current account safely. Try again.',
       adminDenied: 'This Google account does not have administrator access.',
       dataPending: 'MARKET DATA SYNCHRONIZING',
       dataUnavailable: 'Live data is unavailable. No simulated data is being shown.',
@@ -255,9 +294,19 @@
     login: locale === 'tw' ? '/login' : '/' + locale + '/login',
     terms: locale === 'tw' ? '/terms' : '/' + locale + '/terms',
   };
+  const termsConsentHtml = copy.terms
+    .replace('《服務條款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服務條款》</a>`)
+    .replace('《服务条款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服务条款》</a>`)
+    .replace('Terms of Service', `<a href="${paths.terms}" target="_blank" rel="noopener">Terms of Service</a>`);
   const languageBase = MODE === 'login'
     ? { tw: '/login', cn: '/cn/login', en: '/en/login' }
     : { tw: '/', cn: '/cn/', en: '/en/' };
+  const requestedReason = new URLSearchParams(location.search).get('reason');
+  const preservedReason = ['expired', 'disabled', 'signedout'].includes(requestedReason) ? requestedReason : '';
+  const preservedAuthHash = MODE === 'login' && location.hash === '#signup' ? '#signup' : '';
+  const languageHref = target => languageBase[target]
+    + (MODE === 'login' && preservedReason ? '?reason=' + encodeURIComponent(preservedReason) : '')
+    + preservedAuthHash;
 
   const root = document.createElement('div');
   root.className = 'yc-entry-root';
@@ -269,17 +318,17 @@
   root.innerHTML = `
     <div class="yc-entry-topbar">
       <a class="yc-entry-logo" href="${paths.home}" aria-label="YiCapital">Yi<b>Capital</b></a>
-      <nav class="yc-entry-languages" aria-label="Language">
-        <a href="${languageBase.tw}" ${locale === 'tw' ? 'aria-current="page"' : ''}>繁</a>
-        <a href="${languageBase.cn}" ${locale === 'cn' ? 'aria-current="page"' : ''}>简</a>
-        <a href="${languageBase.en}" ${locale === 'en' ? 'aria-current="page"' : ''}>EN</a>
+      <nav class="yc-entry-languages" aria-label="${copy.languageNav}">
+        <a href="${languageHref('tw')}" ${locale === 'tw' ? 'aria-current="page"' : ''}>繁</a>
+        <a href="${languageHref('cn')}" ${locale === 'cn' ? 'aria-current="page"' : ''}>简</a>
+        <a href="${languageHref('en')}" ${locale === 'en' ? 'aria-current="page"' : ''}>EN</a>
       </nav>
     </div>
     <main class="yc-entry-shell">
       <section class="yc-entry-story" aria-labelledby="yc-entry-slogan">
         <div class="yc-entry-intro">
           <div class="yc-entry-eyebrow" id="yc-entry-eyebrow">${copy.scene.hk.eyebrow}</div>
-          <h1 class="yc-entry-title" id="yc-entry-slogan">Be Like Us, <span>Not Them</span></h1>
+          <h1 class="yc-entry-title" id="yc-entry-slogan">${copy.sloganLead} <span>${copy.sloganAccent}</span></h1>
           <p class="yc-entry-subtitle">${copy.intro}</p>
         </div>
         <div class="yc-entry-chart">
@@ -308,7 +357,7 @@
               <div class="yc-entry-metric-value" id="yc-entry-alpha">—</div>
             </div>
           </div>
-          <div class="yc-entry-scene-nav" aria-label="Portfolio market">
+          <div class="yc-entry-scene-nav" aria-label="${copy.marketNav}">
             <button class="yc-entry-scene-btn" data-scene-index="0" aria-pressed="true">01 · HK</button>
             <button class="yc-entry-scene-btn" data-scene-index="1" aria-pressed="false">02 · US</button>
             <button class="yc-entry-scene-btn" data-scene-index="2" aria-pressed="false">03 · A</button>
@@ -327,7 +376,8 @@
           <div class="yc-entry-google" id="yc-entry-google"></div>
           <div class="yc-entry-google-note" id="yc-entry-google-note">${copy.googleWait}</div>
           <div class="yc-entry-google-consent" id="yc-entry-google-consent">
-            <label class="yc-entry-check"><input id="yc-entry-google-newsletter" type="checkbox" checked><span>${copy.googleNewsletter}</span></label>
+            <label class="yc-entry-check"><input id="yc-entry-google-newsletter" type="checkbox"><span>${copy.googleNewsletter}</span></label>
+            <label class="yc-entry-check"><input id="yc-entry-google-terms" type="checkbox"><span>${termsConsentHtml}</span></label>
           </div>
           <div class="yc-entry-divider" id="yc-entry-divider">${copy.orEmail}</div>
           <form id="yc-entry-form" novalidate></form>
@@ -410,8 +460,8 @@
         form.innerHTML = `
           <div class="yc-entry-form-grid">
             ${field('yc-entry-reset-code', copy.code, 'text', 'one-time-code', true, 'inputmode="numeric" maxlength="6" required')}
-            ${field('yc-entry-reset-p1', copy.password, 'password', 'new-password', false, 'required minlength="6"')}
-            ${field('yc-entry-reset-p2', copy.confirmPassword, 'password', 'new-password', false, 'required minlength="6"')}
+            ${field('yc-entry-reset-p1', copy.password, 'password', 'new-password', false, 'required minlength="15" maxlength="128"')}
+            ${field('yc-entry-reset-p2', copy.confirmPassword, 'password', 'new-password', false, 'required minlength="15" maxlength="128"')}
           </div>
           <button class="yc-entry-submit" type="submit">${copy.resetPassword}</button>
           <div class="yc-entry-admin-row"><button class="yc-entry-link-button" type="button" id="yc-entry-reset-back">${copy.backLogin}</button></div>`;
@@ -441,10 +491,10 @@
         form.innerHTML = `
           <div class="yc-entry-form-grid">
             ${field('yc-entry-user', copy.username, 'text', 'username', true, 'required maxlength="24"')}
-            ${field('yc-entry-password', copy.password, 'password', 'new-password', true, 'required minlength="6"')}
+            ${field('yc-entry-password', copy.password, 'password', 'new-password', true, 'required minlength="15" maxlength="128"')}
           </div>
-          <label class="yc-entry-check"><input id="yc-entry-newsletter" type="checkbox" checked><span>${copy.newsletter}</span></label>
-          <label class="yc-entry-check"><input id="yc-entry-terms" type="checkbox" checked><span>${copy.terms.replace('《服務條款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服務條款》</a>`).replace('《服务条款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服务条款》</a>`).replace('Terms of Service', `<a href="${paths.terms}" target="_blank" rel="noopener">Terms of Service</a>`)}</span></label>
+          <label class="yc-entry-check"><input id="yc-entry-newsletter" type="checkbox"><span>${copy.newsletter}</span></label>
+          <label class="yc-entry-check"><input id="yc-entry-terms" type="checkbox"><span>${termsConsentHtml}</span></label>
           <button class="yc-entry-submit" type="submit">${setupToken ? copy.completeGoogle : copy.createAccount}</button>
           ${setupToken ? '' : `<div class="yc-entry-admin-row"><button class="yc-entry-link-button" type="button" id="yc-entry-signup-back">${copy.backOptions}</button></div>`}`;
         const signupBack = $('yc-entry-signup-back');
@@ -508,6 +558,8 @@
           ? copy.rateLimited
           : payload.code === 'google_keys_unavailable'
             ? copy.googleUnavailable
+            : payload.code === 'auth_store_unavailable'
+              ? copy.storeUnavailable
             : localizeServerError(payload.error)
         );
         requestError.code = String(payload.code || 'request_failed');
@@ -535,7 +587,13 @@
     if (/郵箱.*註冊|邮箱.*注册/.test(raw)) return locale === 'en' ? 'This email is already registered.' : '该邮箱已被注册。';
     if (/用戶名.*存在|用户名.*存在|用戶名.*佔用|用户名.*占用/.test(raw)) return locale === 'en' ? 'That username is unavailable.' : '该用户名不可用。';
     if (/驗證碼|验证码/.test(raw)) return locale === 'en' ? 'The verification code is invalid or expired.' : '验证码无效或已过期。';
-    if (/google/i.test(key)) return locale === 'en' ? raw.replace(/未配置/, 'is not configured: ') : raw;
+    if (/google/i.test(key)) {
+      if (/憑證無效|凭证无效/.test(raw)) return copy.googleInvalid;
+      if (/身份.*不匹配/.test(raw)) return copy.googleMismatch;
+      if (/設置已過期|设置已过期/.test(raw)) return copy.googleSetupExpired;
+      if (/未配置/.test(raw)) return copy.googleNotConfigured;
+      return copy.googleUnavailable;
+    }
     return copy.genericError;
   }
 
@@ -557,6 +615,7 @@
   function sessionIn(payload) {
     if (!validSession(payload)) throw new Error(copy.genericError);
     if (authMode === 'admin' && payload.role !== 'admin') throw new Error(copy.adminDenied);
+    ['yc-token', 'yc-role', 'yc-user', 'yc-guest'].forEach(key => sessionStorage.removeItem(key));
     localStorage.removeItem('yc-guest');
     localStorage.setItem('yc-token', payload.token);
     localStorage.setItem('yc-role', payload.role || 'guest');
@@ -565,7 +624,38 @@
     enterDashboard(payload.role === 'admin' ? 'admin' : 'dashboard');
   }
 
-  guestButton.addEventListener('click', () => {
+  async function revokeCurrentSession() {
+    const currentToken = String(localStorage.getItem('yc-token') || sessionStorage.getItem('yc-token') || '');
+    if (!/^[a-f0-9]{64}$/i.test(currentToken)) return;
+    if (!API) throw new Error(copy.signOutFailed);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(API + '/api/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + currentToken },
+        body: '{}',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(copy.signOutFailed);
+    } catch (error) {
+      throw new Error(copy.signOutFailed);
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  guestButton.addEventListener('click', async () => {
+    guestButton.disabled = true;
+    setMessage('');
+    try {
+      await revokeCurrentSession();
+    } catch (error) {
+      guestButton.disabled = false;
+      setMessage(error && error.message ? error.message : copy.signOutFailed, 'error');
+      return;
+    }
     ['yc-token', 'yc-role', 'yc-user'].forEach(key => {
       localStorage.removeItem(key);
       sessionStorage.removeItem(key);
@@ -673,13 +763,17 @@
   });
 
   async function handleGoogle(response) {
-    setMessage(copy.googleChecking);
     try {
       const googleNewsletter = $('yc-entry-google-newsletter');
+      const googleTerms = $('yc-entry-google-terms');
+      if (authMode === 'signup' && (!googleTerms || !googleTerms.checked)) {
+        throw new Error(copy.termsRequired);
+      }
+      setMessage(copy.googleChecking);
       const googleRequest = {
         credential: response && response.credential,
-        autoCreate: authMode !== 'admin',
-        terms: true,
+        autoCreate: authMode === 'signup',
+        terms: authMode === 'signup' && googleTerms.checked,
         newsletter: googleNewsletter ? googleNewsletter.checked : false,
         locale,
       };
@@ -727,6 +821,7 @@
       size: 'large',
       shape: 'rectangular',
       text: authMode === 'signup' ? 'signup_with' : 'continue_with',
+      locale: locale === 'tw' ? 'zh_TW' : locale === 'cn' ? 'zh_CN' : 'en',
       width: Math.min(340, Math.max(240, Math.round(googleBox.getBoundingClientRect().width || 320))),
     });
   }
@@ -739,7 +834,7 @@
     divider.style.display = providersVisible ? 'flex' : 'none';
     googleBox.style.display = providersVisible && GCID ? 'flex' : 'none';
     googleNote.style.display = providersVisible && !GCID ? 'block' : 'none';
-    googleConsent.style.display = providersVisible && GCID ? 'block' : 'none';
+    googleConsent.style.display = providersVisible && GCID && authMode === 'signup' ? 'block' : 'none';
     if (providersVisible && GCID) {
       if (window.google && window.google.accounts) renderGoogleButton();
       else loadGoogle();
@@ -751,7 +846,8 @@
     if (googleLoading || !GCID) return;
     googleLoading = true;
     const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
+    const googleLocale = locale === 'tw' ? 'zh_TW' : locale === 'cn' ? 'zh_CN' : 'en';
+    script.src = 'https://accounts.google.com/gsi/client?hl=' + encodeURIComponent(googleLocale);
     script.async = true;
     script.defer = true;
     script.onload = renderGoogleButton;
@@ -764,6 +860,10 @@
   }
 
   renderForm();
+  const entryReason = new URLSearchParams(location.search).get('reason');
+  if (entryReason === 'expired') setMessage(copy.sessionExpired, 'error');
+  else if (entryReason === 'disabled') setMessage(copy.accountDisabled, 'error');
+  else if (entryReason === 'signedout') setMessage(copy.signedOutElsewhere, 'success');
 
   /* ── Market data and trailing chart ───────────────────────────── */
   const scenes = [
