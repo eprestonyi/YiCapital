@@ -136,7 +136,8 @@ test('UI uses one explicit whole-ledger confirmation and no per-row selection pa
   const confirm = functionBlock(SOURCE, 'confirmImport');
   assert.match(confirm, /replaceAll:\s*true/);
   assert.match(confirm, /confirmation:\s*\{\s*replaceAll:\s*true,\s*reason\s*\}/);
-  assert.match(confirm, /expectedLedgerRevision:\s*state\.importExpectedRevision/);
+  assert.match(confirm, /const expectedLedgerRevision = state\.importExpectedRevision/);
+  assert.match(confirm, /body:\s*JSON\.stringify\(\{[\s\S]*expectedLedgerRevision,/);
   assert.doesNotMatch(confirm, /selectedOperationIds/);
   assert.doesNotMatch(SOURCE, /function selectedOperationIds\(|function updateImportSelection\(/);
   assert.doesNotMatch(SOURCE, /只讀 Snapshot，不可反向同步/);
@@ -153,4 +154,37 @@ test('UI uses one explicit whole-ledger confirmation and no per-row selection pa
   assert.equal(api.importConfirmationState({
     importId: 'import-1', blockerCount: 0, acknowledged: true, reason: 'checked',
   }).canConfirm, true);
+});
+
+test('whole-ledger confirmation exposes visible busy, receipt, error, and lock states', () => {
+  assert.match(HTML, /id=["']confirm-import["'][^>]*aria-busy=["']false["']/);
+  assert.match(HTML, /id=["']import-selection["'][^>]*role=["']status["'][^>]*aria-live=["']polite["']/);
+  assert.match(HTML, /\.danger-solid:disabled\{/);
+  assert.match(HTML, /#import-selection\[data-state="success"\]/);
+  assert.match(HTML, /#import-preview\.processed \.import-op/);
+
+  const confirm = functionBlock(SOURCE, 'confirmImport');
+  assert.match(confirm, /if \(state\.importConfirming \|\| state\.importProcessed\) return/);
+  assert.match(confirm, /state\.importConfirming = true/);
+  assert.match(confirm, /setImportFeedback\('active'/);
+  assert.match(confirm, /state\.importProcessed = true/);
+  assert.match(confirm, /classList\.add\('processed'\)/);
+  assert.match(confirm, /setImportFeedback\('success', receipt\.text\)/);
+  assert.match(confirm, /setImportFeedback\('error'/);
+  assert.match(confirm, /updateImportConfirmation\(\)/);
+});
+
+test('whole-ledger success receipt contains revision, replacement count, and Hong Kong time', () => {
+  const receipt = testApi().importReceipt({
+    ledgerRevision: 115,
+    eventCount: 37,
+  }, 0, '2026-08-05T15:09:38.000Z');
+
+  assert.equal(receipt.revision, 115);
+  assert.equal(receipt.replaced, 37);
+  assert.match(receipt.time, /2026/);
+  assert.match(receipt.time, /23:09:38/);
+  assert.match(receipt.text, /Ledger Revision 115/);
+  assert.match(receipt.text, /37 events/);
+  assert.match(receipt.text, /Preview 已處理並鎖定/);
 });

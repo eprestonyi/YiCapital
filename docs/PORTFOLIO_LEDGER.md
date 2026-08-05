@@ -71,7 +71,7 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 避免把 JavaScript/SQLite 二进制浮点当作账务事实。现金可以为负；系统照实用于后续
 现金、总资产和 NAV 运算，不产生 warning、确认项或 blocker，也不得自动补融资事件。
 
-## Amount 边界与派息核实
+## Amount 边界与股息／公司行动核实
 
 `Amount` 是券商账单上的最终结算现金，已经包含任何税费影响。BUY、SELL、DIVIDEND
 和其他现金事件都只按这个值入账；`CPS = Amount / Quantity` 由后台计算，不能作为
@@ -81,6 +81,13 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 中必须保持 NULL；管理员看到证券、除息日、支付日和来源证据后，手工输入券商实际
 到账 Amount，系统才创建 `source=AUTOMATION` 的 Pending。这个动作不会自动 Confirm。
 重复行情抓取按稳定的市场事实去重，抓取时间或查询窗口变化不会制造重复候选。
+
+公司行动信号写入 `ledger_corporate_action_candidates`，只带事件存在性、日期、类型和
+比例线索，不带可入账现金。管理员必须明确输入行动前 Quantity、Post Ticker、Post
+Quantity、独立的 signed Cash Change（可为 0）或选择忽略；系统不做 cost allocation。
+同一公司同一月份的每个 provider event 使用独立 `source_event_id`，必须逐笔处理。
+已录入与已忽略候选在独立 RESOLVED 视图保留；忽略/驳回项可重新打开，已转入 Pending
+或 Confirmed 的项目通过其对应事件建立 correction Pending，旧版本不覆盖。
 
 ## Excel 双向同步
 
@@ -129,9 +136,13 @@ BUY、SELL 或 CAPITAL；这三类只能由后台人工或签名 Excel 进入 Pe
 
 `(portfolio, source_system, source_account, source_event_id)`
 
-重复 webhook/job 不会重复入账。自动化只负责发现和规范化，不自动 Confirm。派息
-检测还会回放扫描窗口内曾经持有过的证券，避免除息后卖出导致漏报；资格本身仍标记
-为待人工核实，不由行情源自动判定。
+重复 webhook/job 不会重复入账。自动化只负责发现和规范化，不自动 Confirm。股息／
+公司行动首次启用及每次 ledger revision 改变时会扫描完整正持仓历史；成功后按 45 日
+重叠窗口增量扫描。任何标的或 D1 写入失败都保留 `PARTIAL` checkpoint 并继续完整重试，
+不会显示为 COMPLETE。候选只代表需要核实的信号；最终资格、Amount 与数量转换不由
+行情源自动判定。Yahoo chart 当前结构化覆盖 US/HK 股息与 split；Tushare `dividend`
+和 `namechange` 覆盖 A 股股息、送转与名称变更；并购、分拆和名称变更等来源未结构化
+覆盖的市场在 `sourceCoverage` 中明确标为 `PARTIAL_MANUAL_REVIEW_REQUIRED`。
 
 ## D1 派生投影与原子发布
 
@@ -203,6 +214,11 @@ NAV/price 不作为迁移 seed，因此没有 historical NAV/prices 的 operatio
 - `GET /api/admin/ledger/dividends?portfolio=us`
 - `POST /api/admin/ledger/dividends/verify`
 - `POST /api/admin/ledger/dividends/dismiss`
+- `GET /api/admin/ledger/actions?portfolio=us&state=ALL`
+- `POST /api/admin/ledger/actions/resolve`
+- `POST /api/admin/ledger/actions/reopen`
+- `POST /api/admin/ledger/events/correction`
+- `GET /api/admin/ledger/events/history?portfolio=us&lineageId=...`
 - `POST /api/admin/ledger/source`
 - `POST /api/admin/ledger/migration/preview`
 - `POST /api/admin/ledger/migration/confirm`

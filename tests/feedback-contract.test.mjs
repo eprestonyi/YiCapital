@@ -22,7 +22,7 @@ function testEnv(overrides = {}) {
         const result = query.includes('FROM ledger_outbox')
           ? { pending: 0 }
           : { count: query.includes("'ledger_portfolios'")
-            ? 18
+            ? 22
             : query.includes("'auth_account_revocations'")
               ? 3
               : query.includes("name = 'auth_rate_limits'")
@@ -318,7 +318,7 @@ test('ledger Excel UI isolates external parsing while keeping export and print l
     read('assets/vendor/xlsx-js-style-1.2.0/README.md'),
   ]);
   assert.match(page, /assets\/vendor\/xlsx-js-style-1\.2\.0\/xlsx\.min\.js/);
-  assert.match(page, /yc-ledger-admin\.js\?v=20260805f/);
+  assert.match(page, /yc-ledger-admin\.js\?v=20260805g/);
   assert.match(page, /data-purpose="excel-export-only"/);
   assert.doesNotMatch(page, /cdn\.jsdelivr\.net|unpkg\.com/);
   assert.doesNotMatch(ledgerAdmin, /cdn\.jsdelivr\.net|unpkg\.com/);

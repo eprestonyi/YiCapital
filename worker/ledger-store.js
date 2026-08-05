@@ -162,6 +162,17 @@ function canonicalEvent(raw, portfolio) {
     }
     if (candidateId) event.amount_status = 'ADMIN_VERIFIED';
   }
+  if (type === 'CORPORATE_ACTION') {
+    const candidateId = String(raw.corporate_action_candidate_id || '').trim();
+    if (candidateId) {
+      event.corporate_action_candidate_id = candidateId.slice(0, 200);
+      event.action_status = 'ADMIN_VERIFIED';
+    }
+    for (const key of ['record_date', 'detected_action_date']) {
+      const value = optionalCandidateDate(raw[key], key);
+      if (value) event[key] = value;
+    }
+  }
   const problems = validationProblems(validateLedgerEvent(event));
   const errors = problems.filter(item => ['ERROR', 'FATAL'].includes(problemSeverity(item)));
   if (errors.length) throw new LedgerHttpError(422, '事件校驗失敗', errors.map(problemMessage));
@@ -240,6 +251,7 @@ function dividendCandidateItem(row) {
   if (!row) return null;
   return {
     candidateId: row.candidate_id,
+    candidateType: 'DIVIDEND',
     portfolio: row.portfolio_id,
     sourceRecordId: row.source_record_id,
     sourceSystem: row.source_system,
@@ -253,6 +265,32 @@ function dividendCandidateItem(row) {
     // Amount exists first in Pending after an administrator enters it.
     amount: null,
     amountStatus: 'PENDING_VERIFICATION',
+    status: row.status,
+    version: Number(row.version),
+    evidence: parseJson(row.evidence_json, {}),
+    contentSha256: row.content_sha256,
+    detectedAt: Number(row.detected_at),
+    createdAt: Number(row.created_at),
+    convertedPendingId: row.converted_pending_id,
+    resolvedBy: row.resolved_by,
+    resolvedAt: row.resolved_at == null ? null : Number(row.resolved_at),
+    resolutionNote: row.resolution_note,
+  };
+}
+function corporateActionCandidateItem(row) {
+  if (!row) return null;
+  return {
+    candidateId: row.candidate_id,
+    candidateType: 'CORPORATE_ACTION',
+    portfolio: row.portfolio_id,
+    sourceRecordId: row.source_record_id,
+    sourceSystem: row.source_system,
+    sourceEventId: row.source_event_id,
+    ticker: row.ticker,
+    name: row.security_name,
+    actionDate: row.action_date,
+    recordDate: row.record_date,
+    actionTypeHint: row.action_type_hint,
     status: row.status,
     version: Number(row.version),
     evidence: parseJson(row.evidence_json, {}),
@@ -910,11 +948,15 @@ async function createPending(db, portfolio, rawEvent, actor, options = {}) {
   const event = canonicalEvent(rawEvent, portfolio);
   event.status = 'pending';
   const source = SOURCES.has(upper(options.source)) ? upper(options.source) : 'MANUAL';
-  if (['MANUAL', 'EXCEL'].includes(source) && !MANUAL_EVENT_TYPES.has(event.event_type)) {
+  const isValidatedCorrection = options.allowCorrection === true &&
+    Boolean(options.baseEventId) && Boolean(options.lineageId);
+  if (!isValidatedCorrection && ['MANUAL', 'EXCEL'].includes(source) &&
+      !MANUAL_EVENT_TYPES.has(event.event_type)) {
     throw new LedgerHttpError(422,
       '人工新增只允許交易和股東申購/贖回；股息、公司行動、負債與基金行動必須由自動來源進入 Pending。');
   }
-  if (source === 'AUTOMATION' && !AUTOMATION_EVENT_TYPES.has(event.event_type)) {
+  if (!isValidatedCorrection && source === 'AUTOMATION' &&
+      !AUTOMATION_EVENT_TYPES.has(event.event_type)) {
     throw new LedgerHttpError(422,
       '自動來源只允許股息、公司行動、負債與基金行動；BUY、SELL、CAPITAL 必須由人工或簽名 Excel 進入 Pending。');
   }
@@ -949,14 +991,80 @@ async function createPending(db, portfolio, rawEvent, actor, options = {}) {
       INSERT INTO ledger_audit_log (
         audit_id, portfolio_id, actor_type, actor_ref, action,
         target_type, target_id, before_json, after_json, metadata_json, created_at
-      ) VALUES (?, ?, ?, ?, 'PENDING_CREATED', 'PENDING', ?, NULL, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 'PENDING', ?, NULL, ?, ?, ?)
     `).bind(
       auditId, portfolio, source === 'AUTOMATION' ? 'SYSTEM' : 'ADMIN', actor,
-      pendingId, payload, stableJson({ source, importId: options.importId || null }), timestamp
+      isValidatedCorrection ? 'EVENT_CORRECTION_STAGED' : 'PENDING_CREATED',
+      pendingId, payload, stableJson({
+        source,
+        importId: options.importId || null,
+        baseEventId: options.baseEventId || null,
+        baseEventVersion: options.baseEventVersion || null,
+      }), timestamp
     ),
   ]);
   const row = await dbFirst(db, 'SELECT * FROM ledger_pending WHERE pending_id = ?', [pendingId]);
   return { item: pendingItem(row), duplicate: false };
+}
+
+async function stageEventCorrection(db, body, actor) {
+  const portfolio = portfolioId(body.portfolio);
+  const eventId = String(body.eventId || body.event_id || '').trim();
+  const expectedEventVersion = Number(body.expectedEventVersion ?? body.expected_event_version);
+  const expectedLedgerRevision = Number(body.expectedLedgerRevision ?? body.expected_ledger_revision);
+  if (!eventId) throw new LedgerHttpError(422, 'eventId 必須明確指定');
+  if (!Number.isInteger(expectedEventVersion) || expectedEventVersion < 1) {
+    throw new LedgerHttpError(422, 'expectedEventVersion 必須明確指定');
+  }
+  if (!Number.isInteger(expectedLedgerRevision) || expectedLedgerRevision < 0) {
+    throw new LedgerHttpError(422, 'expectedLedgerRevision 必須明確指定');
+  }
+  const state = await portfolioRow(db, portfolio);
+  if (Number(state.ledger_revision) !== expectedLedgerRevision) {
+    throw new LedgerHttpError(409, '賬本 revision 已變更，請刷新後再修改');
+  }
+  const events = await activeEvents(db, portfolio, expectedLedgerRevision);
+  const base = events.find(item => item.eventId === eventId);
+  if (!base) throw new LedgerHttpError(409, '原事件已不是 active event，請刷新後再修改');
+  if (Number(base.eventVersion) !== expectedEventVersion) {
+    throw new LedgerHttpError(409, '原事件版本已變更，請刷新後再修改');
+  }
+  const replacement = canonicalEvent(body.event, portfolio);
+  if (replacement.event_type !== base.eventType) {
+    throw new LedgerHttpError(422, '修訂不能改變事件類型；如需改類型請用整賬本 Excel Preview');
+  }
+  const existing = await dbFirst(db, `
+    SELECT * FROM ledger_pending
+    WHERE portfolio_id = ? AND base_event_id = ? AND status = 'PENDING'
+    ORDER BY created_at DESC LIMIT 1
+  `, [portfolio, eventId]);
+  if (existing) {
+    return { duplicate: true, item: pendingItem(existing), ledgerRevision: expectedLedgerRevision };
+  }
+  const payloadHash = await canonicalHash(replacement);
+  const created = await createPending(db, portfolio, replacement, actor, {
+    source: SOURCES.has(upper(base.source)) ? upper(base.source) : 'MANUAL',
+    sourceRef: base.sourceRef || `event:${eventId}`,
+    idempotencyKey: `event-correction:${eventId}:${expectedEventVersion}:${payloadHash}`,
+    lineageId: base.lineageId,
+    baseEventId: base.eventId,
+    baseEventVersion: base.eventVersion,
+    allowCorrection: true,
+  });
+  return { duplicate: created.duplicate, item: created.item, ledgerRevision: expectedLedgerRevision };
+}
+
+async function listEventHistory(db, url) {
+  const portfolio = portfolioId(url.searchParams.get('portfolio'));
+  const lineageId = String(url.searchParams.get('lineageId') || '').trim();
+  if (!lineageId) throw new LedgerHttpError(422, 'lineageId 必須明確指定');
+  const rows = await dbAll(db, `
+    SELECT * FROM ledger_events
+    WHERE portfolio_id = ? AND lineage_id = ?
+    ORDER BY event_version DESC, ledger_revision DESC
+    LIMIT 200
+  `, [portfolio, lineageId]);
+  return { ok: true, portfolio, lineageId, versions: rows.map(eventItem) };
 }
 
 function optionalCandidateDate(value, field) {
@@ -1052,6 +1160,93 @@ async function canonicalDividendCandidate(raw, requestedPortfolio, detectedAtVal
   };
 }
 
+function candidateObservationStatement(db, candidate, candidateType) {
+  const observationId = `lco_${candidateType === 'DIVIDEND' ? 'div' : 'corp'}_` +
+    `${candidate.candidateId.replace(/^[^_]+_/, '').slice(0, 22)}_${candidate.contentSha256.slice(0, 16)}`;
+  return db.prepare(`
+    INSERT INTO ledger_candidate_observations (
+      observation_id, portfolio_id, candidate_type, candidate_id,
+      source_system, source_event_id, content_sha256, payload_json,
+      evidence_json, observed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(candidate_type, candidate_id, content_sha256) DO NOTHING
+  `).bind(
+    observationId, candidate.portfolio, candidateType, candidate.candidateId,
+    candidate.source_system, candidate.source_event_id, candidate.contentSha256,
+    candidate.payloadJson, candidate.evidenceJson, candidate.detectedAt,
+  );
+}
+
+async function canonicalCorporateActionCandidate(raw, requestedPortfolio, detectedAtValue) {
+  const portfolio = portfolioId(requestedPortfolio);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new LedgerHttpError(422, 'corporate action candidate 格式無效');
+  }
+  if (raw.cash_change != null || raw.amount != null || raw.net_cash != null) {
+    throw new LedgerHttpError(422, '公司行動候選不得包含現金；Cash Change 只能由管理員核實');
+  }
+  if (raw.portfolio && portfolioId(raw.portfolio) !== portfolio) {
+    throw new LedgerHttpError(422, '公司行動候選 portfolio 不一致');
+  }
+  const evidence = raw.evidence && typeof raw.evidence === 'object' &&
+    !Array.isArray(raw.evidence) ? raw.evidence : {};
+  if (evidenceContainsProviderMoney(evidence)) {
+    throw new LedgerHttpError(422, '公司行動候選 evidence 不得保存供應商現金、稅或費用');
+  }
+  const sourceSystem = String(raw.source_system || raw.sourceSystem || evidence.source || '')
+    .trim().slice(0, 100);
+  const sourceEventId = String(raw.source_event_id || raw.sourceEventId || '')
+    .trim().slice(0, 200);
+  const ticker = upper(raw.ticker).slice(0, 32);
+  const name = String(raw.name || raw.security_name || ticker).trim().slice(0, 200) || ticker;
+  if (!sourceSystem || !sourceEventId || !ticker) {
+    throw new LedgerHttpError(422, '公司行動候選缺少 source、sourceEventId 或 ticker');
+  }
+  const actionDate = optionalCandidateDate(
+    raw.action_date || raw.actionDate || raw.effective_date,
+    'action_date',
+  );
+  if (!actionDate) throw new LedgerHttpError(422, '公司行動候選必須有 action_date');
+  const recordDate = optionalCandidateDate(raw.record_date || raw.recordDate, 'record_date');
+  const actionTypeHint = upper(raw.action_type_hint || raw.actionTypeHint || 'UNKNOWN');
+  if (!['SPLIT', 'SPINOFF', 'RENAME', 'MERGER', 'UNKNOWN'].includes(actionTypeHint)) {
+    throw new LedgerHttpError(422, '公司行動候選 action_type_hint 無效');
+  }
+  const detectedCandidate = detectedAtValue ?? raw.detected_at ?? raw.detectedAt ?? now();
+  const parsedDetectedAt = typeof detectedCandidate === 'number'
+    ? detectedCandidate : Date.parse(String(detectedCandidate));
+  if (!Number.isFinite(parsedDetectedAt) || parsedDetectedAt <= 0) {
+    throw new LedgerHttpError(422, 'detected_at 無效');
+  }
+  const detectedAt = Math.trunc(parsedDetectedAt);
+  const payload = {
+    schema_version: String(raw.schema_version || 'corporate-action-candidate-v1'),
+    event_type: 'CORPORATE_ACTION',
+    portfolio,
+    source_system: sourceSystem,
+    source_event_id: sourceEventId,
+    ticker,
+    name,
+    action_date: actionDate,
+    record_date: recordDate,
+    action_type_hint: actionTypeHint,
+    cash_change: null,
+    amount_status: 'ADMIN_VERIFICATION_REQUIRED',
+  };
+  const contentSha256 = await sha256Hex(stableJson(payload));
+  const identitySha256 = await sha256Hex(`${portfolio}\n${sourceSystem}\n${sourceEventId}`);
+  return {
+    ...payload,
+    evidence,
+    evidenceJson: stableJson(evidence),
+    payloadJson: stableJson(payload),
+    contentSha256,
+    candidateId: `lca_${identitySha256.slice(0, 40)}`,
+    sourceRecordId: `lsr_ca_${identitySha256.slice(0, 36)}`,
+    detectedAt,
+  };
+}
+
 /**
  * Persist read-only provider signals in the dividend verification inbox.
  * Each candidate is isolated so one malformed security cannot block the rest
@@ -1076,6 +1271,7 @@ export async function persistDividendCandidates(
         WHERE portfolio_id = ? AND source_system = ? AND source_event_id = ?
       `, [portfolio, candidate.source_system, candidate.source_event_id]);
       if (existing) {
+        await candidateObservationStatement(db, candidate, 'DIVIDEND').run();
         results.push({
           candidate: dividendCandidateItem(existing),
           inserted: false,
@@ -1142,6 +1338,7 @@ export async function persistDividendCandidates(
           candidate.candidateId,
           candidate.contentSha256,
         ),
+        candidateObservationStatement(db, candidate, 'DIVIDEND'),
       ]);
       const stored = await dbFirst(db, `
         SELECT * FROM ledger_dividend_candidates
@@ -1185,6 +1382,282 @@ export async function persistDividendCandidates(
   };
 }
 
+export async function persistCorporateActionCandidates(
+  env,
+  requestedPortfolio,
+  rawCandidates,
+  options = {},
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const candidates = Array.isArray(rawCandidates) ? rawCandidates : [];
+  const results = [];
+  for (const raw of candidates) {
+    try {
+      const candidate = await canonicalCorporateActionCandidate(
+        raw, portfolio, options.detectedAt,
+      );
+      const existing = await dbFirst(db, `
+        SELECT * FROM ledger_corporate_action_candidates
+        WHERE portfolio_id = ? AND source_system = ? AND source_event_id = ?
+      `, [portfolio, candidate.source_system, candidate.source_event_id]);
+      if (existing) {
+        await candidateObservationStatement(db, candidate, 'CORPORATE_ACTION').run();
+        results.push({
+          candidate: corporateActionCandidateItem(existing),
+          inserted: false,
+          duplicate: existing.content_sha256 === candidate.contentSha256,
+          conflict: existing.content_sha256 !== candidate.contentSha256,
+        });
+        continue;
+      }
+      const timestamp = now();
+      const auditId = `lau_ca_${candidate.candidateId.slice(4)}`;
+      const batch = await db.batch([
+        db.prepare(`
+          INSERT INTO ledger_source_records (
+            source_record_id, portfolio_id, source_system, source_account,
+            source_event_id, event_type, trade_date, payload_json,
+            evidence_json, content_sha256, received_at
+          ) VALUES (?, ?, ?, '', ?, 'CORPORATE_ACTION', ?, ?, ?, ?, ?)
+          ON CONFLICT(portfolio_id, source_system, source_account, source_event_id)
+          DO NOTHING
+        `).bind(
+          candidate.sourceRecordId, portfolio, candidate.source_system,
+          candidate.source_event_id, candidate.action_date,
+          candidate.payloadJson, candidate.evidenceJson, candidate.contentSha256,
+          candidate.detectedAt,
+        ),
+        db.prepare(`
+          INSERT INTO ledger_corporate_action_candidates (
+            candidate_id, portfolio_id, source_record_id, source_system,
+            source_event_id, ticker, security_name, action_date, record_date,
+            action_type_hint, status, version, evidence_json, content_sha256,
+            detected_at, created_at
+          )
+          SELECT ?, ?, source_record_id, ?, ?, ?, ?, ?, ?, ?,
+            'PENDING_VERIFICATION', 1, ?, ?, ?, ?
+          FROM ledger_source_records
+          WHERE portfolio_id = ? AND source_system = ? AND source_account = ''
+            AND source_event_id = ? AND content_sha256 = ?
+          ON CONFLICT(portfolio_id, source_system, source_event_id) DO NOTHING
+        `).bind(
+          candidate.candidateId, portfolio, candidate.source_system,
+          candidate.source_event_id, candidate.ticker, candidate.name,
+          candidate.action_date, candidate.record_date, candidate.action_type_hint,
+          candidate.evidenceJson, candidate.contentSha256,
+          candidate.detectedAt, timestamp,
+          portfolio, candidate.source_system, candidate.source_event_id,
+          candidate.contentSha256,
+        ),
+        db.prepare(`
+          INSERT INTO ledger_audit_log (
+            audit_id, portfolio_id, actor_type, actor_ref, action,
+            target_type, target_id, before_json, after_json, metadata_json, created_at
+          )
+          SELECT ?, portfolio_id, 'SYSTEM', ?, 'CORPORATE_ACTION_CANDIDATE_DETECTED',
+            'CORPORATE_ACTION_CANDIDATE', candidate_id, NULL, ?, ?, ?
+          FROM ledger_corporate_action_candidates
+          WHERE candidate_id = ? AND content_sha256 = ?
+          ON CONFLICT(audit_id) DO NOTHING
+        `).bind(
+          auditId,
+          String(options.actor || 'corporate-action-detector').slice(0, 200),
+          candidate.payloadJson,
+          stableJson({ sourceRecordId: candidate.sourceRecordId }),
+          timestamp,
+          candidate.candidateId,
+          candidate.contentSha256,
+        ),
+        candidateObservationStatement(db, candidate, 'CORPORATE_ACTION'),
+      ]);
+      const stored = await dbFirst(db, `
+        SELECT * FROM ledger_corporate_action_candidates
+        WHERE portfolio_id = ? AND source_system = ? AND source_event_id = ?
+      `, [portfolio, candidate.source_system, candidate.source_event_id]);
+      if (!stored) {
+        results.push({
+          inserted: false, duplicate: false, conflict: true,
+          sourceEventId: candidate.source_event_id,
+          error: 'SOURCE_PAYLOAD_CONFLICT',
+        });
+        continue;
+      }
+      results.push({
+        candidate: corporateActionCandidateItem(stored),
+        inserted: changedRows(batch[1]) === 1,
+        duplicate: changedRows(batch[1]) !== 1 &&
+          stored.content_sha256 === candidate.contentSha256,
+        conflict: stored.content_sha256 !== candidate.contentSha256,
+      });
+    } catch (error) {
+      results.push({
+        inserted: false,
+        duplicate: false,
+        conflict: false,
+        sourceEventId: String(raw && (raw.source_event_id || raw.sourceEventId) || ''),
+        error: String(error && (error.message || error.code) ||
+          'CORPORATE_ACTION_CANDIDATE_WRITE_FAILED'),
+      });
+    }
+  }
+  return {
+    ok: results.every(item => !item.error && item.conflict !== true),
+    portfolio,
+    inserted: results.filter(item => item.inserted).length,
+    duplicates: results.filter(item => item.duplicate).length,
+    conflicts: results.filter(item => item.conflict).length,
+    failed: results.filter(item => item.error && item.conflict !== true).length,
+    results,
+  };
+}
+
+function addLedgerDays(value, days) {
+  return new Date(Date.parse(`${value}T00:00:00.000Z`) + days * 86400000)
+    .toISOString().slice(0, 10);
+}
+
+function segmentList(value) {
+  if (Array.isArray(value)) return value;
+  if (value == null || value === '') return [];
+  const text = String(value).trim();
+  if (text.startsWith('[') && text.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(text.replaceAll("'", '"'));
+      if (Array.isArray(parsed)) return parsed;
+    } catch (_) { /* fall through to comma parsing */ }
+    return text.slice(1, -1).split(',').map(item => item.trim()).filter(Boolean);
+  }
+  return [value];
+}
+
+function holdingEvent(raw) {
+  const payload = raw && raw.event && typeof raw.event === 'object' ? raw.event : raw || {};
+  return {
+    payload,
+    type: upper(raw && (raw.eventType || raw.event_type) || payload.event_type || payload.type),
+    date: String(raw && (raw.tradeDate || raw.trade_date) ||
+      payload.trade_date || payload.date || payload.effective_date || '').slice(0, 10),
+    sequence: Number((raw && (raw.sequenceNo ?? raw.sequence_no ?? raw.ledgerRevision)) ??
+      payload.sequence_no ?? payload.sequence ?? 0),
+  };
+}
+
+function corporateSegmentOutputs(payload, currentQuantity) {
+  if (Array.isArray(payload.outputs) && payload.outputs.length) {
+    return payload.outputs.map(output => ({
+      ticker: upper(output && (output.ticker || output.post_ticker)),
+      name: String(output && output.name || '').trim(),
+      quantity: output && (output.quantity ?? output.post_quantity),
+    }));
+  }
+  const tickers = segmentList(payload.post_ticker ?? payload.postTicker ?? payload.post_tickers)
+    .map(upper);
+  const quantities = segmentList(
+    payload.post_quantity ?? payload.postQuantity ?? payload.post_quantities,
+  );
+  if (!tickers.length) return [];
+  return tickers.map((ticker, index) => ({ ticker, quantity: quantities[index], name: '' }));
+}
+
+function ledgerHoldingSegments(rawEvents, portfolio, throughDate) {
+  const events = (Array.isArray(rawEvents) ? rawEvents : [])
+    .map(holdingEvent)
+    .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.date))
+    .sort((left, right) => left.date.localeCompare(right.date) || left.sequence - right.sequence);
+  const quantities = new Map();
+  const names = new Map();
+  const tickers = new Map();
+  const open = new Map();
+  const segments = new Map();
+  const groups = new Map();
+  events.forEach(item => {
+    if (!groups.has(item.date)) groups.set(item.date, []);
+    groups.get(item.date).push(item);
+  });
+  const rememberIdentity = (ticker, name) => {
+    const key = candidateSecurityKey(portfolio, ticker);
+    if (!key) return key;
+    tickers.set(key, upper(ticker));
+    if (name) names.set(key, String(name));
+    return key;
+  };
+  const quantityOf = key => Number(quantities.get(key) || 0);
+  for (const [date, items] of groups) {
+    const before = new Map(quantities);
+    const changed = new Set();
+    for (const item of items) {
+      const event = item.payload;
+      const ticker = upper(event.ticker || event.symbol);
+      const key = rememberIdentity(ticker, event.name || event.asset_name || ticker);
+      if (item.type === 'BUY' || item.type === 'SELL') {
+        if (!key) continue;
+        const delta = Number(event.quantity ?? event.qty ?? 0) * (item.type === 'BUY' ? 1 : -1);
+        if (!Number.isFinite(delta)) continue;
+        quantities.set(key, Math.max(0, quantityOf(key) + delta));
+        changed.add(key);
+        continue;
+      }
+      if (item.type !== 'CORPORATE_ACTION' || !key) continue;
+      const currentQuantity = quantityOf(key);
+      quantities.set(key, 0);
+      changed.add(key);
+      const actionType = upper(event.corporate_action_type || event.action_type);
+      const splitRatio = Number(event.split_ratio ?? event.ratio ?? 0);
+      const outputs = corporateSegmentOutputs(event, currentQuantity);
+      outputs.forEach(output => {
+        const outputKey = rememberIdentity(output.ticker, output.name || event.name || output.ticker);
+        if (!outputKey) return;
+        let outputQuantity = Number(output.quantity);
+        if (!Number.isFinite(outputQuantity)) {
+          outputQuantity = actionType === 'SPLIT' && splitRatio > 0
+            ? currentQuantity * splitRatio
+            : actionType === 'RENAME' ? currentQuantity : 0;
+        }
+        quantities.set(outputKey, Math.max(0, quantityOf(outputKey) + outputQuantity));
+        changed.add(outputKey);
+      });
+    }
+    changed.forEach(key => {
+      const beforeQuantity = Number(before.get(key) || 0);
+      const afterQuantity = quantityOf(key);
+      if (Math.abs(beforeQuantity - afterQuantity) <= ACTIVE_POSITION_EPSILON) return;
+      const active = open.get(key);
+      if (active) {
+        const through = addLedgerDays(date, -1);
+        if (active.fromDate <= through) {
+          if (!segments.has(key)) segments.set(key, []);
+          segments.get(key).push({ ...active, throughDate: through });
+        }
+        open.delete(key);
+      }
+      if (afterQuantity > ACTIVE_POSITION_EPSILON) {
+        open.set(key, { fromDate: date, quantity: afterQuantity });
+      }
+    });
+  }
+  const finalDate = throughDate || currentPortfolioDate(portfolio);
+  open.forEach((active, key) => {
+    if (active.fromDate > finalDate) return;
+    if (!segments.has(key)) segments.set(key, []);
+    segments.get(key).push({ ...active, throughDate: finalDate });
+  });
+  return [...segments.entries()].map(([key, holdingPeriods]) => ({
+    portfolio,
+    ticker: tickers.get(key) || key,
+    name: names.get(key) || tickers.get(key) || key,
+    quantity: holdingPeriods.reduce((maximum, item) => Math.max(maximum, item.quantity), 0),
+    holding_periods: holdingPeriods,
+  })).sort((left, right) => left.ticker.localeCompare(right.ticker));
+}
+
+function holdingQuantityOnDate(holding, date) {
+  if (!holding || !date) return null;
+  const periods = Array.isArray(holding.holding_periods) ? holding.holding_periods : [];
+  const period = periods.find(item => item.fromDate <= date && item.throughDate >= date);
+  return period ? Number(period.quantity) : null;
+}
+
 function materializedDividendWindowHoldings(projection, portfolio, fromDate, toDate) {
   const confirmed = projection && (
     projection.confirmedEvents || projection.confirmed_events
@@ -1196,59 +1669,21 @@ function materializedDividendWindowHoldings(projection, portfolio, fromDate, toD
     name: row.n,
     quantity: row.q,
   }));
-  if (!fromDate || !toDate || !events.length) {
+  if (!events.length) {
     return { holdings: fallback, coverage: 'CURRENT_POSITIVE_ONLY' };
   }
-  const effectiveDate = event => String(
-    event && (event.trade_date || event.date || event.effective_date) || '',
-  ).slice(0, 10);
-  events.sort((left, right) =>
-    effectiveDate(left).localeCompare(effectiveDate(right)) ||
-    Number(left.sequence_no ?? left.sequence ?? left.ledger_revision ?? 0) -
-      Number(right.sequence_no ?? right.sequence ?? right.ledger_revision ?? 0));
-  const boundaries = [...new Set([
-    fromDate,
-    ...events.map(effectiveDate).filter(date => date >= fromDate && date <= toDate),
-    toDate,
-  ])].sort();
-  const byTicker = new Map();
-  const remember = row => {
-    if (!(Number(row.q) > ACTIVE_POSITION_EPSILON) || !row.t) return;
-    const key = candidateSecurityKey(portfolio, row.t);
-    const existing = byTicker.get(key);
-    if (!existing || Number(row.q) > Number(existing.quantity)) {
-      byTicker.set(key, {
-        portfolio,
-        ticker: row.t,
-        name: row.n,
-        quantity: Number(row.q),
-      });
-    }
-  };
-  for (const boundary of boundaries) {
-    const cutoff = events.filter(event => effectiveDate(event) <= boundary);
-    let replayed;
-    try {
-      replayed = replayPortfolioLedger(cutoff, {
-        portfolio,
-        currency: PORTFOLIOS[portfolio].currency,
-        include_pending: false,
-        as_of_date: boundary,
-        corporate_action_prices: projection.priceHistory || projection.price_history || [],
-      });
-    } catch (error) {
-      throw new LedgerHttpError(503,
-        `派息偵測持倉窗口重放失敗：${String(error && error.message || error)}`);
-    }
-    projectionPositions(replayed).forEach(remember);
-  }
+  const through = toDate || currentPortfolioDate(portfolio);
+  const all = ledgerHoldingSegments(events, portfolio, through);
+  const holdings = all.filter(holding => holding.holding_periods.some(period =>
+    (!fromDate || period.throughDate >= fromDate) && (!toDate || period.fromDate <= toDate)));
   // This is intentionally a broad signal universe, not an entitlement
   // decision: ex-date eligibility and the broker-settled Amount remain an
   // administrator verification task.
   return {
-    holdings: [...byTicker.values()].sort((left, right) =>
-      left.ticker.localeCompare(right.ticker)),
-    coverage: 'WINDOW_POSITIVE_UNION',
+    holdings,
+    coverage: fromDate ? 'WINDOW_POSITIVE_UNION' : 'FULL_POSITIVE_HOLDING_HISTORY',
+    firstHeldDate: holdings.flatMap(item => item.holding_periods.map(period => period.fromDate))
+      .sort()[0] || null,
   };
 }
 
@@ -1259,7 +1694,7 @@ export async function loadDividendDetectionHoldings(env, requestedPortfolio, opt
     ? null : optionalCandidateDate(options.fromDate, 'fromDate');
   const toDate = options.toDate == null
     ? null : optionalCandidateDate(options.toDate, 'toDate');
-  if ((fromDate && !toDate) || (!fromDate && toDate) || fromDate > toDate) {
+  if ((fromDate && !toDate) || (fromDate && fromDate > toDate)) {
     throw new LedgerHttpError(422, 'fromDate/toDate 派息偵測窗口無效');
   }
   const state = await portfolioRow(db, portfolio);
@@ -1295,9 +1730,147 @@ export async function loadDividendDetectionHoldings(env, requestedPortfolio, opt
     generatedAt: materialized.generatedAt,
     holdings: windowHoldings.holdings,
     holdingCoverage: windowHoldings.coverage,
+    firstHeldDate: windowHoldings.firstHeldDate || null,
     entitlementDetermined: false,
     window: { fromDate, toDate },
   };
+}
+
+export async function loadActionDetectionScanPlan(
+  env,
+  requestedPortfolio,
+  options = {},
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const toDate = optionalCandidateDate(options.toDate, 'toDate');
+  const firstHeldDate = optionalCandidateDate(options.firstHeldDate, 'firstHeldDate');
+  if (!toDate) throw new LedgerHttpError(422, 'toDate 必須明確指定');
+  const lookbackCandidate = Number(options.lookbackDays ?? 45);
+  const lookbackDays = Number.isInteger(lookbackCandidate)
+    ? Math.min(90, Math.max(7, lookbackCandidate)) : 45;
+  const requestedRevision = options.ledgerRevision == null
+    ? null : Number(options.ledgerRevision);
+  if (requestedRevision != null &&
+      (!Number.isInteger(requestedRevision) || requestedRevision < 0)) {
+    throw new LedgerHttpError(422, 'action scan ledgerRevision 無效');
+  }
+  const row = await dbFirst(db, `
+    SELECT * FROM ledger_action_scan_state WHERE portfolio_id = ?
+  `, [portfolio]);
+  if (!firstHeldDate) {
+    return {
+      portfolio,
+      mode: 'EMPTY',
+      fromDate: toDate,
+      toDate,
+      previous: row || null,
+    };
+  }
+  const priorCoverage = row && row.coverage_from ? String(row.coverage_from) : null;
+  const attempts = Number(row && row.attempts || 0);
+  // A correction/import can introduce a security that was held and sold years
+  // ago without moving the portfolio's earliest-ever holding date.  Revision
+  // changes therefore force a complete holding-history rescan; otherwise that
+  // newly introduced historical position would never enter the 45-day window.
+  const revisionChanged = !!row && requestedRevision != null &&
+    Number(row.ledger_revision) !== requestedRevision;
+  const needsBackfill = !row || !priorCoverage || firstHeldDate < priorCoverage ||
+    revisionChanged || row.status === 'PARTIAL';
+  return {
+    portfolio,
+    mode: needsBackfill ? 'FULL_HOLDING_HISTORY' : 'INCREMENTAL_OVERLAP',
+    fromDate: needsBackfill ? firstHeldDate : addLedgerDays(toDate, -lookbackDays),
+    toDate,
+    previous: row ? {
+      coverageFrom: row.coverage_from,
+      scannedThrough: row.scanned_through,
+      status: row.status,
+      ledgerRevision: Number(row.ledger_revision),
+      attempts,
+    } : null,
+  };
+}
+
+export async function persistActionDetectionScanState(
+  env,
+  requestedPortfolio,
+  result = {},
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const ledgerRevision = Number(result.ledgerRevision);
+  if (!Number.isInteger(ledgerRevision) || ledgerRevision < 0) {
+    throw new LedgerHttpError(422, 'action scan ledgerRevision 無效');
+  }
+  const materializedRevision = Number(result.materializedRevision);
+  if (!Number.isInteger(materializedRevision) ||
+      materializedRevision !== ledgerRevision) {
+    throw new LedgerHttpError(
+      409,
+      '公司行動掃描必須等待目前 ledger revision 完成物化',
+      { code: 'ACTION_SCAN_MATERIALIZED_REVISION_MISMATCH' },
+    );
+  }
+  const fromDate = optionalCandidateDate(result.fromDate, 'fromDate');
+  const toDate = optionalCandidateDate(result.toDate, 'toDate');
+  if (!fromDate || !toDate || fromDate > toDate) {
+    throw new LedgerHttpError(422, 'action scan window 無效');
+  }
+  const failedHoldings = Math.max(0, Number(result.failedHoldings || 0));
+  const status = failedHoldings > 0 || result.complete === false
+    ? 'PARTIAL' : 'COMPLETE';
+  const timestamp = now();
+  const sourceCoverage = result.sourceCoverage && typeof result.sourceCoverage === 'object'
+    ? result.sourceCoverage : {};
+  const errors = Array.isArray(result.errors) ? result.errors.slice(0, 200) : [];
+  const write = await db.prepare(`
+    INSERT INTO ledger_action_scan_state (
+      portfolio_id, ledger_revision, coverage_from, scanned_through,
+      status, attempts, checked_holdings, failed_holdings,
+      source_coverage_json, last_error_json, updated_at
+    )
+    SELECT ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?
+    FROM ledger_portfolios AS portfolio
+    JOIN ledger_materialized_projections AS materialized
+      ON materialized.portfolio_id = portfolio.portfolio_id
+    WHERE portfolio.portfolio_id = ?
+      AND portfolio.ledger_revision = ?
+      AND materialized.ledger_revision = ?
+    ON CONFLICT(portfolio_id) DO UPDATE SET
+      ledger_revision = excluded.ledger_revision,
+      coverage_from = CASE
+        WHEN ledger_action_scan_state.coverage_from IS NULL THEN excluded.coverage_from
+        WHEN excluded.coverage_from < ledger_action_scan_state.coverage_from THEN excluded.coverage_from
+        ELSE ledger_action_scan_state.coverage_from
+      END,
+      scanned_through = CASE
+        WHEN ledger_action_scan_state.scanned_through IS NULL THEN excluded.scanned_through
+        WHEN excluded.scanned_through > ledger_action_scan_state.scanned_through THEN excluded.scanned_through
+        ELSE ledger_action_scan_state.scanned_through
+      END,
+      status = excluded.status,
+      attempts = CASE WHEN excluded.status = 'COMPLETE' THEN 0
+        ELSE ledger_action_scan_state.attempts + 1 END,
+      checked_holdings = excluded.checked_holdings,
+      failed_holdings = excluded.failed_holdings,
+      source_coverage_json = excluded.source_coverage_json,
+      last_error_json = excluded.last_error_json,
+      updated_at = excluded.updated_at
+  `).bind(
+    portfolio, ledgerRevision, fromDate, toDate, status,
+    Math.max(0, Number(result.checkedHoldings || 0)), failedHoldings,
+    stableJson(sourceCoverage), stableJson(errors), timestamp,
+    portfolio, ledgerRevision, materializedRevision,
+  ).run();
+  if (changedRows(write) !== 1) {
+    throw new LedgerHttpError(
+      409,
+      '公司行動掃描 revision 已落後，coverage 未更新',
+      { code: 'ACTION_SCAN_REVISION_NOT_CURRENT' },
+    );
+  }
+  return { portfolio, ledgerRevision, fromDate, toDate, status, updatedAt: timestamp };
 }
 
 function candidateSecurityKey(portfolio, ticker) {
@@ -1333,6 +1906,20 @@ function dividendCandidateGuardStatement(db, values) {
   );
 }
 
+function candidateResolutionStatement(db, values) {
+  return db.prepare(`
+    INSERT INTO ledger_candidate_resolutions (
+      resolution_id, portfolio_id, candidate_type, candidate_id,
+      resolution_action, candidate_version, payload_json, pending_id,
+      actor_ref, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    makeId('lcr'), values.portfolio, values.candidateType, values.candidateId,
+    values.action, values.candidateVersion, stableJson(values.payload || {}),
+    values.pendingId || null, values.actor, values.timestamp,
+  );
+}
+
 async function verifyDividendCandidate(db, body, actor) {
   const candidateId = String(body.candidateId || '').trim();
   const candidate = await dbFirst(db, `
@@ -1361,7 +1948,7 @@ async function verifyDividendCandidate(db, body, actor) {
   }
   const rawAmount = body.amount ?? body.Amount;
   const amountMinor = scaledInteger(rawAmount, 100, 'Amount');
-  if (amountMinor <= 0) throw new LedgerHttpError(422, 'Amount 必須大於 0');
+  if (amountMinor < 0) throw new LedgerHttpError(422, 'Amount 必須是管理員核實的非負數');
   const state = await portfolioRow(db, candidate.portfolio_id);
   let quantity = Number(body.quantity);
   if (!Number.isFinite(quantity) || !(quantity > 0)) {
@@ -1400,7 +1987,10 @@ async function verifyDividendCandidate(db, body, actor) {
   const timestamp = now();
   const payload = stableJson(event);
   const sourceRef = `${candidate.source_system}:${candidate.source_event_id}`;
-  const idempotencyKey = `dividend-candidate:${candidate.candidate_id}`;
+  // Candidate version is the review attempt. A rejected Pending may be
+  // reopened and entered again, so it must not collide with the immutable
+  // idempotency key from the earlier rejected attempt.
+  const idempotencyKey = `dividend-candidate:${candidate.candidate_id}:v${expectedVersion}`;
   const note = String(body.reviewNote || body.notes || '派息金額已人工輸入，等待 Confirm')
     .trim().slice(0, 1000);
   try {
@@ -1436,6 +2026,17 @@ async function verifyDividendCandidate(db, body, actor) {
         pendingId, actor, timestamp, note, candidate.candidate_id,
         candidate.portfolio_id, expectedVersion,
       ),
+      candidateResolutionStatement(db, {
+        portfolio: candidate.portfolio_id,
+        candidateType: 'DIVIDEND',
+        candidateId: candidate.candidate_id,
+        action: 'ENTER',
+        candidateVersion: expectedVersion + 1,
+        payload: { amountMinor, quantity, actualReceiptDate, recordDate, note },
+        pendingId,
+        actor,
+        timestamp,
+      }),
       db.prepare(`
         INSERT INTO ledger_audit_log (
           audit_id, portfolio_id, actor_type, actor_ref, action,
@@ -1532,6 +2133,16 @@ async function dismissDividendCandidate(db, body, actor) {
         actor, timestamp, reason, candidate.candidate_id,
         candidate.portfolio_id, expectedVersion,
       ),
+      candidateResolutionStatement(db, {
+        portfolio: candidate.portfolio_id,
+        candidateType: 'DIVIDEND',
+        candidateId: candidate.candidate_id,
+        action: 'IGNORE',
+        candidateVersion: expectedVersion + 1,
+        payload: { reason },
+        actor,
+        timestamp,
+      }),
       db.prepare(`
         INSERT INTO ledger_audit_log (
           audit_id, portfolio_id, actor_type, actor_ref, action,
@@ -1557,7 +2168,50 @@ async function dismissDividendCandidate(db, body, actor) {
   };
 }
 
-async function listDividendCandidates(db, url) {
+async function enrichCandidateCurrentEventLinks(db, portfolio, candidates, currentEvents) {
+  const confirmedEventIds = [...new Set(candidates.map(item =>
+    item.convertedPending && item.convertedPending.confirmedEventId,
+  ).filter(Boolean))];
+  if (!confirmedEventIds.length) return candidates;
+
+  const lineageRows = (await Promise.all(chunked(confirmedEventIds, 78).map(ids =>
+    dbAll(db, `
+      SELECT event_id, lineage_id FROM ledger_events
+      WHERE portfolio_id = ? AND event_id IN (${ids.map(() => '?').join(', ')})
+    `, [portfolio, ...ids]),
+  ))).flat();
+  const lineageByEventId = new Map(lineageRows.map(row => [
+    row.event_id, row.lineage_id,
+  ]));
+  const activeEventByLineage = new Map(currentEvents.map(event => [
+    event.lineageId, event,
+  ]));
+
+  return candidates.map(item => {
+    const convertedPending = item.convertedPending;
+    const originalConfirmedEventId = convertedPending && convertedPending.confirmedEventId;
+    const lineageId = originalConfirmedEventId
+      ? lineageByEventId.get(originalConfirmedEventId) : null;
+    const linkedActiveEvent = lineageId
+      ? activeEventByLineage.get(lineageId) || null : null;
+    if (!linkedActiveEvent) return { ...item, linkedActiveEvent: null };
+    return {
+      ...item,
+      // convertedPending remains the view used by the existing admin client.
+      // Preserve its original confirmation id while directing edits to the
+      // latest active immutable event in the same lineage.
+      convertedPending: {
+        ...convertedPending,
+        originalConfirmedEventId,
+        confirmedEventId: linkedActiveEvent.eventId,
+        lineageId: linkedActiveEvent.lineageId,
+      },
+      linkedActiveEvent,
+    };
+  });
+}
+
+async function listDividendCandidates(db, url, reviewContext = null) {
   const portfolio = portfolioId(url.searchParams.get('portfolio'));
   const requestedStatus = upper(url.searchParams.get('status') || 'PENDING_VERIFICATION');
   const statusAliases = {
@@ -1576,25 +2230,653 @@ async function listDividendCandidates(db, url) {
       COALESCE(pay_date, ex_date) DESC, detected_at DESC
     LIMIT 500
   `, status === 'ALL' ? [portfolio] : [portfolio, status]);
-  const state = await portfolioRow(db, portfolio);
-  const events = await activeEvents(db, portfolio, Number(state.ledger_revision));
-  const quantities = new Map(projectionPositions(replay(events, portfolio)).map(row => [
-    candidateSecurityKey(portfolio, row.t),
-    Number(row.q),
-  ]));
+  const state = reviewContext && reviewContext.state || await portfolioRow(db, portfolio);
+  const throughDate = reviewContext && reviewContext.throughDate || currentPortfolioDate(portfolio);
+  const events = reviewContext && reviewContext.events ||
+    await activeEvents(db, portfolio, Number(state.ledger_revision));
+  const holdingMap = reviewContext && reviewContext.holdingMap || new Map(
+    ledgerHoldingSegments(events, portfolio, throughDate).map(row => [
+      candidateSecurityKey(portfolio, row.ticker), row,
+    ]),
+  );
+  const pendingMap = reviewContext && reviewContext.pendingMap || new Map((await dbAll(db, `
+    SELECT * FROM ledger_pending WHERE portfolio_id = ?
+  `, [portfolio])).map(row => [row.pending_id, pendingItem(row)]));
+  const candidates = rows.map(row => {
+      const item = dividendCandidateItem(row);
+      const holding = holdingMap.get(candidateSecurityKey(portfolio, item.ticker));
+      const currentQuantity = holdingQuantityOnDate(holding, throughDate);
+      const entitlementDate = item.recordDate || item.exDate || item.payDate;
+      const historicalQuantity = holdingQuantityOnDate(holding, entitlementDate);
+      return {
+        ...item,
+        currentQuantity,
+        suggestedQuantity: historicalQuantity,
+        entitlementDate,
+        convertedPending: item.convertedPendingId
+          ? pendingMap.get(item.convertedPendingId) || null : null,
+      };
+    });
   return {
     ok: true,
     portfolio,
     status,
-    candidates: rows.map(row => {
-      const item = dividendCandidateItem(row);
-      const currentQuantity = quantities.get(candidateSecurityKey(portfolio, item.ticker)) ?? null;
+    candidates: await enrichCandidateCurrentEventLinks(db, portfolio, candidates, events),
+  };
+}
+
+function corporateActionCandidateGuardStatement(db, values) {
+  return db.prepare(`
+    INSERT INTO ledger_transaction_guards (
+      guard_id, pending_id, expected_pending_version,
+      portfolio_id, expected_ledger_revision, created_at
+    ) VALUES (
+      ?,
+      (SELECT candidate_id FROM ledger_corporate_action_candidates
+        WHERE candidate_id = ? AND portfolio_id = ?
+          AND status = 'PENDING_VERIFICATION' AND version = ?),
+      ?,
+      (SELECT portfolio_id FROM ledger_portfolios
+        WHERE portfolio_id = ? AND ledger_revision = ?),
+      ?, ?
+    )
+  `).bind(
+    values.guardId,
+    values.candidateId, values.portfolio, values.candidateVersion,
+    values.candidateVersion,
+    values.portfolio, values.ledgerRevision,
+    values.ledgerRevision, values.timestamp,
+  );
+}
+
+async function verifyCorporateActionCandidate(db, body, actor) {
+  const candidateId = String(body.candidateId || '').trim();
+  const candidate = await dbFirst(db, `
+    SELECT * FROM ledger_corporate_action_candidates WHERE candidate_id = ?
+  `, [candidateId]);
+  if (!candidate) throw new LedgerHttpError(404, '公司行動候選不存在');
+  if (candidate.status === 'CONVERTED') {
+    const pending = await dbFirst(db, `
+      SELECT * FROM ledger_pending WHERE pending_id = ?
+    `, [candidate.converted_pending_id]);
+    return {
+      duplicate: true,
+      candidate: corporateActionCandidateItem(candidate),
+      pending: pendingItem(pending),
+    };
+  }
+  if (candidate.status === 'DISMISSED') {
+    throw new LedgerHttpError(409, '公司行動候選已忽略；請先重新打開');
+  }
+  const expectedVersion = Number(body.expectedVersion);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1 ||
+      Number(candidate.version) !== expectedVersion) {
+    throw new LedgerHttpError(409, '公司行動候選版本已變更，請刷新');
+  }
+  const quantity = Number(body.quantity ?? body.preQuantity ?? body.pre_quantity);
+  if (!Number.isFinite(quantity) || !(quantity > 0)) {
+    throw new LedgerHttpError(422, '行動前 Quantity 必須由管理員核實並填寫大於 0 的數值');
+  }
+  const actionType = upper(body.actionType || body.corporateActionType ||
+    body.corporate_action_type || candidate.action_type_hint);
+  if (!['SPLIT', 'SPINOFF', 'RENAME', 'MERGER'].includes(actionType)) {
+    throw new LedgerHttpError(422, '公司行動 Type 必須是 SPLIT/SPINOFF/RENAME/MERGER');
+  }
+  const postTicker = body.postTicker ?? body.post_ticker;
+  const postQuantity = body.postQuantity ?? body.post_quantity;
+  if (postTicker == null || String(postTicker).trim() === '' ||
+      postQuantity == null || String(postQuantity).trim() === '') {
+    throw new LedgerHttpError(422, 'Post Ticker 與 Post Quantity 必須由管理員明確輸入');
+  }
+  const cashMinor = scaledInteger(body.cashChange ?? body.cash_change ?? 0, 100, 'Cash Change');
+  const actionDate = optionalCandidateDate(
+    body.actionDate || body.tradeDate || candidate.action_date,
+    'actionDate',
+  );
+  const event = canonicalEvent({
+    type: 'CORPORATE_ACTION',
+    date: actionDate,
+    ticker: candidate.ticker,
+    name: candidate.security_name,
+    corporate_action_type: actionType,
+    quantity,
+    pre_quantity: quantity,
+    post_ticker: postTicker,
+    post_quantity: postQuantity,
+    cash_change: (cashMinor / 100).toFixed(2),
+    notes: String(body.notes || '').trim().slice(0, 1000),
+    source: 'CORPORATE_ACTION_DETECTOR',
+    corporate_action_candidate_id: candidate.candidate_id,
+    record_date: candidate.record_date,
+    detected_action_date: candidate.action_date,
+  }, candidate.portfolio_id);
+  event.status = 'pending';
+  const pendingId = makeId('lpd');
+  const guardId = makeId('ltg');
+  const timestamp = now();
+  const payload = stableJson(event);
+  const sourceRef = `${candidate.source_system}:${candidate.source_event_id}`;
+  // Candidate version is the review attempt. A rejected Pending may be
+  // reopened and entered again, so it must not collide with the immutable
+  // idempotency key from the earlier rejected attempt.
+  const idempotencyKey = `corporate-action-candidate:${candidate.candidate_id}:v${expectedVersion}`;
+  const note = String(body.reviewNote || body.notes ||
+    '公司行動數量轉換已人工核實，等待 Confirm').trim().slice(0, 1000);
+  const state = await portfolioRow(db, candidate.portfolio_id);
+  try {
+    await db.batch([
+      corporateActionCandidateGuardStatement(db, {
+        guardId,
+        candidateId: candidate.candidate_id,
+        portfolio: candidate.portfolio_id,
+        candidateVersion: expectedVersion,
+        ledgerRevision: Number(state.ledger_revision),
+        timestamp,
+      }),
+      db.prepare(`
+        INSERT INTO ledger_pending (
+          pending_id, portfolio_id, event_type, trade_date, payload_json,
+          status, version, source, source_record_id, source_ref,
+          idempotency_key, review_note, created_by, updated_by, created_at, updated_at
+        ) VALUES (?, ?, 'CORPORATE_ACTION', ?, ?, 'PENDING', 1, 'AUTOMATION',
+          ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        pendingId, candidate.portfolio_id, event.trade_date, payload,
+        candidate.source_record_id, sourceRef, idempotencyKey, note,
+        actor, actor, timestamp, timestamp,
+      ),
+      db.prepare(`
+        UPDATE ledger_corporate_action_candidates
+        SET status = 'CONVERTED', version = version + 1,
+          converted_pending_id = ?, resolved_by = ?, resolved_at = ?,
+          resolution_note = ?
+        WHERE candidate_id = ? AND portfolio_id = ?
+          AND status = 'PENDING_VERIFICATION' AND version = ?
+      `).bind(
+        pendingId, actor, timestamp, note, candidate.candidate_id,
+        candidate.portfolio_id, expectedVersion,
+      ),
+      candidateResolutionStatement(db, {
+        portfolio: candidate.portfolio_id,
+        candidateType: 'CORPORATE_ACTION',
+        candidateId: candidate.candidate_id,
+        action: 'ENTER',
+        candidateVersion: expectedVersion + 1,
+        payload: {
+          actionType, quantity, postTicker, postQuantity,
+          cashMinor, actionDate, note,
+        },
+        pendingId,
+        actor,
+        timestamp,
+      }),
+      db.prepare(`
+        INSERT INTO ledger_audit_log (
+          audit_id, portfolio_id, actor_type, actor_ref, action,
+          target_type, target_id, before_json, after_json, metadata_json, created_at
+        ) VALUES (?, ?, 'ADMIN', ?, 'CORPORATE_ACTION_CANDIDATE_CONVERTED',
+          'CORPORATE_ACTION_CANDIDATE', ?, ?, ?, ?, ?)
+      `).bind(
+        makeId('lau'), candidate.portfolio_id, actor, candidate.candidate_id,
+        stableJson(corporateActionCandidateItem(candidate)),
+        stableJson({ status: 'CONVERTED', pendingId }),
+        stableJson({ actionType, quantity, postTicker, postQuantity, cashMinor, actionDate }),
+        timestamp,
+      ),
+      db.prepare(`
+        INSERT INTO ledger_audit_log (
+          audit_id, portfolio_id, actor_type, actor_ref, action,
+          target_type, target_id, before_json, after_json, metadata_json, created_at
+        ) VALUES (?, ?, 'ADMIN', ?, 'PENDING_CREATED', 'PENDING', ?, NULL, ?, ?, ?)
+      `).bind(
+        makeId('lau'), candidate.portfolio_id, actor, pendingId, payload,
+        stableJson({ source: 'AUTOMATION', corporateActionCandidateId: candidate.candidate_id }),
+        timestamp,
+      ),
+      db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+    ]);
+  } catch (error) {
+    const raced = await dbFirst(db, `
+      SELECT * FROM ledger_corporate_action_candidates WHERE candidate_id = ?
+    `, [candidate.candidate_id]);
+    if (raced && raced.status === 'CONVERTED') {
+      const pending = await dbFirst(db, `
+        SELECT * FROM ledger_pending WHERE pending_id = ?
+      `, [raced.converted_pending_id]);
+      return {
+        duplicate: true,
+        candidate: corporateActionCandidateItem(raced),
+        pending: pendingItem(pending),
+      };
+    }
+    throw new LedgerHttpError(409, '公司行動候選轉入 Pending 時狀態已改變，請刷新');
+  }
+  return {
+    duplicate: false,
+    candidate: corporateActionCandidateItem(await dbFirst(db, `
+      SELECT * FROM ledger_corporate_action_candidates WHERE candidate_id = ?
+    `, [candidate.candidate_id])),
+    pending: pendingItem(await dbFirst(db, `
+      SELECT * FROM ledger_pending WHERE pending_id = ?
+    `, [pendingId])),
+  };
+}
+
+async function dismissCorporateActionCandidate(db, body, actor) {
+  const candidateId = String(body.candidateId || '').trim();
+  const candidate = await dbFirst(db, `
+    SELECT * FROM ledger_corporate_action_candidates WHERE candidate_id = ?
+  `, [candidateId]);
+  if (!candidate) throw new LedgerHttpError(404, '公司行動候選不存在');
+  if (candidate.status === 'DISMISSED') {
+    return { duplicate: true, candidate: corporateActionCandidateItem(candidate) };
+  }
+  if (candidate.status === 'CONVERTED') {
+    throw new LedgerHttpError(409, '公司行動候選已轉入 Pending，不能忽略');
+  }
+  const expectedVersion = Number(body.expectedVersion);
+  if (!Number.isInteger(expectedVersion) || Number(candidate.version) !== expectedVersion) {
+    throw new LedgerHttpError(409, '公司行動候選版本已變更，請刷新');
+  }
+  const reason = String(body.reason || '').trim().slice(0, 1000);
+  if (!reason) throw new LedgerHttpError(422, '忽略公司行動候選必須填寫 reason');
+  const state = await portfolioRow(db, candidate.portfolio_id);
+  const timestamp = now();
+  const guardId = makeId('ltg');
+  try {
+    await db.batch([
+      corporateActionCandidateGuardStatement(db, {
+        guardId,
+        candidateId: candidate.candidate_id,
+        portfolio: candidate.portfolio_id,
+        candidateVersion: expectedVersion,
+        ledgerRevision: Number(state.ledger_revision),
+        timestamp,
+      }),
+      db.prepare(`
+        UPDATE ledger_corporate_action_candidates
+        SET status = 'DISMISSED', version = version + 1,
+          resolved_by = ?, resolved_at = ?, resolution_note = ?
+        WHERE candidate_id = ? AND portfolio_id = ?
+          AND status = 'PENDING_VERIFICATION' AND version = ?
+      `).bind(
+        actor, timestamp, reason, candidate.candidate_id,
+        candidate.portfolio_id, expectedVersion,
+      ),
+      candidateResolutionStatement(db, {
+        portfolio: candidate.portfolio_id,
+        candidateType: 'CORPORATE_ACTION',
+        candidateId: candidate.candidate_id,
+        action: 'IGNORE',
+        candidateVersion: expectedVersion + 1,
+        payload: { reason },
+        actor,
+        timestamp,
+      }),
+      db.prepare(`
+        INSERT INTO ledger_audit_log (
+          audit_id, portfolio_id, actor_type, actor_ref, action,
+          target_type, target_id, before_json, after_json, metadata_json, created_at
+        ) VALUES (?, ?, 'ADMIN', ?, 'CORPORATE_ACTION_CANDIDATE_DISMISSED',
+          'CORPORATE_ACTION_CANDIDATE', ?, ?, ?, ?, ?)
+      `).bind(
+        makeId('lau'), candidate.portfolio_id, actor, candidate.candidate_id,
+        stableJson(corporateActionCandidateItem(candidate)),
+        stableJson({ status: 'DISMISSED', reason }),
+        stableJson({ expectedVersion }), timestamp,
+      ),
+      db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+    ]);
+  } catch (error) {
+    throw new LedgerHttpError(409, '公司行動候選已被其他操作修改，請刷新');
+  }
+  return {
+    duplicate: false,
+    candidate: corporateActionCandidateItem(await dbFirst(db, `
+      SELECT * FROM ledger_corporate_action_candidates WHERE candidate_id = ?
+    `, [candidate.candidate_id])),
+  };
+}
+
+async function listCorporateActionCandidates(db, url, reviewContext = null) {
+  const portfolio = portfolioId(url.searchParams.get('portfolio'));
+  const requestedStatus = upper(url.searchParams.get('status') || 'PENDING_VERIFICATION');
+  const statusAliases = {
+    PENDING: 'PENDING_VERIFICATION',
+    PENDING_VERIFICATION: 'PENDING_VERIFICATION',
+    CONVERTED: 'CONVERTED', DISMISSED: 'DISMISSED', ALL: 'ALL',
+  };
+  const status = statusAliases[requestedStatus];
+  if (!status) throw new LedgerHttpError(400, 'corporate action candidate status 無效');
+  const rows = await dbAll(db, `
+    SELECT * FROM ledger_corporate_action_candidates
+    WHERE portfolio_id = ?${status === 'ALL' ? '' : ' AND status = ?'}
+    ORDER BY CASE status WHEN 'PENDING_VERIFICATION' THEN 0 ELSE 1 END,
+      action_date DESC, ticker, detected_at DESC
+    LIMIT 500
+  `, status === 'ALL' ? [portfolio] : [portfolio, status]);
+  const state = reviewContext && reviewContext.state || await portfolioRow(db, portfolio);
+  const throughDate = reviewContext && reviewContext.throughDate || currentPortfolioDate(portfolio);
+  const events = reviewContext && reviewContext.events ||
+    await activeEvents(db, portfolio, Number(state.ledger_revision));
+  const holdingMap = reviewContext && reviewContext.holdingMap || new Map(
+    ledgerHoldingSegments(events, portfolio, throughDate).map(row => [
+      candidateSecurityKey(portfolio, row.ticker), row,
+    ]),
+  );
+  const pendingMap = reviewContext && reviewContext.pendingMap || new Map((await dbAll(db, `
+    SELECT * FROM ledger_pending WHERE portfolio_id = ?
+  `, [portfolio])).map(row => [row.pending_id, pendingItem(row)]));
+  const candidates = rows.map(row => {
+      const item = corporateActionCandidateItem(row);
+      const holding = holdingMap.get(candidateSecurityKey(portfolio, item.ticker));
       return {
         ...item,
-        currentQuantity,
-        suggestedQuantity: currentQuantity,
+        suggestedQuantity: holdingQuantityOnDate(holding, item.recordDate || item.actionDate),
+        convertedPending: item.convertedPendingId
+          ? pendingMap.get(item.convertedPendingId) || null : null,
       };
-    }),
+    });
+  return {
+    ok: true,
+    portfolio,
+    status,
+    candidates: await enrichCandidateCurrentEventLinks(db, portfolio, candidates, events),
+  };
+}
+
+async function reopenReviewCandidate(db, body, actor) {
+  const candidateType = upper(body.candidateType || body.type);
+  const config = candidateType === 'DIVIDEND'
+    ? {
+        table: 'ledger_dividend_candidates',
+        item: dividendCandidateItem,
+        label: '派息',
+        targetType: 'DIVIDEND_CANDIDATE',
+      }
+    : candidateType === 'CORPORATE_ACTION'
+      ? {
+          table: 'ledger_corporate_action_candidates',
+          item: corporateActionCandidateItem,
+          label: '公司行動',
+          targetType: 'CORPORATE_ACTION_CANDIDATE',
+        }
+      : null;
+  if (!config) throw new LedgerHttpError(422, 'candidateType 無效');
+  const candidateId = String(body.candidateId || '').trim();
+  const candidate = await dbFirst(db, `SELECT * FROM ${config.table} WHERE candidate_id = ?`, [candidateId]);
+  if (!candidate) throw new LedgerHttpError(404, `${config.label}候選不存在`);
+  if (candidate.status === 'PENDING_VERIFICATION') {
+    return { duplicate: true, candidate: config.item(candidate) };
+  }
+  let reopenFromStatus = candidate.status;
+  if (candidate.status === 'CONVERTED') {
+    const linkedPending = await dbFirst(db, `
+      SELECT status FROM ledger_pending WHERE pending_id = ?
+    `, [candidate.converted_pending_id]);
+    if (!linkedPending || linkedPending.status !== 'REJECTED') {
+      throw new LedgerHttpError(409, `${config.label}候選已錄入；請修改其 Pending/已確認事件`);
+    }
+    reopenFromStatus = 'CONVERTED';
+  }
+  const expectedVersion = Number(body.expectedVersion);
+  if (!Number.isInteger(expectedVersion) || Number(candidate.version) !== expectedVersion) {
+    throw new LedgerHttpError(409, `${config.label}候選版本已變更，請刷新`);
+  }
+  const reason = String(body.reason || '重新打開以再次核實').trim().slice(0, 1000);
+  const state = await portfolioRow(db, candidate.portfolio_id);
+  const timestamp = now();
+  const guardId = makeId('ltg');
+  try {
+    await db.batch([
+      db.prepare(`
+        INSERT INTO ledger_transaction_guards (
+          guard_id, pending_id, expected_pending_version,
+          portfolio_id, expected_ledger_revision, created_at
+        ) VALUES (
+          ?,
+          (SELECT candidate_id FROM ${config.table}
+            WHERE candidate_id = ? AND portfolio_id = ?
+              AND status = ? AND version = ?),
+          ?,
+          (SELECT portfolio_id FROM ledger_portfolios
+            WHERE portfolio_id = ? AND ledger_revision = ?),
+          ?, ?
+        )
+      `).bind(
+        guardId, candidateId, candidate.portfolio_id, reopenFromStatus, expectedVersion,
+        expectedVersion, candidate.portfolio_id, Number(state.ledger_revision),
+        Number(state.ledger_revision), timestamp,
+      ),
+      db.prepare(`
+        UPDATE ${config.table}
+        SET status = 'PENDING_VERIFICATION', version = version + 1,
+          converted_pending_id = NULL, resolved_by = NULL,
+          resolved_at = NULL, resolution_note = NULL
+        WHERE candidate_id = ? AND status = ? AND version = ?
+      `).bind(candidateId, reopenFromStatus, expectedVersion),
+      candidateResolutionStatement(db, {
+        portfolio: candidate.portfolio_id,
+        candidateType,
+        candidateId,
+        action: 'REOPEN',
+        candidateVersion: expectedVersion + 1,
+        payload: { reason },
+        actor,
+        timestamp,
+      }),
+      db.prepare(`
+        INSERT INTO ledger_audit_log (
+          audit_id, portfolio_id, actor_type, actor_ref, action,
+          target_type, target_id, before_json, after_json, metadata_json, created_at
+        ) VALUES (?, ?, 'ADMIN', ?, 'CANDIDATE_REOPENED', ?, ?, ?, ?, ?, ?)
+      `).bind(
+        makeId('lau'), candidate.portfolio_id, actor, config.targetType, candidateId,
+        stableJson(config.item(candidate)),
+        stableJson({ status: 'PENDING_VERIFICATION' }), stableJson({ reason }), timestamp,
+      ),
+      db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+    ]);
+  } catch (error) {
+    throw new LedgerHttpError(409, `${config.label}候選已被其他操作修改，請刷新`);
+  }
+  return {
+    duplicate: false,
+    candidate: config.item(await dbFirst(db,
+      `SELECT * FROM ${config.table} WHERE candidate_id = ?`, [candidateId])),
+  };
+}
+
+function actionReviewPage(url) {
+  const limit = Number(url.searchParams.get('limit') || 200);
+  const offset = Number(url.searchParams.get('offset') || 0);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    throw new LedgerHttpError(400, 'action review limit 必須為 1–500');
+  }
+  if (!Number.isInteger(offset) || offset < 0 || offset > 1000000) {
+    throw new LedgerHttpError(400, 'action review offset 無效');
+  }
+  return { limit, offset };
+}
+
+function actionReviewStatusSql(stateFilter) {
+  if (stateFilter === 'OPEN') return "status = 'PENDING_VERIFICATION'";
+  if (stateFilter === 'RESOLVED') return "status IN ('CONVERTED', 'DISMISSED')";
+  return "status IN ('PENDING_VERIFICATION', 'CONVERTED', 'DISMISSED')";
+}
+
+async function actionReviewRowsByIds(db, table, ids) {
+  if (!ids.length) return [];
+  const groups = await Promise.all(chunked(ids, 80).map(part => dbAll(db, `
+    SELECT * FROM ${table}
+    WHERE candidate_id IN (${part.map(() => '?').join(', ')})
+  `, part)));
+  return groups.flat();
+}
+
+async function actionReviewResolutionRows(db, portfolio, candidateType, ids) {
+  if (!ids.length) return [];
+  const groups = await Promise.all(chunked(ids, 78).map(part => dbAll(db, `
+    SELECT * FROM ledger_candidate_resolutions
+    WHERE portfolio_id = ? AND candidate_type = ?
+      AND candidate_id IN (${part.map(() => '?').join(', ')})
+    ORDER BY created_at DESC
+  `, [portfolio, candidateType, ...part])));
+  return groups.flat();
+}
+
+async function listActionReviewItems(db, url) {
+  const portfolio = portfolioId(url.searchParams.get('portfolio'));
+  const stateFilter = upper(url.searchParams.get('state') || 'ALL');
+  if (!['OPEN', 'RESOLVED', 'ALL'].includes(stateFilter)) {
+    throw new LedgerHttpError(400, 'action review state 無效');
+  }
+  const typeFilter = upper(url.searchParams.get('type') || 'ALL');
+  if (!['DIVIDEND', 'CORPORATE_ACTION', 'ALL'].includes(typeFilter)) {
+    throw new LedgerHttpError(400, 'action review type 無效');
+  }
+  const month = String(url.searchParams.get('month') || '').trim();
+  if (month && !/^\d{4}-\d{2}$/.test(month)) {
+    throw new LedgerHttpError(400, 'action review month 無效');
+  }
+  const page = actionReviewPage(url);
+  const statusSql = actionReviewStatusSql(stateFilter);
+  const branches = [];
+  const pageArgs = [];
+  if (typeFilter === 'ALL' || typeFilter === 'DIVIDEND') {
+    branches.push(`
+      SELECT 'DIVIDEND' AS candidate_type, candidate_id,
+        COALESCE(pay_date, ex_date, '') AS sort_date, ticker
+      FROM ledger_dividend_candidates
+      WHERE portfolio_id = ? AND ${statusSql}
+        ${month ? "AND substr(COALESCE(pay_date, ex_date, ''), 1, 7) = ?" : ''}
+    `);
+    pageArgs.push(portfolio, ...(month ? [month] : []));
+  }
+  if (typeFilter === 'ALL' || typeFilter === 'CORPORATE_ACTION') {
+    branches.push(`
+      SELECT 'CORPORATE_ACTION' AS candidate_type, candidate_id,
+        COALESCE(action_date, '') AS sort_date, ticker
+      FROM ledger_corporate_action_candidates
+      WHERE portfolio_id = ? AND ${statusSql}
+        ${month ? "AND substr(COALESCE(action_date, ''), 1, 7) = ?" : ''}
+    `);
+    pageArgs.push(portfolio, ...(month ? [month] : []));
+  }
+  const indexRows = await dbAll(db, `
+    SELECT candidate_type, candidate_id, sort_date, ticker,
+      COUNT(*) OVER () AS total_count
+    FROM (${branches.join(' UNION ALL ')})
+    ORDER BY sort_date DESC, ticker, candidate_id
+    LIMIT ? OFFSET ?
+  `, [...pageArgs, page.limit, page.offset]);
+  const dividendIds = indexRows
+    .filter(row => row.candidate_type === 'DIVIDEND').map(row => row.candidate_id);
+  const corporateActionIds = indexRows
+    .filter(row => row.candidate_type === 'CORPORATE_ACTION').map(row => row.candidate_id);
+  const [portfolioState, pendingRows] = await Promise.all([
+    portfolioRow(db, portfolio),
+    dbAll(db, 'SELECT * FROM ledger_pending WHERE portfolio_id = ?', [portfolio]),
+  ]);
+  const throughDate = currentPortfolioDate(portfolio);
+  const events = await activeEvents(db, portfolio, Number(portfolioState.ledger_revision));
+  const reviewContext = {
+    state: portfolioState,
+    events,
+    throughDate,
+    holdingMap: new Map(ledgerHoldingSegments(events, portfolio, throughDate).map(row => [
+      candidateSecurityKey(portfolio, row.ticker), row,
+    ])),
+    pendingMap: new Map(pendingRows.map(row => [row.pending_id, pendingItem(row)])),
+  };
+  const [dividendRows, corporateActionRows, dividendResolutions,
+    corporateActionResolutions, scanState] = await Promise.all([
+    actionReviewRowsByIds(db, 'ledger_dividend_candidates', dividendIds),
+    actionReviewRowsByIds(db, 'ledger_corporate_action_candidates', corporateActionIds),
+    actionReviewResolutionRows(db, portfolio, 'DIVIDEND', dividendIds),
+    actionReviewResolutionRows(db, portfolio, 'CORPORATE_ACTION', corporateActionIds),
+    dbFirst(db, `SELECT * FROM ledger_action_scan_state WHERE portfolio_id = ?`, [portfolio]),
+  ]);
+  const dividendMap = new Map(dividendRows.map(row => [row.candidate_id, row]));
+  const corporateActionMap = new Map(corporateActionRows.map(row => [row.candidate_id, row]));
+  const baseCandidates = indexRows.map(index => {
+    if (index.candidate_type === 'DIVIDEND') {
+      const item = dividendCandidateItem(dividendMap.get(index.candidate_id));
+      if (!item) return null;
+      const holding = reviewContext.holdingMap.get(candidateSecurityKey(portfolio, item.ticker));
+      const entitlementDate = item.recordDate || item.exDate || item.payDate;
+      return {
+        ...item,
+        currentQuantity: holdingQuantityOnDate(holding, throughDate),
+        suggestedQuantity: holdingQuantityOnDate(holding, entitlementDate),
+        entitlementDate,
+        convertedPending: item.convertedPendingId
+          ? reviewContext.pendingMap.get(item.convertedPendingId) || null : null,
+      };
+    }
+    const item = corporateActionCandidateItem(corporateActionMap.get(index.candidate_id));
+    if (!item) return null;
+    const holding = reviewContext.holdingMap.get(candidateSecurityKey(portfolio, item.ticker));
+    return {
+      ...item,
+      suggestedQuantity: holdingQuantityOnDate(holding, item.recordDate || item.actionDate),
+      convertedPending: item.convertedPendingId
+        ? reviewContext.pendingMap.get(item.convertedPendingId) || null : null,
+    };
+  }).filter(Boolean);
+  const linkedCandidates = await enrichCandidateCurrentEventLinks(
+    db, portfolio, baseCandidates, events,
+  );
+  const history = new Map();
+  [...dividendResolutions, ...corporateActionResolutions].forEach(row => {
+    const key = `${row.candidate_type}|${row.candidate_id}`;
+    if (!history.has(key)) history.set(key, []);
+    history.get(key).push({
+      resolutionId: row.resolution_id,
+      action: row.resolution_action,
+      candidateVersion: Number(row.candidate_version),
+      payload: parseJson(row.payload_json, {}),
+      pendingId: row.pending_id,
+      actor: row.actor_ref,
+      createdAt: Number(row.created_at),
+    });
+  });
+  const items = linkedCandidates.map(item => ({
+      ...item,
+      resolutionHistory: history.get(`${item.candidateType}|${item.candidateId}`) || [],
+    }));
+  const total = indexRows.length ? Number(indexRows[0].total_count || 0) : 0;
+  const consumed = page.offset + items.length;
+  return {
+    ok: true,
+    portfolio,
+    state: stateFilter,
+    limit: page.limit,
+    offset: page.offset,
+    total,
+    nextOffset: consumed < total ? consumed : null,
+    items,
+    coverage: scanState ? {
+      status: Number(scanState.ledger_revision) === Number(portfolioState.ledger_revision)
+        ? scanState.status : 'STALE',
+      recordedStatus: scanState.status,
+      current: Number(scanState.ledger_revision) === Number(portfolioState.ledger_revision),
+      currentLedgerRevision: Number(portfolioState.ledger_revision),
+      ledgerRevision: Number(scanState.ledger_revision),
+      coverageFrom: scanState.coverage_from,
+      scannedThrough: scanState.scanned_through,
+      checkedHoldings: Number(scanState.checked_holdings),
+      failedHoldings: Number(scanState.failed_holdings),
+      sourceCoverage: parseJson(scanState.source_coverage_json, {}),
+      errors: parseJson(scanState.last_error_json, []),
+      updatedAt: Number(scanState.updated_at),
+    } : {
+      status: 'NOT_STARTED', coverageFrom: null, scannedThrough: null,
+      current: false,
+      currentLedgerRevision: Number(portfolioState.ledger_revision),
+      ledgerRevision: null,
+      sourceCoverage: {}, errors: [],
+    },
   };
 }
 
@@ -5663,14 +6945,16 @@ export async function ledgerHealth(env) {
         'ledger_outbox', 'ledger_prices', 'ledger_nav_snapshots',
         'ledger_price_tapes', 'ledger_price_tape_rows',
         'ledger_public_snapshots', 'ledger_public_attempts',
-        'ledger_materialized_projections', 'ledger_dividend_candidates'
+        'ledger_materialized_projections', 'ledger_dividend_candidates',
+        'ledger_corporate_action_candidates', 'ledger_candidate_observations',
+        'ledger_candidate_resolutions', 'ledger_action_scan_state'
       )
     `);
     const outbox = await dbFirst(db, `
       SELECT COUNT(*) AS pending FROM ledger_outbox
       WHERE status IN ('PENDING', 'FAILED', 'PROCESSING')
     `).catch(() => ({ pending: 0 }));
-    const ready = Number(row && row.count || 0) === 18;
+    const ready = Number(row && row.count || 0) === 22;
     const rawNavPortfolios = {};
     const storagePortfolios = {};
     if (ready) {
@@ -5938,6 +7222,54 @@ export async function handleLedgerAdminRequest(request, env, context = {}) {
         ok: true,
         ...await dismissDividendCandidate(db, await readJson(request), actor),
       });
+    }
+    if (path === '/api/admin/ledger/corporate-actions' && request.method === 'GET') {
+      return respond(await listCorporateActionCandidates(db, url));
+    }
+    if (path === '/api/admin/ledger/corporate-actions/verify' && request.method === 'POST') {
+      return respond({
+        ok: true,
+        ...await verifyCorporateActionCandidate(db, await readJson(request), actor),
+      });
+    }
+    if (path === '/api/admin/ledger/corporate-actions/dismiss' && request.method === 'POST') {
+      return respond({
+        ok: true,
+        ...await dismissCorporateActionCandidate(db, await readJson(request), actor),
+      });
+    }
+    if (path === '/api/admin/ledger/actions' && request.method === 'GET') {
+      return respond(await listActionReviewItems(db, url));
+    }
+    if (path === '/api/admin/ledger/actions/resolve' && request.method === 'POST') {
+      const body = await readJson(request);
+      const candidateType = upper(body.candidateType || body.type);
+      const decision = upper(body.decision || body.action);
+      let resolved;
+      if (candidateType === 'DIVIDEND' && decision === 'ENTER') {
+        resolved = await verifyDividendCandidate(db, body, actor);
+      } else if (candidateType === 'DIVIDEND' && decision === 'IGNORE') {
+        resolved = await dismissDividendCandidate(db, body, actor);
+      } else if (candidateType === 'CORPORATE_ACTION' && decision === 'ENTER') {
+        resolved = await verifyCorporateActionCandidate(db, body, actor);
+      } else if (candidateType === 'CORPORATE_ACTION' && decision === 'IGNORE') {
+        resolved = await dismissCorporateActionCandidate(db, body, actor);
+      } else {
+        throw new LedgerHttpError(422, 'candidateType/decision 組合無效');
+      }
+      return respond({ ok: true, ...resolved });
+    }
+    if (path === '/api/admin/ledger/actions/reopen' && request.method === 'POST') {
+      return respond({
+        ok: true,
+        ...await reopenReviewCandidate(db, await readJson(request), actor),
+      });
+    }
+    if (path === '/api/admin/ledger/events/correction' && request.method === 'POST') {
+      return respond({ ok: true, ...await stageEventCorrection(db, await readJson(request), actor) }, 201);
+    }
+    if (path === '/api/admin/ledger/events/history' && request.method === 'GET') {
+      return respond(await listEventHistory(db, url));
     }
     if (path === '/api/admin/ledger/pending' && request.method === 'POST') {
       const body = await readJson(request);

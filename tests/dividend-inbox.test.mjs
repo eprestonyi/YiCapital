@@ -63,6 +63,7 @@ async function setup() {
     '../migrations/0003_frozen_price_tapes.sql',
     '../migrations/0005_public_portfolio_snapshots.sql',
     '../migrations/0006_dividend_candidate_inbox.sql',
+    '../migrations/0007_action_review_workbench.sql',
   ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   return { FEEDBACK_DB: new D1Database(sql), YC_KV: new MemoryKv() };
 }
@@ -350,7 +351,141 @@ test('detection holdings union includes securities held earlier in the scan wind
   assert.equal(window.holdings.find(item => item.ticker === 'SOLD').quantity, 10);
 });
 
-test('scheduled EOD detection reads the last complete materialized holdings and isolates symbol failures', async () => {
+test('scheduled detection never advances coverage from a lagging materialized revision', async () => {
+  const env = await setup();
+  await persistMaterializedLedgerProjection(env, 'us', 0, {
+    portfolio: 'us',
+    market: 'us',
+    ledgerRevision: 0,
+    source: 'd1-confirmed-event-ledger',
+    savedBy: 'ledger-outbox',
+    savedAt: '2026-08-05T03:00:00.000Z',
+    valuationReady: true,
+    navRecalculationRequired: [],
+    positions: [{
+      t: 'GOOD', n: 'Good Inc', q: 4, p: 10, mv: 40,
+      priceDate: '2026-08-04', priceSource: 'TUSHARE',
+      priceBasis: 'raw_close', priceAdjusted: false,
+    }],
+  });
+  const db = env.FEEDBACK_DB.database;
+  db.prepare(`
+    INSERT INTO ledger_action_scan_state (
+      portfolio_id, ledger_revision, coverage_from, scanned_through,
+      status, attempts, checked_holdings, failed_holdings,
+      source_coverage_json, last_error_json, updated_at
+    ) VALUES ('us', 0, '2025-01-01', '2026-08-01',
+      'COMPLETE', 0, 1, 0, '{}', '[]', 123)
+  `).run();
+  db.prepare(`
+    INSERT INTO ledger_public_snapshots (
+      portfolio_id, ledger_revision, snapshot_id, as_of_date,
+      snapshot_json, snapshot_sha256, status_json, generated_at,
+      status_at, published_at, updated_at
+    ) VALUES ('us', 0, 'public-lkg-revision-0', '2026-08-04',
+      '{"ledgerRevision":0}',
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '{"ready":true}', 120, 121, 122, 123)
+  `).run();
+  db.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+
+  let fetchCalls = 0;
+  const run = await runScheduledDividendDetection(env, ['us'], {
+    now: () => Date.parse('2026-08-05T04:00:00.000Z'),
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error('a stale projection must never reach a provider');
+    },
+  });
+
+  assert.equal(run.ok, true, 'waiting for materialization is an expected skipped run');
+  assert.equal(run.results.length, 1);
+  assert.equal(run.results[0].skipped, true);
+  assert.equal(run.results[0].partial, true);
+  assert.equal(run.results[0].reason,
+    'ACTION_SCAN_WAITING_FOR_CURRENT_MATERIALIZATION');
+  assert.equal(run.results[0].ledgerRevision, 1);
+  assert.equal(run.results[0].materializedRevision, 0);
+  assert.equal(run.results[0].scanStateAdvanced, false);
+  assert.equal(fetchCalls, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ledger_dividend_candidates`).get().count, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ledger_corporate_action_candidates`).get().count, 0);
+
+  const scan = db.prepare(`
+    SELECT * FROM ledger_action_scan_state WHERE portfolio_id = 'us'
+  `).get();
+  assert.equal(scan.ledger_revision, 0);
+  assert.equal(scan.coverage_from, '2025-01-01');
+  assert.equal(scan.scanned_through, '2026-08-01');
+  assert.equal(scan.status, 'COMPLETE');
+  assert.equal(scan.updated_at, 123);
+  assert.equal(db.prepare(`
+    SELECT ledger_revision FROM ledger_materialized_projections WHERE portfolio_id = 'us'
+  `).get().ledger_revision, 0, 'the last-known-good materialized snapshot is retained');
+  const publicSnapshot = db.prepare(`
+    SELECT * FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+  `).get();
+  assert.equal(publicSnapshot.ledger_revision, 0);
+  assert.equal(publicSnapshot.snapshot_id, 'public-lkg-revision-0');
+  assert.equal(publicSnapshot.updated_at, 123,
+    'action detection must not mutate the last-known-good public snapshot');
+});
+
+test('a revision change during provider fetch skips the scan before candidate persistence', async () => {
+  const env = await setup();
+  await persistMaterializedLedgerProjection(env, 'us', 0, {
+    portfolio: 'us',
+    market: 'us',
+    ledgerRevision: 0,
+    source: 'd1-confirmed-event-ledger',
+    savedBy: 'ledger-outbox',
+    savedAt: '2026-08-05T03:00:00.000Z',
+    valuationReady: true,
+    navRecalculationRequired: [],
+    positions: [{
+      t: 'RACE', n: 'Race Inc', q: 2, p: 10, mv: 20,
+      priceDate: '2026-08-04', priceSource: 'TUSHARE',
+      priceBasis: 'raw_close', priceAdjusted: false,
+    }],
+  });
+  const db = env.FEEDBACK_DB.database;
+  let fetchCalls = 0;
+  const eventTime = Math.floor(Date.parse('2026-08-03T13:30:00.000Z') / 1000);
+  const run = await runScheduledDividendDetection(env, ['us'], {
+    now: () => Date.parse('2026-08-05T04:00:00.000Z'),
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      db.prepare(`
+        UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+      `).run();
+      return {
+        ok: true,
+        async json() {
+          return {
+            chart: {
+              error: null,
+              result: [{ events: { dividends: {
+                event: { date: eventTime, amount: 999.99 },
+              } } }],
+            },
+          };
+        },
+      };
+    },
+  });
+
+  assert.equal(fetchCalls, 1);
+  assert.equal(run.results[0].skipped, true);
+  assert.equal(run.results[0].partial, true);
+  assert.equal(run.results[0].reason, 'LEDGER_REVISION_CHANGED');
+  assert.equal(run.results[0].scanStateAdvanced, false);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ledger_dividend_candidates`).get().count, 0);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ledger_action_scan_state`).get().count, 0);
+});
+
+test('scheduled EOD detection reads the current materialized holdings and isolates symbol failures', async () => {
   const env = await setup();
   const savedAt = '2026-08-05T03:00:00.000Z';
   await persistMaterializedLedgerProjection(env, 'us', 0, {
@@ -376,11 +511,6 @@ test('scheduled EOD detection reads the last complete materialized holdings and 
       { t: 'ZERO', n: 'Zero Inc', q: 0, p: 1, mv: 0 },
     ],
   });
-  // Revision 1 is still dynamic. Detection must continue from the coherent
-  // last-complete revision 0 snapshot instead of stalling or mixing states.
-  env.FEEDBACK_DB.database.prepare(`
-    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
-  `).run();
   const eventTime = Math.floor(Date.parse('2026-08-03T13:30:00.000Z') / 1000);
   const fetchImpl = async url => {
     if (String(url).includes('/FAIL?')) return { ok: false };
@@ -412,7 +542,7 @@ test('scheduled EOD detection reads the last complete materialized holdings and 
   }
   assert.equal(run.results.length, 1);
   assert.equal(run.results[0].checkedHoldings, 2);
-  assert.equal(run.results[0].ledgerRevision, 1);
+  assert.equal(run.results[0].ledgerRevision, 0);
   assert.equal(run.results[0].materializedRevision, 0);
   assert.equal(run.results[0].failedHoldings, 1);
   assert.equal(run.results[0].detected, 1);

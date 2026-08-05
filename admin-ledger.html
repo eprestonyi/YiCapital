@@ -32,7 +32,7 @@
   .dividend-review-form{display:grid;gap:12px;margin-top:15px;padding-top:14px;border-top:1px solid var(--line)}
   .dividend-review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
   .dividend-review-form .ledger-field>span{color:var(--muted);display:block;font-family:var(--mono);font-size:10px;letter-spacing:.65px;margin-bottom:6px}
-  .dividend-review-form input{background:var(--bg);border:1px solid var(--line);border-radius:7px;box-sizing:border-box;color:var(--txt);font-family:var(--zh);font-size:13px;padding:10px 12px;width:100%}
+  .dividend-review-form input,.dividend-review-form select{background:var(--bg);border:1px solid var(--line);border-radius:7px;box-sizing:border-box;color:var(--txt);font-family:var(--zh);font-size:13px;padding:10px 12px;width:100%}
   .dividend-amount-note{color:#cbd5e1;font-size:11px;line-height:1.6;margin-top:5px}
   .dividend-evidence{background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.065);border-radius:7px;margin-top:12px;padding:0 11px}
   .dividend-evidence summary{color:#b9c5d4;cursor:pointer;font-family:var(--mono);font-size:10px;padding:10px 0}
@@ -43,6 +43,20 @@
   .dividend-evidence-row a{color:var(--cyan)}
   .dividend-dismiss{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
   #dividend-inbox-list{margin-top:14px}
+  .action-review-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0}
+  .action-review-tabs button{background:var(--bg);border:1px solid var(--line);border-radius:999px;color:#9aa7ba;cursor:pointer;font-family:var(--mono);font-size:10px;padding:7px 12px}
+  .action-review-tabs button.on{border-color:var(--cyan);color:var(--cyan)}
+  .action-coverage{background:rgba(251,191,36,.035);border:1px solid rgba(251,191,36,.28);border-radius:7px;color:#d7dde8;font-family:var(--mono);font-size:10px;line-height:1.65;margin:10px 0;padding:9px 11px}
+  .action-month{display:grid;gap:10px}
+  .action-month-head{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:10px;justify-content:space-between;padding:4px 0 9px}
+  .action-month-head strong{color:#fff;font-family:var(--sans);font-size:14px}
+  .action-month-head span{color:var(--muted);font-family:var(--mono);font-size:10px}
+  .action-company{display:grid;gap:9px}
+  .action-company-head{align-items:center;display:flex;gap:8px;justify-content:space-between;padding:2px 3px}
+  .action-company-head b{color:#dbe4f0;font-size:12px}
+  .action-company-head small{color:var(--muted);font-family:var(--mono);font-size:9px}
+  .action-resolved{border-left-color:rgba(74,222,128,.62)}
+  .action-resolved.dismissed{border-left-color:rgba(148,163,184,.55)}
   .ledger-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
   .ledger-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .ledger-pill{border:1px solid var(--line);border-radius:999px;color:#aeb9c8;font-family:var(--mono);font-size:10px;padding:3px 9px}
@@ -68,6 +82,8 @@
   .form-actions{align-items:center;display:flex;gap:10px;grid-column:1/-1;flex-wrap:wrap}
   .form-state{color:var(--muted);font-family:var(--mono);font-size:11px}
   .danger-solid{background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.48);border-radius:6px;color:var(--down);cursor:pointer;font-family:var(--mono);font-size:11px;padding:8px 13px}
+  .danger-solid:disabled{background:rgba(148,163,184,.045);border-color:rgba(148,163,184,.2);color:#64748b;cursor:not-allowed;opacity:.72}
+  .danger-solid[aria-busy="true"]{border-color:rgba(34,211,238,.45);color:var(--cyan);cursor:progress;opacity:1}
   .sync-row{align-items:center;display:flex;gap:10px;flex-wrap:wrap}
   .sync-note{color:var(--muted);font-size:12.5px;line-height:1.75;margin:10px 0 16px}
   .sync-log{margin-top:14px}
@@ -98,6 +114,11 @@
   .import-diff{color:#cbd5e1;font-family:var(--mono);font-size:10px;line-height:1.65;margin:8px 0 0;max-height:130px;overflow:auto;white-space:pre-wrap}
   .import-confirm-box{background:rgba(34,211,238,.025);border:1px solid rgba(34,211,238,.2);border-radius:8px;display:grid;gap:10px;margin-top:15px;padding:13px}
   .import-confirm-box.blocked{background:rgba(248,113,113,.035);border-color:rgba(248,113,113,.35)}
+  .import-confirm-box.processed{background:rgba(74,222,128,.035);border-color:rgba(74,222,128,.34)}
+  #import-preview.processed .import-op{opacity:.72}
+  #import-selection[data-state="active"]{color:var(--cyan)}
+  #import-selection[data-state="success"]{color:var(--up)}
+  #import-selection[data-state="error"]{color:var(--down)}
   .import-confirm-ack{align-items:flex-start;color:#dbe4f0;cursor:pointer;display:flex;font-size:11.5px;gap:9px;line-height:1.55}
   .import-confirm-ack input{margin-top:3px}
   .import-confirm-box input[type="text"]{background:var(--bg);border:1px solid var(--line);border-radius:7px;box-sizing:border-box;color:var(--txt);font-family:var(--zh);font-size:12px;padding:10px 12px;width:100%}
@@ -131,11 +152,31 @@
   .legacy-phrase label{color:var(--muted);font-family:var(--mono);font-size:10px}
   .legacy-phrase code{color:#fff;font-family:var(--mono);font-size:11px}
   .legacy-phrase input{background:var(--bg);border:1px solid var(--line);border-radius:7px;box-sizing:border-box;color:var(--txt);font-family:var(--mono);font-size:12px;padding:10px 12px;width:100%}
+  .ledger-workbook{margin-top:22px;overflow:hidden;padding:0}
+  .workbook-head{align-items:flex-start;display:flex;gap:14px;justify-content:space-between;padding:18px 18px 12px}
+  .workbook-head h3{margin:0}
+  .workbook-head p{margin:6px 0 0}
+  .workbook-tabs{display:flex;gap:5px;overflow-x:auto;padding:0 18px 12px;scrollbar-width:thin}
+  .workbook-tabs button{background:var(--bg);border:1px solid var(--line);border-radius:5px;color:#9ba8ba;cursor:pointer;flex:0 0 auto;font-family:var(--mono);font-size:9.5px;padding:8px 10px}
+  .workbook-tabs button.on{background:#2f5b7c;border-color:#5e82a0;color:#fff}
+  .workbook-tabs button[data-derived="true"]::after{color:#8ea0b4;content:' · AUTO'}
+  .workbook-toolbar{align-items:center;border-top:1px solid var(--line);display:flex;gap:9px;min-height:35px;padding:10px 18px}
+  .workbook-toolbar .form-state{margin-left:auto}
+  .workbook-grid{background:#fff;border-top:1px solid var(--line);max-height:620px;overflow:auto;position:relative}
+  .excel-table{border-collapse:collapse;color:#111827;font-family:Arial,"Noto Sans TC",sans-serif;font-size:11px;min-width:100%;width:max-content}
+  .excel-table th,.excel-table td{background:#fff;border:1px solid #b0b0b0;box-sizing:border-box;height:29px;max-width:420px;min-width:90px;padding:5px 8px;white-space:nowrap}
+  .excel-table th{background:#d9e2ec;color:#111827;font-weight:700;position:sticky;top:0;z-index:2}
+  .excel-table tr.month td{background:#2f5b7c;color:#fff;font-weight:700;height:31px}
+  .excel-table tr.data{cursor:pointer}
+  .excel-table tr.data:hover td{background:#eef8fb}
+  .excel-table tr.data.selected td{background:#d8f5fb;box-shadow:inset 0 1px #22d3ee,inset 0 -1px #22d3ee}
+  .excel-table td.number{text-align:right}
+  .excel-empty{background:#fff;color:#64748b;font-family:var(--mono);padding:35px;text-align:center}
   .empty-state{color:var(--muted);font-family:var(--mono);font-size:12px;padding:24px;text-align:center}
   .sr-only{height:1px;margin:-1px;overflow:hidden;padding:0;position:absolute;width:1px;clip:rect(0,0,0,0)}
   @media(max-width:1050px){.ledger-grid{grid-template-columns:1fr}.ledger-payload{grid-template-columns:repeat(2,minmax(120px,1fr))}}
   @media(max-width:760px){.ledger-summary{grid-template-columns:1fr 1fr}.import-summary{grid-template-columns:repeat(3,1fr)}}
-  @media(max-width:520px){.ledger-summary,.ledger-form,.import-controls,.pipeline-status,.dividend-review-grid{grid-template-columns:1fr}.ledger-field.full,.form-actions{grid-column:1}.ledger-payload{grid-template-columns:1fr}.ledger-review,.dividend-dismiss{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}.dividend-evidence-row{grid-template-columns:1fr}}
+  @media(max-width:520px){.ledger-summary,.ledger-form,.import-controls,.pipeline-status,.dividend-review-grid{grid-template-columns:1fr}.ledger-field.full,.form-actions{grid-column:1}.ledger-payload{grid-template-columns:1fr}.ledger-review,.dividend-dismiss{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}.dividend-evidence-row{grid-template-columns:1fr}.workbook-head{display:block}.workbook-toolbar{align-items:flex-start;flex-direction:column}.workbook-toolbar .form-state{margin-left:0}}
 </style>
 </head>
 <body>
@@ -172,10 +213,15 @@
       <section>
         <div class="card dividend-inbox-card">
           <div class="topbar">
-            <h3 style="margin:0">自動派息待核實</h3>
+            <h3 style="margin:0">股息／公司行動 · 自動核對</h3>
             <span class="dividend-inbox-count" id="dividend-inbox-count">讀取中…</span>
           </div>
-          <p class="sync-note">後台來源只偵測「可能發生派息」，不採用供應商推算金額。Amount 必須填寫券商最終實際到賬金額，已包含所有預扣稅與費用；核實後只會建立 Automation Pending，仍須在下方另行 Confirm 才正式入賬。</p>
+          <p class="sync-note">系統按每家公司真正的正持倉期間掃描，每個來源事件獨立列出；同一公司同月兩筆就必須各自錄入或忽略。供應商只提供存在性、日期與拆股／更名線索，股息 Amount、公司行動前後 Quantity 與 Cash Change 全部由你核實填写。录入后只建立 Automation Pending，仍须另行 Confirm。</p>
+          <div class="action-review-tabs" id="action-review-tabs" aria-label="候選狀態">
+            <button class="on" type="button" data-action-state="OPEN">待核實</button>
+            <button type="button" data-action-state="RESOLVED">已錄入／已忽略 · 可修改</button>
+          </div>
+          <div class="action-coverage" id="action-coverage">正在讀取持倉期掃描覆蓋…</div>
           <div class="form-state" id="dividend-inbox-status" role="status">正在讀取候選…</div>
           <div id="dividend-inbox-list" class="ledger-stack"><div class="empty-state">載入中…</div></div>
         </div>
@@ -197,6 +243,9 @@
           <form id="event-form" class="ledger-form" novalidate>
             <input id="edit-pending-id" type="hidden">
             <input id="edit-version" type="hidden">
+            <input id="edit-event-id" type="hidden">
+            <input id="edit-event-version" type="hidden">
+            <input id="edit-ledger-revision" type="hidden">
             <div class="ledger-field">
               <label for="event-type">事件類型</label>
               <select id="event-type" required>
@@ -279,8 +328,8 @@
               <label class="ledger-field" for="import-confirm-reason"><span class="sr-only">整賬本替換確認理由</span></label>
               <input id="import-confirm-reason" type="text" maxlength="500" disabled placeholder="整賬本替換確認理由（必填）">
               <div class="sync-row">
-                <button class="danger-solid" id="confirm-import" type="button" disabled>確認整賬本替換</button>
-                <span class="form-state" id="import-selection">Preview 後才可確認。</span>
+                <button class="danger-solid" id="confirm-import" type="button" aria-busy="false" disabled>確認整賬本替換</button>
+                <span class="form-state" id="import-selection" role="status" aria-live="polite">Preview 後才可確認。</span>
               </div>
             </div>
           </div>
@@ -337,11 +386,28 @@
         </details>
       </aside>
     </div>
+
+    <section class="card ledger-workbook" aria-labelledby="ledger-workbook-title">
+      <div class="workbook-head">
+        <div>
+          <h3 id="ledger-workbook-title">Database Ledger · Excel 原樣工作台</h3>
+          <p class="sync-note">7 張事件 sheet 的欄名、順序與舊 Excel 一致；點選一行再按「修改選中行」會建立 correction Pending，Confirm 前不改正式賬本。CPS、Capital Quantity、Trade No. 與 4 張派生表仍由系統計算，不可手改。</p>
+        </div>
+        <span class="dividend-inbox-count" id="workbook-revision">Revision —</span>
+      </div>
+      <div class="workbook-tabs" id="workbook-tabs" role="tablist" aria-label="Excel sheets"></div>
+      <div class="workbook-toolbar">
+        <button class="btn2" id="workbook-edit-row" type="button" disabled>修改選中行</button>
+        <button class="btn2" id="workbook-history" type="button" disabled>查看版本歷史</button>
+        <span class="form-state" id="workbook-status" role="status">請先選擇事件行；派生 sheet 僅供核對。</span>
+      </div>
+      <div class="workbook-grid" id="workbook-grid"><div class="excel-empty">載入完整賬本中…</div></div>
+    </section>
   </div>
 </div>
 
 <footer><div class="wrap"><div class="logo">Yi<b>Capital</b></div><p>© 2026 Yi Capital.</p></div></footer>
 
-<script src="assets/yc-ledger-admin.js?v=20260805f"></script>
+<script src="assets/yc-ledger-admin.js?v=20260805g"></script>
 </body>
 </html>

@@ -33,13 +33,15 @@ Cloudflare Worker v9.4 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
    這會依次套用 migrations/0001_user_feedback.sql、
    migrations/0002_portfolio_ledger.sql、migrations/0003_frozen_price_tapes.sql 與
    migrations/0004_auth_sessions.sql、migrations/0005_public_portfolio_snapshots.sql、
-   migrations/0006_dividend_candidate_inbox.sql。
+   migrations/0006_dividend_candidate_inbox.sql、migrations/0007_action_review_workbench.sql。
    0003 為每個 ledger revision 建立 immutable、未復權 raw-close price tape，
    是 NAV 發布門禁；0004 必須先於 v9.4 Worker 部署完成；0005 把賬本物化投影、
    最後完整公開快照及最新刷新狀態放入 D1，以單行 guarded UPSERT 取代分鐘級
    KV 多鍵發布。0006 建立派息核實 Inbox：行情只寫 Amount=NULL 的候選，管理員輸入
-   券商實際到賬 Amount 後只轉成 Pending，仍須另行 Confirm。0005/0006 都是 additive
-   migration，必須先套用再部署讀取它們的 Worker。
+   券商實際到賬 Amount 後只轉成 Pending，仍須另行 Confirm。0007 新增公司行動候選、
+   來源 observation、處理版本歷史與持倉期掃描 checkpoint；首次及每次 ledger revision
+   改變都重掃完整正持倉歷史，之後以 45 日重疊窗口增量檢測。0005/0006/0007 都是
+   additive migration，必須先套用再部署讀取它們的 Worker。
    不要把登入 token、
    用戶意見、投資組合事件或稅務資料存入公開 GitHub 文件。
 

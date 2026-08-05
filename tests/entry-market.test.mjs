@@ -39,6 +39,7 @@ async function d1Fixture() {
     '0004_auth_sessions.sql',
     '0005_public_portfolio_snapshots.sql',
     '0006_dividend_candidate_inbox.sql',
+    '0007_action_review_workbench.sql',
   ].map(file => readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8')))).join('\n');
   return new D1Database(sql);
 }

@@ -106,6 +106,9 @@ const ENDPOINT_DEFINITIONS = {
   dividend: endpoint('Stocks', 'disclosure', 6 * HOUR, 6000, [
     'ts_code', 'ann_date', 'record_date', 'ex_date', 'imp_ann_date',
   ], 103),
+  namechange: endpoint('Stocks', 'disclosure', 6 * HOUR, 6000, [
+    'ts_code', 'start_date', 'end_date', 'ann_date',
+  ], 100),
   rt_k: endpoint('Stocks', 'intraday_snapshot', MINUTE, 10000, [
     'ts_code',
   ], 372),

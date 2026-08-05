@@ -85,6 +85,7 @@ async function setup() {
     '../migrations/0003_frozen_price_tapes.sql',
     '../migrations/0005_public_portfolio_snapshots.sql',
     '../migrations/0006_dividend_candidate_inbox.sql',
+    '../migrations/0007_action_review_workbench.sql',
   ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   const env = { FEEDBACK_DB: new D1Database(sql), YC_KV: new MemoryKv() };
   return { env };

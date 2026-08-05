@@ -12,6 +12,7 @@ import {
   freezeLedgerPriceTape,
   handleLedgerAdminRequest,
   ledgerHealth,
+  loadActionDetectionScanPlan,
   loadDividendDetectionHoldings,
   loadMaterializedLedgerProjection,
   loadPublicPortfolioAttempt,
@@ -22,6 +23,8 @@ import {
   materializeLedgerKv,
   persistLedgerValuation,
   persistLedgerValuationBatch,
+  persistActionDetectionScanState,
+  persistCorporateActionCandidates,
   persistDividendCandidates,
   persistMaterializedLedgerProjection,
   persistPublicPortfolioSnapshot,
@@ -2084,10 +2087,14 @@ const addIsoDays = (value, days) => {
 };
 
 /**
- * EOD dividend discovery reads only the last complete materialized positive
- * holdings.  Provider values are presence signals; persistence rejects any
- * candidate that carries an amount, tax or fee and never creates Pending by
- * itself.
+ * EOD dividend/corporate-action discovery reads the confirmed event history
+ * only when the complete materialized projection has caught up to the current
+ * ledger revision.  A last-known-good older projection remains available to
+ * public readers, but it is never used to advance action-detection coverage.
+ * The first coherent run and every ledger revision change scan the full
+ * positive-holding history; subsequent runs overlap the latest 45 days.
+ * Provider values are signals only and never create a ledger Pending without
+ * administrator verification.
  */
 export async function runScheduledDividendDetection(
   env,
@@ -2111,13 +2118,13 @@ export async function runScheduledDividendDetection(
     : null;
   const results = [];
   for (const portfolio of portfolios) {
+    let attemptedLedgerRevision = null;
+    let attemptedMaterializedRevision = null;
     try {
       const toDate = portfolioMarketDate(nowValue, portfolio);
-      const fromDate = addIsoDays(toDate, -lookbackDays);
-      const snapshot = await loadDividendDetectionHoldings(env, portfolio, {
-        fromDate,
-        toDate,
-      });
+      const snapshot = await loadDividendDetectionHoldings(env, portfolio, { toDate });
+      attemptedLedgerRevision = snapshot.ledgerRevision;
+      attemptedMaterializedRevision = snapshot.materializedRevision;
       if (!snapshot.ready) {
         results.push({
           ok: false,
@@ -2129,6 +2136,26 @@ export async function runScheduledDividendDetection(
         });
         continue;
       }
+      if (Number(snapshot.materializedRevision) !== Number(snapshot.ledgerRevision)) {
+        results.push({
+          ok: false,
+          portfolio,
+          skipped: true,
+          partial: true,
+          reason: 'ACTION_SCAN_WAITING_FOR_CURRENT_MATERIALIZATION',
+          ledgerRevision: snapshot.ledgerRevision,
+          materializedRevision: snapshot.materializedRevision,
+          scanStateAdvanced: false,
+        });
+        continue;
+      }
+      const plan = await loadActionDetectionScanPlan(env, portfolio, {
+        firstHeldDate: snapshot.firstHeldDate || addIsoDays(toDate, -lookbackDays),
+        toDate,
+        lookbackDays: Math.max(45, lookbackDays),
+        ledgerRevision: snapshot.ledgerRevision,
+      });
+      const fromDate = plan.fromDate;
       const detection = await detectDividendCandidates({
         holdings: snapshot.holdings,
         fromDate,
@@ -2137,6 +2164,7 @@ export async function runScheduledDividendDetection(
         fetchImpl: options.fetchImpl || globalThis.fetch,
         concurrency: options.concurrency,
         now: () => nowValue,
+        includeCorporateActions: true,
       });
       for (const failure of detection.errors || []) {
         console.error(
@@ -2146,12 +2174,56 @@ export async function runScheduledDividendDetection(
           failure.code,
         );
       }
-      const persisted = await persistDividendCandidates(
-        env,
-        portfolio,
-        detection.candidates,
-        { detectedAt: detection.generated_at },
-      );
+      const dividendCandidates = detection.candidates.filter(item =>
+        String(item.event_type || '').toUpperCase() === 'DIVIDEND');
+      const corporateActionCandidates = detection.candidates.filter(item =>
+        String(item.event_type || '').toUpperCase() === 'CORPORATE_ACTION');
+      // Fetching can take several seconds.  Refuse to persist signals from a
+      // projection that became stale while provider requests were in flight.
+      await assertLedgerRevision(env, portfolio, snapshot.ledgerRevision);
+      const [persisted, corporatePersisted] = await Promise.all([
+        persistDividendCandidates(
+          env,
+          portfolio,
+          dividendCandidates,
+          { detectedAt: detection.generated_at },
+        ),
+        persistCorporateActionCandidates(
+          env,
+          portfolio,
+          corporateActionCandidates,
+          { detectedAt: detection.generated_at },
+        ),
+      ]);
+      const writeErrors = [...persisted.results, ...corporatePersisted.results]
+        .filter(item => item.error || item.conflict)
+        .map(item => ({
+          code: item.error || 'SOURCE_PAYLOAD_CONFLICT',
+          source_event_id: item.sourceEventId || item.candidate?.sourceEventId || null,
+        }));
+      await persistActionDetectionScanState(env, portfolio, {
+        ledgerRevision: snapshot.ledgerRevision,
+        materializedRevision: snapshot.materializedRevision,
+        fromDate,
+        toDate,
+        checkedHoldings: detection.checked_holdings,
+        failedHoldings: detection.failed_holdings,
+        complete: detection.is_complete === true && persisted.ok === true &&
+          corporatePersisted.ok === true,
+        errors: [...(detection.errors || []), ...(detection.skipped || []), ...writeErrors],
+        sourceCoverage: portfolio === 'a'
+          ? {
+              dividends: 'TUSHARE_DIVIDEND',
+              splitsAndStockDistributions: 'TUSHARE_DIVIDEND',
+              renames: 'TUSHARE_NAMECHANGE',
+              mergersAndSpinoffs: 'PARTIAL_MANUAL_REVIEW_REQUIRED',
+            }
+          : {
+              dividends: 'YAHOO_CHART',
+              splits: 'YAHOO_CHART',
+              renamesMergersSpinoffs: 'PARTIAL_MANUAL_REVIEW_REQUIRED',
+            },
+      });
       for (const failure of persisted.results.filter(item => item.error || item.conflict)) {
         console.error(
           'dividend_candidate_persist_failed',
@@ -2160,26 +2232,59 @@ export async function runScheduledDividendDetection(
           failure.error || 'SOURCE_PAYLOAD_CONFLICT',
         );
       }
+      for (const failure of corporatePersisted.results.filter(item => item.error || item.conflict)) {
+        console.error(
+          'corporate_action_candidate_persist_failed',
+          portfolio,
+          failure.sourceEventId || failure.candidate?.sourceEventId || '',
+          failure.error || 'SOURCE_PAYLOAD_CONFLICT',
+        );
+      }
       results.push({
-        ok: detection.is_complete === true && persisted.ok === true,
+        ok: detection.is_complete === true && persisted.ok === true &&
+          corporatePersisted.ok === true,
         portfolio,
         ledgerRevision: snapshot.ledgerRevision,
         materializedRevision: snapshot.materializedRevision,
         holdingCoverage: snapshot.holdingCoverage,
+        scanMode: plan.mode,
+        scanFrom: fromDate,
+        scanThrough: toDate,
         entitlementDetermined: false,
         checkedHoldings: detection.checked_holdings,
         failedHoldings: detection.failed_holdings,
+        skippedHoldings: detection.skipped_holdings || 0,
         detected: detection.candidates.length,
-        inserted: persisted.inserted,
-        duplicates: persisted.duplicates,
-        conflicts: persisted.conflicts,
-        failedWrites: persisted.failed,
+        detectedDividends: dividendCandidates.length,
+        detectedCorporateActions: corporateActionCandidates.length,
+        inserted: persisted.inserted + corporatePersisted.inserted,
+        duplicates: persisted.duplicates + corporatePersisted.duplicates,
+        conflicts: persisted.conflicts + corporatePersisted.conflicts,
+        failedWrites: persisted.failed + corporatePersisted.failed,
+        scanStateAdvanced: true,
       });
     } catch (error) {
-      const code = String(error && (error.code || error.message) ||
+      const code = String(error && (error.details?.code || error.code || error.message) ||
         'DIVIDEND_DETECTION_RUN_FAILED');
       console.error('dividend_detection_portfolio_failed', portfolio, code);
-      results.push({ ok: false, portfolio, error: code });
+      if (new Set([
+        'LEDGER_REVISION_CHANGED',
+        'ACTION_SCAN_REVISION_NOT_CURRENT',
+        'ACTION_SCAN_MATERIALIZED_REVISION_MISMATCH',
+      ]).has(code)) {
+        results.push({
+          ok: false,
+          portfolio,
+          skipped: true,
+          partial: true,
+          reason: code,
+          ledgerRevision: attemptedLedgerRevision,
+          materializedRevision: attemptedMaterializedRevision,
+          scanStateAdvanced: false,
+        });
+      } else {
+        results.push({ ok: false, portfolio, error: code });
+      }
     }
   }
   return {

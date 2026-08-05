@@ -10,6 +10,9 @@
   const XLSX_IMPORT_WORKER = 'assets/yc-xlsx-import-worker.js?v=20260805a';
   const MAX_LEGACY_JSON_BYTES = 2 * 1024 * 1024;
   const MAX_LEGACY_EVENTS = 120;
+  const IMPORT_CONFIRM_LABEL = '確認整賬本替換';
+  const IMPORT_CONFIRM_BUSY_LABEL = '正在替換…';
+  const IMPORT_CONFIRM_DONE_LABEL = '已完成替換';
   const DEFAULT_REPLACE_REASON = '已核對 Excel 完整事件賬本，確認以此建立新的 active ledger revision；舊版本保留歷史。';
   const LEGACY_ACKS = [
     { key: 'duplicates', input: 'legacy-ack-duplicates', row: 'legacy-ack-duplicates-row', state: 'legacy-ack-duplicates-state' },
@@ -70,6 +73,12 @@
   ];
   const INPUT_BY_TYPE = Object.fromEntries(INPUT_DEFS.map(def => [def.type, def]));
   const INPUT_BY_SHEET = Object.fromEntries(INPUT_DEFS.map(def => [def.sheet, def]));
+  const WORKBOOK_SHEETS = [
+    'ETF Stock Buy Record', 'ETF Stock Sell Record', 'ETF Stock Dividend Record',
+    'Corporate Action Record', 'Asset Position Record', 'Liability Record',
+    'Liability Statement', 'Capital Record', 'Fund Action Record',
+    'Cash Flow Statement', 'NAV Statement',
+  ];
   const META_HEADERS = ['__yi_event_id', '__yi_event_version', '__yi_base_hash', '__yi_payload_json'];
   const FORM_FIELDS = {
     BUY: [
@@ -128,10 +137,14 @@
 
   const state = {
     portfolio: 'us', ledger: null, pending: [], confirmed: [], ledgerRevision: 0,
-    dividendCandidates: [], dividendLoadSequence: 0,
+    dividendCandidates: [], actionCandidates: [], actionCoverage: null,
+    actionReviewState: 'OPEN', dividendLoadSequence: 0,
+    workbookSheet: WORKBOOK_SHEETS[0], workbookSelection: null,
+    editBasePayload: null,
     pipelineHealth: null, pipelineView: null,
     importFile: null, importBuffer: null, importHash: null, importParsed: null,
     importPreview: null, importId: null, importExpectedRevision: null,
+    importConfirming: false, importProcessed: false,
     importBlockers: [], importBlockerCount: 0,
     legacyPackage: null, legacyPreview: null, legacyImportId: null,
     legacyMigrationHash: null, legacyRequirements: null, legacyConfirmed: false,
@@ -362,6 +375,9 @@
       version: asNumber(first(item, ['expectedVersion', 'version'], 1), 1),
       status: String(first(item, ['status'], 'PENDING')).toUpperCase(),
       source: String(first(item, ['source'], 'MANUAL')).toUpperCase(),
+      confirmedEventId: String(first(item, ['confirmedEventId', 'confirmed_event_id'], '') || ''),
+      baseEventId: String(first(item, ['baseEventId', 'base_event_id'], '') || ''),
+      baseEventVersion: optionalNumber(first(item, ['baseEventVersion', 'base_event_version'], null)),
       createdAt: first(item, ['createdAt', 'created_at'], ''),
       updatedAt: first(item, ['updatedAt', 'updated_at'], ''),
       event,
@@ -378,6 +394,7 @@
     ], currentQuantity));
     return {
       raw: item,
+      candidateType: 'DIVIDEND',
       candidateId: String(first(item, ['candidateId', 'candidate_id', 'id'], '') || ''),
       portfolio: String(first(item, ['portfolio', 'portfolio_id'], '') || '').toLowerCase(),
       version: asNumber(first(item, ['expectedVersion', 'version'], 1), 1),
@@ -392,8 +409,50 @@
       detectedAt: first(item, ['detectedAt', 'detected_at'], ''),
       currentQuantity,
       suggestedQuantity,
+      convertedPending: first(item, ['convertedPending', 'converted_pending'], null)
+        ? normalizePending(first(item, ['convertedPending', 'converted_pending'], {})) : null,
+      resolutionHistory: Array.isArray(first(item, ['resolutionHistory', 'resolution_history'], []))
+        ? first(item, ['resolutionHistory', 'resolution_history'], []) : [],
+      resolvedBy: String(first(item, ['resolvedBy', 'resolved_by'], '') || ''),
+      resolvedAt: first(item, ['resolvedAt', 'resolved_at'], null),
+      resolutionNote: String(first(item, ['resolutionNote', 'resolution_note'], '') || ''),
       evidence,
     };
+  }
+
+  function normalizeCorporateActionCandidate(item) {
+    const evidence = parseJson(first(item, ['evidence', 'evidence_json', 'evidenceJson'], {}), {});
+    return {
+      raw: item,
+      candidateType: 'CORPORATE_ACTION',
+      candidateId: String(first(item, ['candidateId', 'candidate_id', 'id'], '') || ''),
+      portfolio: String(first(item, ['portfolio', 'portfolio_id'], '') || '').toLowerCase(),
+      version: asNumber(first(item, ['expectedVersion', 'version'], 1), 1),
+      status: String(first(item, ['status'], 'PENDING_VERIFICATION')).toUpperCase(),
+      ticker: String(first(item, ['ticker'], '') || '').toUpperCase(),
+      name: String(first(item, ['name', 'securityName', 'security_name'], '') || ''),
+      actionDate: dateString(first(item, ['actionDate', 'action_date'], '')),
+      recordDate: dateString(first(item, ['recordDate', 'record_date'], '')),
+      actionTypeHint: String(first(item, ['actionTypeHint', 'action_type_hint'], 'UNKNOWN')).toUpperCase(),
+      sourceSystem: String(first(item, ['sourceSystem', 'source_system'], '') || ''),
+      sourceEventId: String(first(item, ['sourceEventId', 'source_event_id'], '') || ''),
+      detectedAt: first(item, ['detectedAt', 'detected_at'], ''),
+      suggestedQuantity: optionalNumber(first(item, ['suggestedQuantity', 'suggested_quantity'], null)),
+      convertedPending: first(item, ['convertedPending', 'converted_pending'], null)
+        ? normalizePending(first(item, ['convertedPending', 'converted_pending'], {})) : null,
+      resolutionHistory: Array.isArray(first(item, ['resolutionHistory', 'resolution_history'], []))
+        ? first(item, ['resolutionHistory', 'resolution_history'], []) : [],
+      resolvedBy: String(first(item, ['resolvedBy', 'resolved_by'], '') || ''),
+      resolvedAt: first(item, ['resolvedAt', 'resolved_at'], null),
+      resolutionNote: String(first(item, ['resolutionNote', 'resolution_note'], '') || ''),
+      evidence,
+    };
+  }
+
+  function normalizeActionCandidate(item) {
+    const type = canonicalType(first(item, ['candidateType', 'candidate_type', 'eventType', 'event_type'], 'DIVIDEND'));
+    return type === 'CORPORATE_ACTION'
+      ? normalizeCorporateActionCandidate(item) : normalizeDividendCandidate(item);
   }
 
   function dividendVerifyPayload(candidate, values) {
@@ -456,6 +515,14 @@
       button.addEventListener('click', () => switchPortfolio(button.dataset.portfolio));
     });
     $('refresh-ledger').addEventListener('click', loadLedger);
+    document.querySelectorAll('#action-review-tabs button').forEach(button => {
+      button.addEventListener('click', () => {
+        state.actionReviewState = button.dataset.actionState || 'OPEN';
+        document.querySelectorAll('#action-review-tabs button').forEach(item =>
+          item.classList.toggle('on', item === button));
+        renderDividendCandidates();
+      });
+    });
     $('event-type').addEventListener('change', renderEventFields);
     $('event-form').addEventListener('submit', savePending);
     $('reset-event').addEventListener('click', resetForm);
@@ -467,6 +534,10 @@
     $('import-replace-all-ack').addEventListener('change', updateImportConfirmation);
     $('import-confirm-reason').addEventListener('input', updateImportConfirmation);
     $('confirm-import').addEventListener('click', confirmImport);
+    $('workbook-edit-row').addEventListener('click', () => {
+      if (state.workbookSelection) editConfirmed(state.workbookSelection);
+    });
+    $('workbook-history').addEventListener('click', showSelectedEventHistory);
     $('legacy-json').addEventListener('input', invalidateLegacyPackage);
     $('parse-legacy').addEventListener('click', parseLegacyMigrationPackage);
     $('clear-legacy').addEventListener('click', () => clearLegacyMigration());
@@ -485,6 +556,7 @@
     resetForm();
     clearImport();
     clearLegacyMigration();
+    state.workbookSelection = null;
     await loadLedger();
   }
 
@@ -518,8 +590,13 @@
       const eventsRaw = first(result, ['events', 'confirmedEvents', 'confirmed_events'], []);
       state.pending = (Array.isArray(pendingRaw) ? pendingRaw : []).map(normalizePending).filter(item => item.status === 'PENDING');
       state.confirmed = (Array.isArray(eventsRaw) ? eventsRaw : []).filter(item => String(first(item, ['status'], 'CONFIRMED')).toUpperCase() !== 'PENDING');
+      if (state.workbookSelection) {
+        state.workbookSelection = confirmedWorkbenchItems().find(item =>
+          item.eventId === state.workbookSelection.eventId) || null;
+      }
       renderSummary();
       renderPending();
+      renderWorkbook();
     } catch (error) {
       loadError = error;
     } finally {
@@ -540,43 +617,134 @@
     const host = $('dividend-inbox-list');
     const count = $('dividend-inbox-count');
     const status = $('dividend-inbox-status');
-    host.replaceChildren(el('div', 'empty-state', `正在讀取 ${portfolio.toUpperCase()} 派息候選…`));
+    host.replaceChildren(el('div', 'empty-state', `正在讀取 ${portfolio.toUpperCase()} 股息／公司行動候選…`));
     count.textContent = '讀取中…';
-    status.textContent = '來源候選只提供派息存在性與日期證據，不提供 Amount。';
+    status.textContent = '來源候選只提供事件存在性與日期／比例線索，不提供可直接入賬的 Amount 或 Quantity。';
     try {
-      const result = await api(`/api/admin/ledger/dividends?portfolio=${encodeURIComponent(portfolio)}&status=PENDING_VERIFICATION`);
-      if (sequence !== state.dividendLoadSequence || portfolio !== state.portfolio) return;
-      const responsePortfolio = String(first(result, ['portfolio'], portfolio)).toLowerCase();
-      if (responsePortfolio !== portfolio) throw new Error('後端返回了錯誤的投資組合派息候選。');
-      const raw = first(result, ['candidates', 'items'], []);
-      state.dividendCandidates = (Array.isArray(raw) ? raw : [])
-        .map(normalizeDividendCandidate)
-        .filter(item => item.status === 'PENDING_VERIFICATION' || item.status === 'PENDING');
-      count.textContent = `${state.dividendCandidates.length} 待核實`;
-      status.textContent = state.dividendCandidates.length
-        ? '請用券商結單核對最終到賬 Amount；每筆操作均保留來源與版本審計。'
-        : '目前沒有待核實派息候選。';
+      const result = await fetchAllActionCandidatePages(portfolio, () =>
+        sequence === state.dividendLoadSequence && portfolio === state.portfolio);
+      if (!result) return;
+      state.actionCandidates = result.items.map(normalizeActionCandidate);
+      state.dividendCandidates = state.actionCandidates.filter(item => item.candidateType === 'DIVIDEND');
+      state.actionCoverage = result.coverage;
+      const openCount = state.actionCandidates.filter(item => item.status === 'PENDING_VERIFICATION').length;
+      const resolvedCount = state.actionCandidates.length - openCount;
+      count.textContent = `${openCount} 待核實 · ${resolvedCount} 已處理`;
+      status.textContent = openCount
+        ? '逐筆錄入或忽略；所有选择和后续修改都保留版本审计。'
+        : '目前沒有待核實候選；可切到「已錄入／已忽略」修改或重新打開。';
+      renderActionCoverage();
       renderDividendCandidates();
     } catch (error) {
       if (sequence !== state.dividendLoadSequence || portfolio !== state.portfolio) return;
-      state.dividendCandidates = [];
+      state.dividendCandidates = []; state.actionCandidates = []; state.actionCoverage = null;
       count.textContent = '讀取失敗';
       status.textContent = '✗ ' + error.message;
-      host.replaceChildren(el('div', 'log err', '派息候選讀取失敗；賬本 Pending 不受影響，可稍後刷新。'));
+      $('action-coverage').textContent = '掃描覆蓋暫不可讀；正式賬本不受影響。';
+      host.replaceChildren(el('div', 'log err', '股息／公司行動候選讀取失敗；賬本 Pending 不受影響，可稍後刷新。'));
     }
+  }
+
+  async function fetchAllActionCandidatePages(portfolio, isCurrent) {
+    const items = [];
+    let coverage = null;
+    let offset = 0;
+    while (true) {
+      if (!isCurrent()) return null;
+      const result = await api(`/api/admin/ledger/actions?portfolio=${encodeURIComponent(portfolio)}&state=ALL&limit=200&offset=${offset}`);
+      if (!isCurrent()) return null;
+      const responsePortfolio = String(first(result, ['portfolio'], portfolio)).toLowerCase();
+      if (responsePortfolio !== portfolio) throw new Error('後端返回了錯誤的投資組合行動候選。');
+      const pageItems = first(result, ['items', 'candidates'], []);
+      if (!Array.isArray(pageItems)) throw new Error('後端行動候選分頁格式錯誤。');
+      items.push(...pageItems);
+      const pageCoverage = first(result, ['coverage'], null);
+      if (pageCoverage !== null && pageCoverage !== undefined) coverage = pageCoverage;
+      const rawNextOffset = first(result, ['nextOffset', 'next_offset'], null);
+      if (rawNextOffset === null || rawNextOffset === undefined || rawNextOffset === '') {
+        return { items, coverage };
+      }
+      const nextOffset = Number(rawNextOffset);
+      if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset) {
+        throw new Error('後端行動候選 nextOffset 必須嚴格遞增。');
+      }
+      offset = nextOffset;
+    }
+  }
+
+  function renderActionCoverage() {
+    const host = $('action-coverage');
+    const coverage = state.actionCoverage || {};
+    const status = String(first(coverage, ['status'], 'NOT_STARTED')).toUpperCase();
+    const current = first(coverage, ['current'], status !== 'STALE') === true;
+    const currentRevision = first(coverage, ['currentLedgerRevision', 'current_ledger_revision'], null);
+    const scannedRevision = first(coverage, ['ledgerRevision', 'ledger_revision'], null);
+    const fromDate = first(coverage, ['coverageFrom', 'coverage_from'], null);
+    const through = first(coverage, ['scannedThrough', 'scanned_through'], null);
+    const failed = asNumber(first(coverage, ['failedHoldings', 'failed_holdings'], 0), 0);
+    const sources = first(coverage, ['sourceCoverage', 'source_coverage'], {}) || {};
+    const sourceText = Object.entries(sources).map(([key, value]) => `${key}: ${value}`).join(' · ');
+    host.textContent = status === 'STALE' || !current && scannedRevision !== null
+      ? `↻ Revision ${currentRevision ?? '—'} 正在物化／等待完整持倉期重掃；` +
+        `目前僅有 Revision ${scannedRevision ?? '—'} 的舊掃描記錄，不視為完成。`
+      : status === 'NOT_STARTED'
+      ? '首次完整持倉期回填尚未完成；EOD 任務會從首次持有日開始掃描。'
+      : `${status === 'COMPLETE' ? '✓ 已掃描' : '△ 部分來源／標的待重試'} ${fromDate || '—'} → ${through || '—'} · ` +
+        `${failed} 個標的失敗${sourceText ? ` · ${sourceText}` : ''}。`;
   }
 
   function renderDividendCandidates() {
     const host = $('dividend-inbox-list');
     host.replaceChildren();
-    if (!state.dividendCandidates.length) {
-      host.append(el('div', 'empty-state', '目前沒有待核實派息候選。'));
+    const visible = state.actionCandidates.filter(item => state.actionReviewState === 'OPEN'
+      ? item.status === 'PENDING_VERIFICATION' : item.status !== 'PENDING_VERIFICATION');
+    if (!visible.length) {
+      host.append(el('div', 'empty-state', state.actionReviewState === 'OPEN'
+        ? '目前沒有待核實候選。' : '目前沒有已處理候選。'));
       return;
     }
-    state.dividendCandidates
-      .slice()
-      .sort((a, b) => String(b.payDate || b.exDate).localeCompare(String(a.payDate || a.exDate)) || a.candidateId.localeCompare(b.candidateId))
-      .forEach(candidate => host.append(dividendCandidateCard(candidate)));
+    const actionMonth = candidate => {
+      const date = candidate.actionDate || candidate.payDate || candidate.exDate || '';
+      return date.slice(0, 7) || '日期待核實';
+    };
+    const groups = new Map();
+    visible.forEach(candidate => {
+      const month = actionMonth(candidate);
+      if (!groups.has(month)) groups.set(month, new Map());
+      const companies = groups.get(month);
+      const key = candidate.ticker || 'UNKNOWN';
+      if (!companies.has(key)) companies.set(key, []);
+      companies.get(key).push(candidate);
+    });
+    [...groups.entries()].sort(([left], [right]) => right.localeCompare(left)).forEach(([month, companies]) => {
+      const monthHost = el('section', 'action-month');
+      const monthAll = state.actionCandidates.filter(candidate => actionMonth(candidate) === month);
+      const handled = monthAll.filter(candidate => candidate.status !== 'PENDING_VERIFICATION').length;
+      const monthHead = el('div', 'action-month-head');
+      monthHead.append(el('strong', '', month), el('span', '', `${handled}/${monthAll.length} 已處理`));
+      monthHost.append(monthHead);
+      [...companies.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([ticker, candidates]) => {
+        const company = el('div', 'action-company');
+        const companyHead = el('div', 'action-company-head');
+        const allCompany = monthAll.filter(candidate => candidate.ticker === ticker);
+        const companyHandled = allCompany.filter(candidate => candidate.status !== 'PENDING_VERIFICATION').length;
+        companyHead.append(
+          el('b', '', `${ticker} · ${candidates[0].name || ticker}`),
+          el('small', '', `${companyHandled}/${allCompany.length} events`),
+        );
+        company.append(companyHead);
+        candidates.sort((a, b) => String(a.actionDate || a.payDate || a.exDate).localeCompare(
+          String(b.actionDate || b.payDate || b.exDate),
+        ) || a.candidateId.localeCompare(b.candidateId)).forEach(candidate => {
+          company.append(candidate.status === 'PENDING_VERIFICATION'
+            ? candidate.candidateType === 'DIVIDEND'
+              ? dividendCandidateCard(candidate) : corporateActionCandidateCard(candidate)
+            : resolvedActionCandidateCard(candidate));
+        });
+        monthHost.append(company);
+      });
+      host.append(monthHost);
+    });
   }
 
   function dividendCandidateCard(candidate) {
@@ -584,7 +752,7 @@
     const head = el('div', 'ledger-head');
     const title = el('div', 'ledger-title');
     title.append(
-      el('span', 'ledger-pill pending', 'AWAITING AMOUNT'),
+      el('span', 'ledger-pill pending', 'DIVIDEND · AWAITING AMOUNT'),
       el('span', 'ledger-pill', candidate.ticker || 'UNKNOWN'),
       el('strong', '', candidate.name || candidate.ticker || '未命名資產'),
     );
@@ -622,7 +790,7 @@
     const review = el('div', 'dividend-review-form');
     const fields = el('div', 'dividend-review-grid');
     const amount = dividendInput('number', `券商最終到賬 Amount (${PORTFOLIOS[state.portfolio].currency})`, {
-      required: true, min: '0.01', step: '0.01', placeholder: '必填，例如 123.45', inputMode: 'decimal',
+      required: true, min: '0', step: '0.01', placeholder: '必填，可填任意已核實非負金額', inputMode: 'decimal',
     });
     amount.wrap.append(el('div', 'dividend-amount-note', '唯一現金輸入：券商最終實際到賬，已含所有預扣稅與費用。'));
     const quantity = dividendInput('number', 'Quantity（必須核實，可修改）', {
@@ -664,6 +832,270 @@
     return card;
   }
 
+  function candidateEvidence(candidate) {
+    const evidence = document.createElement('details');
+    evidence.className = 'dividend-evidence';
+    const summary = document.createElement('summary');
+    summary.textContent = `來源證據 · ${candidate.sourceSystem || 'UNKNOWN SOURCE'}`;
+    const grid = el('div', 'dividend-evidence-grid');
+    dividendEvidenceEntries(candidate).forEach(([key, value]) => {
+      const row = el('div', 'dividend-evidence-row');
+      row.append(el('small', '', key));
+      if (/^https?:\/\//i.test(value)) {
+        const link = el('a', '', value);
+        link.href = value; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        row.append(link);
+      } else row.append(el('span', '', value));
+      grid.append(row);
+    });
+    evidence.append(summary, grid);
+    return evidence;
+  }
+
+  function reviewSelect(labelText, values, selected) {
+    const wrap = el('label', 'ledger-field');
+    wrap.append(el('span', '', labelText));
+    const select = document.createElement('select');
+    values.forEach(value => {
+      const option = document.createElement('option');
+      option.value = value; option.textContent = value;
+      option.selected = value === selected;
+      select.append(option);
+    });
+    wrap.append(select);
+    return { wrap, input: select };
+  }
+
+  function corporateActionCandidateCard(candidate) {
+    const card = el('article', 'ledger-card dividend-candidate');
+    const head = el('div', 'ledger-head');
+    const title = el('div', 'ledger-title');
+    title.append(
+      el('span', 'ledger-pill pending', 'CORPORATE ACTION · AWAITING REVIEW'),
+      el('span', 'ledger-pill', candidate.actionTypeHint || 'UNKNOWN'),
+      el('strong', '', candidate.name || candidate.ticker || '未命名資產'),
+    );
+    head.append(title, el('span', 'ledger-meta', `Candidate v${candidate.version}`));
+    const dates = el('div', 'ledger-payload');
+    [
+      ['ACTION DATE', candidate.actionDate || '—'],
+      ['RECORD DATE', candidate.recordDate || '—'],
+      ['SOURCE TICKER', candidate.ticker || '—'],
+      ['HISTORICAL QUANTITY', candidate.suggestedQuantity === null
+        ? '沒有可靠建議，必須手填' : amountText(candidate.suggestedQuantity)],
+    ].forEach(([key, value]) => {
+      const cell = el('div', 'ledger-kv');
+      cell.append(el('small', '', key), el('span', '', value));
+      dates.append(cell);
+    });
+    const review = el('div', 'dividend-review-form');
+    const fields = el('div', 'dividend-review-grid');
+    const actionType = reviewSelect('Type（可修改）',
+      ['SPLIT', 'SPINOFF', 'RENAME', 'MERGER'],
+      ['SPLIT', 'SPINOFF', 'RENAME', 'MERGER'].includes(candidate.actionTypeHint)
+        ? candidate.actionTypeHint : 'SPLIT');
+    const quantity = dividendInput('number', '行動前 Quantity（必須核實）', {
+      required: true, min: '0.000001', step: '0.000001',
+      value: candidate.suggestedQuantity === null ? '' : candidate.suggestedQuantity,
+    });
+    const postTicker = dividendInput('text', 'Post Ticker', {
+      required: true, value: candidate.ticker || '', placeholder: '單個或 [SPGI,MBGL]',
+    });
+    const splitRatio = optionalNumber(first(candidate.evidence, ['split_ratio'], null));
+    const stockDistributionRatio = optionalNumber(first(
+      candidate.evidence, ['stock_distribution_ratio'], null,
+    ));
+    const quantityMultiplier = splitRatio !== null
+      ? splitRatio
+      : stockDistributionRatio !== null ? 1 + stockDistributionRatio : null;
+    const suggestedPost = candidate.suggestedQuantity !== null && quantityMultiplier !== null
+      ? candidate.suggestedQuantity * quantityMultiplier : candidate.suggestedQuantity;
+    const postQuantity = dividendInput('text', 'Post Quantity', {
+      required: true,
+      value: suggestedPost === null ? '' : suggestedPost,
+      placeholder: '單個或 [38,38]',
+    });
+    const cashChange = dividendInput('number', `Cash Change (${PORTFOLIOS[state.portfolio].currency})`, {
+      step: '0.01', value: 0, placeholder: '可正、可負、可為 0',
+    });
+    const actionDate = dividendInput('date', '生效日期（可修改）', {
+      required: true, value: candidate.actionDate || '',
+    });
+    const reviewNote = dividendInput('text', '核實備註（可選）', {
+      placeholder: '例如：已核對券商公司行動通知', maxLength: 1000,
+    });
+    reviewNote.wrap.classList.add('full');
+    fields.append(
+      actionType.wrap, quantity.wrap, postTicker.wrap, postQuantity.wrap,
+      cashChange.wrap, actionDate.wrap, reviewNote.wrap,
+    );
+    const status = el('span', 'form-state', '只記錄原一股／原持倉變成什麼；不分配成本。');
+    status.setAttribute('role', 'status');
+    const verify = el('button', 'btn', '核實轉換並建立 Automation Pending');
+    verify.type = 'button';
+    const dismissReason = document.createElement('input');
+    dismissReason.type = 'text'; dismissReason.maxLength = 1000;
+    dismissReason.placeholder = '忽略理由（按忽略時必填）';
+    const dismiss = el('button', 'danger-solid', '忽略候選'); dismiss.type = 'button';
+    const dismissRow = el('div', 'dividend-dismiss');
+    dismissRow.append(dismissReason, dismiss);
+    const controls = [
+      actionType.input, quantity.input, postTicker.input, postQuantity.input,
+      cashChange.input, actionDate.input, reviewNote.input, dismissReason, verify, dismiss,
+    ];
+    verify.addEventListener('click', () => resolveCorporateAction(candidate, {
+      actionType: actionType.input,
+      quantity: quantity.input,
+      postTicker: postTicker.input,
+      postQuantity: postQuantity.input,
+      cashChange: cashChange.input,
+      actionDate: actionDate.input,
+      reviewNote: reviewNote.input,
+    }, controls, status));
+    dismiss.addEventListener('click', () => dismissActionCandidate(
+      candidate, dismissReason, controls, status,
+    ));
+    review.append(fields, verify, dismissRow, status);
+    card.append(head, dates, candidateEvidence(candidate), review);
+    return card;
+  }
+
+  async function resolveCorporateAction(candidate, inputs, controls, status) {
+    const quantity = Number(inputs.quantity.value);
+    const cashChange = Number(inputs.cashChange.value || 0);
+    if (!Number.isFinite(quantity) || !(quantity > 0)) {
+      status.textContent = '✗ 行動前 Quantity 必須核實並大於 0。';
+      inputs.quantity.focus(); return;
+    }
+    if (!inputs.postTicker.value.trim() || !inputs.postQuantity.value.trim()) {
+      status.textContent = '✗ Post Ticker 與 Post Quantity 必須明確輸入。';
+      return;
+    }
+    if (!Number.isFinite(cashChange)) {
+      status.textContent = '✗ Cash Change 必須是有限數值。';
+      inputs.cashChange.focus(); return;
+    }
+    setDividendControlsBusy(controls, true);
+    status.textContent = '正在核實來源版本並建立公司行動 Automation Pending…';
+    try {
+      const result = await api('/api/admin/ledger/actions/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          candidateType: 'CORPORATE_ACTION', decision: 'ENTER',
+          candidateId: candidate.candidateId, expectedVersion: candidate.version,
+          actionType: inputs.actionType.value, quantity,
+          postTicker: inputs.postTicker.value.trim(),
+          postQuantity: inputs.postQuantity.value.trim(), cashChange,
+          actionDate: inputs.actionDate.value,
+          reviewNote: inputs.reviewNote.value,
+        }),
+      });
+      const pending = first(result, ['pending'], {}) || {};
+      status.textContent = `✓ 已建立 Automation Pending ${first(pending, ['pendingId', 'pending_id'], '—')}；尚未正式入賬。`;
+      await loadLedger();
+    } catch (error) {
+      status.textContent = '✗ ' + error.message;
+      setDividendControlsBusy(controls, false);
+    }
+  }
+
+  async function dismissActionCandidate(candidate, reasonInput, controls, status) {
+    const reason = reasonInput.value.trim();
+    if (!reason) {
+      status.textContent = '✗ 忽略候選必須填寫理由。'; reasonInput.focus(); return;
+    }
+    setDividendControlsBusy(controls, true);
+    status.textContent = '正在保存忽略理由…';
+    try {
+      await api('/api/admin/ledger/actions/resolve', {
+        method: 'POST',
+        body: JSON.stringify({
+          candidateType: candidate.candidateType, decision: 'IGNORE',
+          candidateId: candidate.candidateId, expectedVersion: candidate.version, reason,
+        }),
+      });
+      status.textContent = '✓ 已忽略；未建立 Pending、未修改正式賬本。';
+      await loadLedger();
+    } catch (error) {
+      status.textContent = '✗ ' + error.message;
+      setDividendControlsBusy(controls, false);
+    }
+  }
+
+  function resolvedActionCandidateCard(candidate) {
+    const card = el('article', `ledger-card dividend-candidate action-resolved${candidate.status === 'DISMISSED' ? ' dismissed' : ''}`);
+    const head = el('div', 'ledger-head');
+    const title = el('div', 'ledger-title');
+    title.append(
+      el('span', candidate.status === 'CONVERTED' ? 'ledger-pill create' : 'ledger-pill', candidate.status),
+      el('span', 'ledger-pill', candidate.candidateType === 'DIVIDEND' ? 'DIVIDEND' : candidate.actionTypeHint || 'CORPORATE ACTION'),
+      el('strong', '', `${candidate.ticker || '—'} · ${candidate.name || candidate.ticker || '—'}`),
+    );
+    head.append(title, el('span', 'ledger-meta', `Candidate v${candidate.version}`));
+    const meta = el('div', 'ledger-meta',
+      `${candidate.actionDate || candidate.payDate || candidate.exDate || '—'} · ` +
+      `${candidate.resolutionNote || '已处理'}${candidate.resolvedBy ? ` · ${candidate.resolvedBy}` : ''}`);
+    const payload = el('div', 'ledger-payload');
+    const pending = candidate.convertedPending;
+    [
+      ['SOURCE EVENT', candidate.sourceEventId || '—'],
+      ['LINKED PENDING', pending ? pending.pendingId : '—'],
+      ['PENDING STATUS', pending ? pending.status : candidate.status === 'DISMISSED' ? 'IGNORED' : '—'],
+      ['HISTORY', `${candidate.resolutionHistory.length} resolution versions`],
+    ].forEach(([key, value]) => {
+      const cell = el('div', 'ledger-kv');
+      cell.append(el('small', '', key), el('span', '', value)); payload.append(cell);
+    });
+    const actions = el('div', 'ledger-actions');
+    const status = el('span', 'form-state', '來源候選與舊處理版本永久保留。');
+    if (candidate.status === 'DISMISSED' || pending && pending.status === 'REJECTED') {
+      const reopen = el('button', 'btn2', '重新打開核實'); reopen.type = 'button';
+      reopen.addEventListener('click', () => reopenActionCandidate(candidate, reopen, status));
+      actions.append(reopen);
+    } else if (pending) {
+      const modify = el('button', 'btn2', pending.status === 'CONFIRMED'
+        ? '建立修訂 Pending' : '修改對應 Pending');
+      modify.type = 'button';
+      modify.addEventListener('click', () => modifyResolvedCandidate(candidate, status));
+      actions.append(modify);
+    }
+    actions.append(status);
+    card.append(head, meta, payload, candidateEvidence(candidate), actions);
+    return card;
+  }
+
+  async function reopenActionCandidate(candidate, button, status) {
+    button.disabled = true; status.textContent = '正在追加 REOPEN 版本…';
+    try {
+      await api('/api/admin/ledger/actions/reopen', {
+        method: 'POST',
+        body: JSON.stringify({
+          candidateType: candidate.candidateType,
+          candidateId: candidate.candidateId,
+          expectedVersion: candidate.version,
+          reason: '管理員從已處理窗口重新打開核實',
+        }),
+      });
+      await loadLedger();
+    } catch (error) {
+      status.textContent = '✗ ' + error.message; button.disabled = false;
+    }
+  }
+
+  function modifyResolvedCandidate(candidate, status) {
+    const pending = candidate.convertedPending;
+    if (!pending) { status.textContent = '✗ 找不到對應 Pending，請刷新。'; return; }
+    if (pending.status === 'PENDING') {
+      editPending(state.pending.find(item => item.pendingId === pending.pendingId) || pending);
+      return;
+    }
+    if (pending.status === 'CONFIRMED' && pending.confirmedEventId) {
+      const item = confirmedWorkbenchItems().find(event => event.eventId === pending.confirmedEventId);
+      if (item) { editConfirmed(item); return; }
+    }
+    status.textContent = '✗ 對應事件狀態已變，請刷新後重試。';
+  }
+
   function dividendInput(type, labelText, attributes) {
     const wrap = el('label', 'ledger-field');
     const label = el('span', '', labelText);
@@ -686,8 +1118,8 @@
   async function verifyDividend(candidate, inputs, controls, status) {
     const amount = String(inputs.amount.value || '').trim();
     const quantity = String(inputs.quantity.value || '').trim();
-    if (!(Number(amount) > 0)) {
-      status.textContent = '✗ Amount 必須填寫券商最終到賬正數。';
+    if (!Number.isFinite(Number(amount)) || Number(amount) < 0) {
+      status.textContent = '✗ Amount 必須填寫券商最終核實的非負金額。';
       inputs.amount.focus();
       return;
     }
@@ -703,10 +1135,12 @@
       recordDate: inputs.recordDate.value,
       reviewNote: inputs.reviewNote.value,
     });
+    payload.candidateType = 'DIVIDEND';
+    payload.decision = 'ENTER';
     setDividendControlsBusy(controls, true);
     status.textContent = '正在核實來源版本並建立 Automation Pending…';
     try {
-      const result = await api('/api/admin/ledger/dividends/verify', {
+      const result = await api('/api/admin/ledger/actions/resolve', {
         method: 'POST', body: JSON.stringify(payload),
       });
       const pending = first(result, ['pending'], {}) || {};
@@ -721,6 +1155,8 @@
 
   async function dismissDividend(candidate, reasonInput, controls, status) {
     const payload = dividendDismissPayload(candidate, reasonInput.value);
+    payload.candidateType = 'DIVIDEND';
+    payload.decision = 'IGNORE';
     if (!payload.reason) {
       status.textContent = '✗ 忽略候選必須填寫理由。';
       reasonInput.focus();
@@ -729,7 +1165,7 @@
     setDividendControlsBusy(controls, true);
     status.textContent = '正在保存忽略理由…';
     try {
-      await api('/api/admin/ledger/dividends/dismiss', {
+      await api('/api/admin/ledger/actions/resolve', {
         method: 'POST', body: JSON.stringify(payload),
       });
       status.textContent = '✓ 候選已忽略；未建立 Pending、未修改正式賬本。';
@@ -818,6 +1254,202 @@
       .slice()
       .sort((a, b) => String(a.event.date || '').localeCompare(String(b.event.date || '')) || a.pendingId.localeCompare(b.pendingId))
       .forEach(item => host.append(pendingCard(item)));
+  }
+
+  function confirmedWorkbenchItems() {
+    return state.confirmed.map(raw => {
+      const event = flattenEvent(raw);
+      const eventId = String(first(raw, ['eventId', 'event_id', 'id'],
+        first(event, ['event_id'], '')) || '');
+      const lineageId = String(first(raw, ['lineageId', 'lineage_id'],
+        first(event, ['lineage_id'], eventId)) || eventId);
+      const eventVersion = asNumber(first(raw, ['eventVersion', 'event_version', 'version'],
+        first(event, ['event_version'], 1)), 1);
+      const sequenceNo = asNumber(first(raw, ['sequenceNo', 'sequence_no', 'sequence'],
+        first(event, ['sequence_no', 'sequence'], 0)), 0);
+      event.event_id = eventId;
+      event.lineage_id = lineageId;
+      event.event_version = eventVersion;
+      event.sequence_no = sequenceNo;
+      event.ledger_revision = asNumber(first(raw, ['ledgerRevision', 'ledger_revision'], 0), 0);
+      return {
+        raw, event, eventId, lineageId, eventVersion, sequenceNo,
+        eventType: canonicalType(first(raw, ['eventType', 'event_type'], event.type)),
+        tradeDate: dateString(first(raw, ['tradeDate', 'trade_date'], event.date)),
+      };
+    });
+  }
+
+  function renderWorkbook() {
+    if (!$('workbook-tabs') || !$('workbook-grid')) return;
+    if (!WORKBOOK_SHEETS.includes(state.workbookSheet)) state.workbookSheet = WORKBOOK_SHEETS[0];
+    $('workbook-revision').textContent = `Revision ${state.ledgerRevision}`;
+    const tabs = $('workbook-tabs'); tabs.replaceChildren();
+    WORKBOOK_SHEETS.forEach(name => {
+      const button = el('button', name === state.workbookSheet ? 'on' : '', name);
+      button.type = 'button'; button.dataset.derived = String(DERIVED_SHEETS.includes(name));
+      button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(name === state.workbookSheet));
+      button.addEventListener('click', () => {
+        state.workbookSheet = name; state.workbookSelection = null;
+        renderWorkbook();
+      });
+      tabs.append(button);
+    });
+    $('workbook-edit-row').disabled = !state.workbookSelection || DERIVED_SHEETS.includes(state.workbookSheet);
+    $('workbook-history').disabled = !state.workbookSelection;
+    const host = $('workbook-grid'); host.replaceChildren();
+    if (DERIVED_SHEETS.includes(state.workbookSheet)) {
+      renderDerivedWorkbookSheet(host, state.workbookSheet);
+      $('workbook-status').textContent = 'AUTO · 這張表由已確認事件 + 未復權 raw-close 重算，只讀。';
+      return;
+    }
+    const def = INPUT_BY_SHEET[state.workbookSheet];
+    renderEventWorkbookSheet(host, def);
+    $('workbook-status').textContent = state.workbookSelection
+      ? `已選 ${state.workbookSelection.eventId} · v${state.workbookSelection.eventVersion}`
+      : '點選事件行後可建立修訂 Pending；雙擊也可直接打開修改表單。';
+  }
+
+  function workbookTable(def) {
+    const table = el('table', 'excel-table');
+    if (def && Array.isArray(def.widths)) {
+      const colgroup = document.createElement('colgroup');
+      def.widths.forEach(width => {
+        const col = document.createElement('col');
+        col.style.width = `${Math.max(70, Number(width) * 7)}px`; colgroup.append(col);
+      });
+      table.append(colgroup);
+    }
+    return table;
+  }
+
+  function appendWorkbookCells(row, values, tagName) {
+    values.forEach(value => {
+      const cell = document.createElement(tagName || 'td');
+      const numeric = typeof value === 'number' && Number.isFinite(value);
+      if (numeric) cell.classList.add('number');
+      cell.textContent = value === null || value === undefined || value === ''
+        ? '' : numeric ? amountText(value) : String(value);
+      row.append(cell);
+    });
+  }
+
+  function renderEventWorkbookSheet(host, def) {
+    if (!def) { host.append(el('div', 'excel-empty', 'Sheet 定義不存在。')); return; }
+    const items = confirmedWorkbenchItems().filter(item => item.eventType === def.type);
+    const groups = new Map();
+    items.forEach(item => {
+      const key = monthKey(item.tradeDate);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    });
+    if (!groups.size) groups.set(today().slice(0, 7), []);
+    const table = workbookTable(def);
+    const body = document.createElement('tbody');
+    [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([key, group]) => {
+      group.sort((a, b) => a.tradeDate.localeCompare(b.tradeDate) ||
+        a.sequenceNo - b.sequenceNo || a.eventId.localeCompare(b.eventId));
+      const monthRow = el('tr', 'month');
+      appendWorkbookCells(monthRow,
+        monthHeader(def, PORTFOLIOS[state.portfolio].currency, key, group.map(item => item.event)).slice(0, def.visible));
+      body.append(monthRow);
+      const header = document.createElement('tr');
+      appendWorkbookCells(header, def.headers(PORTFOLIOS[state.portfolio].currency), 'th');
+      body.append(header);
+      group.forEach((item, index) => {
+        const row = el('tr', 'data' + (state.workbookSelection &&
+          state.workbookSelection.eventId === item.eventId ? ' selected' : ''));
+        const values = eventRow(item.event, def); values[0] = index + 1;
+        appendWorkbookCells(row, values.slice(0, def.visible));
+        row.tabIndex = 0;
+        row.addEventListener('click', () => {
+          state.workbookSelection = item; renderWorkbook();
+        });
+        row.addEventListener('dblclick', () => editConfirmed(item));
+        body.append(row);
+      });
+    });
+    table.append(body); host.append(table);
+  }
+
+  function renderDerivedWorkbookSheet(host, name) {
+    const rows = projectionRows(
+      state.ledger && state.ledger.projection,
+      name,
+      PORTFOLIOS[state.portfolio].currency,
+    ) || [];
+    if (!rows.length) { host.append(el('div', 'excel-empty', '目前沒有派生資料。')); return; }
+    const widthDef = { widths: rows[0].map(() => 16) };
+    const table = workbookTable(widthDef); const body = document.createElement('tbody');
+    rows.forEach((values, index) => {
+      const assetBar = name === 'Asset Position Record' && index === 0;
+      const headerIndex = name === 'Asset Position Record' ? 1 : 0;
+      const row = el('tr', assetBar ? 'month' : '');
+      appendWorkbookCells(row, values, index === headerIndex ? 'th' : 'td');
+      body.append(row);
+    });
+    table.append(body); host.append(table);
+  }
+
+  function correctionBasePayload(event, type) {
+    const payload = stableClone(event || {}) || {};
+    [
+      'event_id', 'lineage_id', 'event_version', 'ledger_revision', 'sequence', 'sequence_no',
+      'status', 'portfolio', 'portfolio_id', 'currency', 'confirmed_at', 'confirmed_by',
+    ].forEach(key => delete payload[key]);
+    if (['BUY', 'SELL', 'DIVIDEND'].includes(type)) {
+      [
+        'operational_amount', 'operational_amount_decimal', 'operational_amount_minor',
+        'net_amount', 'net_amount_decimal', 'net_amount_minor',
+        'net_cash', 'net_cash_decimal', 'net_cash_minor',
+        'cash_change', 'cash_change_decimal', 'cash_change_minor',
+        'per_share', 'per_share_decimal', 'gross_per_share', 'gross_per_share_decimal',
+      ].forEach(key => delete payload[key]);
+    }
+    if (type === 'CORPORATE_ACTION') delete payload.outputs;
+    if (type === 'CAPITAL') delete payload.quantity;
+    return payload;
+  }
+
+  function editConfirmed(item) {
+    if (!item || !FORM_FIELDS[item.eventType]) return;
+    const event = item.event;
+    state.editBasePayload = correctionBasePayload(event, item.eventType);
+    $('edit-pending-id').value = '';
+    $('edit-version').value = '';
+    $('edit-event-id').value = item.eventId;
+    $('edit-event-version').value = item.eventVersion;
+    $('edit-ledger-revision').value = state.ledgerRevision;
+    $('event-type').value = item.eventType; $('event-type').disabled = true;
+    $('trade-date').value = item.tradeDate || today();
+    renderEventFields();
+    (FORM_FIELDS[item.eventType] || []).forEach(def => {
+      const input = $('ef-' + def.name);
+      const value = first(event, fieldAliases(def.name), '');
+      if (input) input.value = value === null || value === undefined ? '' :
+        Array.isArray(value) ? JSON.stringify(value) : String(value);
+    });
+    $('form-title').textContent = `修改已確認事件 · ${INPUT_BY_TYPE[item.eventType].sheet}`;
+    $('form-mode').textContent = `CORRECTION · ${item.eventId} · v${item.eventVersion}`;
+    $('save-event').textContent = '建立修訂 Pending';
+    $('form-status').textContent = '正式事件不會原地覆蓋；保存後仍需在 Pending 區 Confirm。';
+    $('event-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  async function showSelectedEventHistory() {
+    const item = state.workbookSelection;
+    if (!item) return;
+    const status = $('workbook-status');
+    status.textContent = '正在讀取不可變版本歷史…';
+    try {
+      const result = await api(`/api/admin/ledger/events/history?portfolio=${encodeURIComponent(state.portfolio)}&lineageId=${encodeURIComponent(item.lineageId)}`);
+      const versions = Array.isArray(result.versions) ? result.versions : [];
+      status.textContent = versions.length
+        ? versions.map(version => `v${version.eventVersion} · r${version.ledgerRevision} · ${version.tradeDate}`).join(' ｜ ')
+        : '沒有其他版本。';
+    } catch (error) {
+      status.textContent = '✗ ' + error.message;
+    }
   }
 
   function pendingCard(item) {
@@ -927,12 +1559,17 @@
       if ((subscription > 0) === (redemption > 0)) throw new Error('Subscription 和 Redemption 必須只填一項。');
       if (asNumber(fields.unit_price, 0) <= 0) throw new Error('Unit Price 必須大於 0。');
     }
-    if (['BUY', 'SELL', 'DIVIDEND'].includes(type)) {
+    if (['BUY', 'SELL'].includes(type)) {
       if (asNumber(fields.quantity, 0) <= 0 || asNumber(fields.amount, 0) <= 0) throw new Error('Quantity 和 Amount 必須大於 0。');
       fields.ticker = String(fields.ticker || '').trim().toUpperCase();
     }
+    if (type === 'DIVIDEND') {
+      if (asNumber(fields.quantity, 0) <= 0 || !Number.isFinite(Number(fields.amount)) ||
+          Number(fields.amount) < 0) throw new Error('Quantity 必須大於 0；Amount 必須是核實後的非負數。');
+      fields.ticker = String(fields.ticker || '').trim().toUpperCase();
+    }
     if (type === 'CORPORATE_ACTION') fields.ticker = String(fields.ticker || '').trim().toUpperCase();
-    return { schema_version: 1, type, date, ...fields };
+    return { ...(state.editBasePayload || {}), schema_version: 1, type, date, ...fields };
   }
 
   async function savePending(event) {
@@ -944,8 +1581,21 @@
       const ledgerEvent = buildEvent();
       if (!ledgerEvent) return;
       const pendingId = $('edit-pending-id').value;
+      const eventId = $('edit-event-id').value;
       const version = asNumber($('edit-version').value, 0);
-      if (pendingId) {
+      if (eventId) {
+        await api('/api/admin/ledger/events/correction', {
+          method: 'POST',
+          body: JSON.stringify({
+            portfolio: state.portfolio,
+            eventId,
+            expectedEventVersion: asNumber($('edit-event-version').value, 0),
+            expectedLedgerRevision: asNumber($('edit-ledger-revision').value, -1),
+            event: ledgerEvent,
+          }),
+        });
+        status.textContent = '✓ 已建立修訂 Pending；正式事件尚未改動';
+      } else if (pendingId) {
         await api('/api/admin/ledger/pending/update', {
           method: 'POST', body: JSON.stringify({ pendingId, expectedVersion: version, event: ledgerEvent }),
         });
@@ -970,8 +1620,12 @@
     const event = item.event;
     const type = canonicalType(event.type);
     if (!FORM_FIELDS[type]) return;
+    state.editBasePayload = correctionBasePayload(event, type);
     $('edit-pending-id').value = item.pendingId;
     $('edit-version').value = item.version;
+    $('edit-event-id').value = '';
+    $('edit-event-version').value = '';
+    $('edit-ledger-revision').value = '';
     $('event-type').value = type;
     $('event-type').disabled = true;
     $('trade-date').value = dateString(event.date) || today();
@@ -1004,6 +1658,10 @@
     $('event-form').reset();
     $('edit-pending-id').value = '';
     $('edit-version').value = '';
+    $('edit-event-id').value = '';
+    $('edit-event-version').value = '';
+    $('edit-ledger-revision').value = '';
+    state.editBasePayload = null;
     $('trade-date').value = today();
     $('event-type').disabled = false;
     $('form-title').textContent = '新增 Pending 事件';
@@ -1314,13 +1972,19 @@
   function clearImport() {
     state.importFile = null; state.importBuffer = null; state.importHash = null; state.importParsed = null;
     state.importPreview = null; state.importId = null; state.importExpectedRevision = null;
+    state.importConfirming = false; state.importProcessed = false;
     state.importBlockers = []; state.importBlockerCount = 0;
     $('import-file').value = ''; $('import-file-name').value = '';
     $('preview-import').disabled = true; $('confirm-import').disabled = true;
     $('import-preview').style.display = 'none'; $('import-operations').replaceChildren();
     $('import-replace-all-ack').checked = false; $('import-replace-all-ack').disabled = true;
     $('import-confirm-reason').value = ''; $('import-confirm-reason').disabled = true;
-    $('import-confirm-box').classList.remove('blocked');
+    $('import-confirm-box').classList.remove('blocked', 'processed');
+    $('import-preview').classList.remove('processed');
+    $('import-preview').removeAttribute('data-import-state');
+    $('confirm-import').textContent = IMPORT_CONFIRM_LABEL;
+    $('confirm-import').setAttribute('aria-busy', 'false');
+    $('import-selection').removeAttribute('data-state');
     $('import-selection').textContent = 'Preview 後才可確認。';
     $('import-log').textContent = '選擇文件後才會啟用隔離解析與 Preview。';
   }
@@ -2170,6 +2834,13 @@
     if (!state.importParsed || !state.importFile || !state.importHash) return;
     const button = $('preview-import'); const log = $('import-log');
     state.importId = null; state.importBlockers = []; state.importBlockerCount = 0;
+    state.importConfirming = false; state.importProcessed = false;
+    $('import-preview').classList.remove('processed');
+    $('import-preview').removeAttribute('data-import-state');
+    $('import-confirm-box').classList.remove('processed');
+    $('confirm-import').textContent = IMPORT_CONFIRM_LABEL;
+    $('confirm-import').setAttribute('aria-busy', 'false');
+    $('import-selection').removeAttribute('data-state');
     $('import-replace-all-ack').checked = false; $('import-replace-all-ack').disabled = true;
     $('import-confirm-reason').disabled = true;
     button.disabled = true; $('confirm-import').disabled = true;
@@ -2336,6 +3007,10 @@
   }
 
   function updateImportConfirmation() {
+    if (state.importConfirming || state.importProcessed) {
+      $('confirm-import').disabled = true;
+      return;
+    }
     const confirmation = importConfirmationState({
       importId: state.importId,
       blockerCount: state.importBlockerCount,
@@ -2343,33 +3018,93 @@
       reason: $('import-confirm-reason').value,
     });
     $('confirm-import').disabled = !confirmation.canConfirm;
+    $('import-selection').removeAttribute('data-state');
     $('import-selection').textContent = confirmation.message;
   }
 
+  function importReceipt(result, fallbackCount, nowValue) {
+    const revision = asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.importExpectedRevision), state.importExpectedRevision);
+    const replaced = asNumber(first(result, ['eventCount', 'event_count', 'replaced', 'staged'], fallbackCount), fallbackCount);
+    const committedAt = first(result, ['committedAt', 'committed_at', 'confirmedAt', 'confirmed_at'], null);
+    const parsedTime = committedAt ? new Date(committedAt) : new Date(nowValue === undefined ? Date.now() : nowValue);
+    const validTime = Number.isNaN(parsedTime.getTime()) ? new Date(nowValue === undefined ? Date.now() : nowValue) : parsedTime;
+    const time = new Intl.DateTimeFormat('zh-HK', {
+      timeZone: 'Asia/Hong_Kong', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).format(validTime);
+    return {
+      revision, replaced, time,
+      text: `✓ 替換完成 · Ledger Revision ${revision} · ${replaced} events · ${time}。此 Preview 已處理並鎖定；舊版本仍保留在不可變歷史。`,
+    };
+  }
+
+  function setImportFeedback(stateName, message) {
+    const button = $('confirm-import');
+    const selection = $('import-selection');
+    const busy = stateName === 'active';
+    button.setAttribute('aria-busy', busy ? 'true' : 'false');
+    button.textContent = busy
+      ? IMPORT_CONFIRM_BUSY_LABEL
+      : stateName === 'success' ? IMPORT_CONFIRM_DONE_LABEL : IMPORT_CONFIRM_LABEL;
+    selection.dataset.state = stateName;
+    selection.textContent = message;
+  }
+
   async function confirmImport() {
+    if (state.importConfirming || state.importProcessed) return;
     updateImportConfirmation();
     const button = $('confirm-import'); const log = $('import-log');
     if (button.disabled || !state.importId) return;
     const reason = String($('import-confirm-reason').value || '').trim();
-    button.disabled = true; log.textContent = '正在以 CAS 原子建立新的 active ledger revision；舊版本會保留歷史，不會 truncate…';
+    const importId = state.importId;
+    const expectedLedgerRevision = state.importExpectedRevision;
+    const fallbackCount = state.importParsed && state.importParsed.rows.length || 0;
+    state.importConfirming = true;
+    button.disabled = true;
+    $('import-replace-all-ack').disabled = true;
+    $('import-confirm-reason').disabled = true;
+    setImportFeedback('active', '正在原子建立新的 active ledger revision，請勿重複提交或關閉頁面…');
+    log.textContent = '正在以 CAS 原子建立新的 active ledger revision；舊版本會保留歷史，不會 truncate…';
+    let result;
     try {
-      const result = await api('/api/admin/ledger/import/confirm', {
+      result = await api('/api/admin/ledger/import/confirm', {
         method: 'POST',
         body: JSON.stringify({
-          importId: state.importId,
-          expectedLedgerRevision: state.importExpectedRevision,
+          importId,
+          expectedLedgerRevision,
           replaceAll: true,
           confirmation: { replaceAll: true, reason },
         }),
       });
-      const revision = asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.importExpectedRevision), state.importExpectedRevision);
-      const replaced = asNumber(first(result, ['eventCount', 'event_count', 'replaced', 'staged'], state.importParsed && state.importParsed.rows.length || 0), 0);
-      log.textContent = `✓ Excel 完整事件賬本已原子簽入 · ${replaced} events · Ledger Revision ${revision}。舊資料版本完整保留在歷史中，沒有刪除或 truncate。`;
-      state.importId = null; $('confirm-import').disabled = true;
+    } catch (error) {
+      state.importConfirming = false;
+      $('import-replace-all-ack').disabled = state.importBlockerCount > 0;
+      $('import-confirm-reason').disabled = state.importBlockerCount > 0;
+      updateImportConfirmation();
+      setImportFeedback('error', `替換未完成：${error.message}；若 Revision 已變，請重新建立預覽後再試。`);
+      log.textContent = '✗ ' + error.message + '；若 Revision 已變，請重新建立預覽。';
+      return;
+    }
+
+    const receipt = importReceipt(result, fallbackCount);
+    state.importConfirming = false;
+    state.importProcessed = true;
+    state.importId = null;
+    button.disabled = true;
+    $('import-replace-all-ack').disabled = true;
+    $('import-confirm-reason').disabled = true;
+    $('import-confirm-box').classList.remove('blocked');
+    $('import-confirm-box').classList.add('processed');
+    $('import-preview').classList.add('processed');
+    $('import-preview').dataset.importState = 'processed';
+    setImportFeedback('success', receipt.text);
+    log.textContent = `✓ Excel 完整事件賬本已原子簽入 · ${receipt.replaced} events · Ledger Revision ${receipt.revision} · ${receipt.time}。舊資料版本完整保留在歷史中，沒有刪除或 truncate。`;
+    try {
       await loadLedger();
     } catch (error) {
-      log.textContent = '✗ ' + error.message + '；若 Revision 已變，請重新建立預覽。';
-      updateImportConfirmation();
+      const refreshWarning = `後台替換已完成，但最新賬本畫面刷新失敗：${error.message}。請手動刷新頁面；不要再次提交此 Preview。`;
+      setImportFeedback('success', `${receipt.text} ${refreshWarning}`);
+      log.textContent += ` ${refreshWarning}`;
     }
   }
 
@@ -2737,10 +3472,12 @@
       parseImportWorkbook,
       summarizeImportPreview,
       importConfirmationState,
+      importReceipt,
       normalizeDividendCandidate,
       dividendVerifyPayload,
       dividendDismissPayload,
       dividendEvidenceEntries,
+      fetchAllActionCandidatePages,
     });
   }
 

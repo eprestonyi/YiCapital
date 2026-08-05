@@ -239,6 +239,7 @@ async function ledgerDatabase({ publicSnapshots = true } = {}) {
     '0003_frozen_price_tapes.sql',
     ...(publicSnapshots ? ['0005_public_portfolio_snapshots.sql'] : []),
     ...(publicSnapshots ? ['0006_dividend_candidate_inbox.sql'] : []),
+    ...(publicSnapshots ? ['0007_action_review_workbench.sql'] : []),
   ];
   const sql = await Promise.all(files
     .map(file => readFile(path.join(ROOT, 'migrations', file), 'utf8')));
