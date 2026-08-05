@@ -23,78 +23,88 @@
 
   const L = {
     tw: {
-      guest: 'Guest 訪客', guestRole: '訪客模式', signIn: '登入 / 註冊',
-      exit: '退出 Guest', logout: '登出', logoutRetry: '登出失敗，點擊重試',
+      guest: '訪客', guestRole: '訪客模式', signIn: '登入 / 註冊',
+      exit: '退出訪客模式', logout: '登出', logoutRetry: '登出失敗，點擊重試',
       portfolio: '組合實錄', admin: '管理後台', account: '帳戶設定',
       unavailable: '暫未開放', close: '關閉', loading: '正在載入帳戶資料…',
       loadError: '暫時無法載入帳戶資料，請稍後重試。',
-      accountKicker: 'ACCOUNT', accountTitle: 'Account Settings & Profile',
+      accountKicker: '帳戶', accountTitle: '帳戶設定與個人資料',
       accountIntro: '管理你的公開名稱、YiCapital ID、頭像、身份連接與郵件偏好。',
+      navAccount: '帳戶設定', navConnect: 'MCP 與 API', navContact: '網站營運者',
+      navSocial: '社交媒體', navApp: '應用程式', navHelp: '支援與協助',
       displayName: '顯示名稱', userId: 'YiCapital ID', email: '郵箱',
       immutable: '登入身份已鎖定，不能在此更改。', connectionTitle: '已連接的身份',
-      connected: '已連接', notConnected: '未連接', google: 'Google', emailAccount: 'Email',
+      connected: '已連接', notConnected: '未連接', google: 'Google', emailAccount: '電子郵件',
       avatarChange: '更改頭像', avatarRemove: '改用字母頭像', avatarHint: 'JPG、PNG 或 WebP，會自動裁切為正方形。',
       avatarError: '請選擇 6MB 以下的 JPG、PNG 或 WebP 圖片。',
-      notifications: 'Notifications', newsletterTitle: 'Yi Capital Insights',
+      notifications: '通知', newsletterTitle: 'Yi Capital Insights',
       newsletterBody: '將精選研究、重要新文章與組合更新送到你的收件箱。不發促銷，只發值得打開的內容。',
-      inviteTitle: 'Invite', inviteBody: '把你的專屬註冊連結分享給同樣重視深度研究的人。',
+      inviteTitle: '邀請', inviteBody: '把你的專屬註冊連結分享給同樣重視深度研究的人。',
       copy: '複製連結', copied: '已複製', save: '儲存變更', saving: '正在儲存…',
       saved: '帳戶設定已更新。', genericError: '暫時無法完成操作，請稍後重試。',
-      connectTitle: 'Connect MCPs & APIs', connectBody: '未來可在這裡連接研究工具、資料服務與個人工作流。目前正在設計安全授權與權限管理。',
-      contactTitle: 'Contact Site Operator', contactRole: 'Founder & Site Operator · Yi Capital',
+      connectTitle: '連接 MCP 與 API', connectBody: '未來可在這裡連接研究工具、資料服務與個人工作流。目前正在設計安全授權與權限管理。',
+      contactKicker: '網站營運', contactTitle: '聯絡網站營運者', contactRole: '創辦人兼網站營運者 · Yi Capital',
       philosophyTitle: '投資哲學',
       philosophy: '我是基本面投資者，習慣像使用 Bloomberg FA 一樣逐行閱讀財務報表。研究聚焦長期自由現金流、資本配置、護城河與價格紀律；所有判斷都應能被證據追溯，也應能被新事實推翻。',
       welcome: '歡迎就公司、行業、估值或研究方法來信探討。不同觀點沒有關係，最好帶著證據。',
-      socialTitle: 'Social Media', socialBody: '小紅書、抖音、Instagram、WeChat 公眾號、Bilibili 與 YouTube 將在內容準備好後逐步開放。',
-      appTitle: 'App', appBody: 'YiCapital App 尚未開放。我們會先把網頁端的研究、組合與帳戶體驗做好。',
-      helpTitle: 'Support & Help', faqAccount: '註冊帳戶有甚麼用途？',
-      faqAccountA: '帳戶可解鎖完整研報、組合檔案與後續個人化功能；Guest 仍可查看公開預覽。',
+      socialTitle: '社交媒體', socialBody: '小紅書、抖音、Instagram、WeChat 公眾號、Bilibili 與 YouTube 將在內容準備好後逐步開放。',
+      socialChannels: ['小紅書', '抖音', 'Instagram', 'WeChat', 'Bilibili', 'YouTube'],
+      appTitle: '應用程式', appBody: 'YiCapital 應用程式尚未開放。我們會先把網頁端的研究、組合與帳戶體驗做好。',
+      helpKicker: '支援', helpTitle: '支援與協助', helpMore: '仍需要協助？', helpEmail: '傳送電子郵件',
+      faqAccount: '註冊帳戶有甚麼用途？',
+      faqAccountA: '帳戶可解鎖完整研報、組合檔案與後續個人化功能；訪客仍可查看公開預覽。',
       faqNews: 'Insights 訂閱會寄甚麼？', faqNewsA: '只寄精選研究、重要文章與有實質內容的組合更新。你可隨時在帳戶設定取消。',
       faqIdentity: '可以更改登入郵箱或 Google 帳號嗎？', faqIdentityA: '目前不可以。為避免帳號被錯誤轉移，已綁定的郵箱與 Google 身份保持鎖定；顯示名稱、ID 與頭像可以修改。',
       faqResearch: '網站內容是投資建議嗎？', faqResearchA: '不是。所有內容僅供研究與學習，不構成任何證券的買賣要約、招攬或投資建議。',
-      promptKicker: 'INSIGHTS, WITHOUT THE NOISE', promptTitle: '把真正值得讀的研究送到收件箱。',
+      promptKicker: '只收真正值得讀的研究', promptTitle: '把真正值得讀的研究送到收件箱。',
       promptBody: '精選深度研究、重要新文章與組合更新。不發促銷，隨時可以取消。',
       subscribe: '一鍵訂閱', subscribing: '訂閱中…', subscribed: '已訂閱',
       idHelp: '2–24 位中英文、數字、_ 或 -；全站不可重複。',
       photoReady: '新頭像已準備好，儲存後生效。',
       adminRole: '管理員安全帳號', adminManaged: '這是獨立的管理員安全身份，登入名稱與憑證由安全配置管理。客戶個人資料、Google／郵箱綁定及 Insights 偏好請使用普通會員帳號管理。',
+      adminOpen: '開啟管理後台',
     },
     cn: {
-      guest: 'Guest 访客', guestRole: '访客模式', signIn: '登录 / 注册',
-      exit: '退出 Guest', logout: '登出', logoutRetry: '登出失败，点击重试',
+      guest: '访客', guestRole: '访客模式', signIn: '登录 / 注册',
+      exit: '退出访客模式', logout: '退出登录', logoutRetry: '退出登录失败，点击重试',
       portfolio: '组合实录', admin: '管理后台', account: '账户设置',
       unavailable: '暂未开放', close: '关闭', loading: '正在加载账户资料…',
       loadError: '暂时无法加载账户资料，请稍后重试。',
-      accountKicker: 'ACCOUNT', accountTitle: 'Account Settings & Profile',
+      accountKicker: '账户', accountTitle: '账户设置与个人资料',
       accountIntro: '管理你的公开名称、YiCapital ID、头像、身份连接与邮件偏好。',
+      navAccount: '账户设置', navConnect: 'MCP 与 API', navContact: '网站运营者',
+      navSocial: '社交媒体', navApp: '应用程序', navHelp: '支持与帮助',
       displayName: '显示名称', userId: 'YiCapital ID', email: '邮箱',
       immutable: '登录身份已锁定，不能在此更改。', connectionTitle: '已连接的身份',
-      connected: '已连接', notConnected: '未连接', google: 'Google', emailAccount: 'Email',
+      connected: '已连接', notConnected: '未连接', google: 'Google', emailAccount: '电子邮件',
       avatarChange: '更改头像', avatarRemove: '改用字母头像', avatarHint: 'JPG、PNG 或 WebP，会自动裁切为正方形。',
       avatarError: '请选择 6MB 以下的 JPG、PNG 或 WebP 图片。',
-      notifications: 'Notifications', newsletterTitle: 'Yi Capital Insights',
+      notifications: '通知', newsletterTitle: 'Yi Capital Insights',
       newsletterBody: '将精选研究、重要新文章与组合更新送到你的收件箱。不发促销，只发值得打开的内容。',
-      inviteTitle: 'Invite', inviteBody: '把你的专属注册链接分享给同样重视深度研究的人。',
+      inviteTitle: '邀请', inviteBody: '把你的专属注册链接分享给同样重视深度研究的人。',
       copy: '复制链接', copied: '已复制', save: '保存更改', saving: '正在保存…',
       saved: '账户设置已更新。', genericError: '暂时无法完成操作，请稍后重试。',
-      connectTitle: 'Connect MCPs & APIs', connectBody: '未来可在这里连接研究工具、数据服务与个人工作流。目前正在设计安全授权与权限管理。',
-      contactTitle: 'Contact Site Operator', contactRole: 'Founder & Site Operator · Yi Capital',
+      connectTitle: '连接 MCP 与 API', connectBody: '未来可在这里连接研究工具、数据服务与个人工作流。目前正在设计安全授权与权限管理。',
+      contactKicker: '网站运营', contactTitle: '联系网站运营者', contactRole: '创办人兼网站运营者 · Yi Capital',
       philosophyTitle: '投资哲学',
       philosophy: '我是基本面投资者，习惯像使用 Bloomberg FA 一样逐行阅读财务报表。研究聚焦长期自由现金流、资本配置、护城河与价格纪律；所有判断都应能被证据追溯，也应能被新事实推翻。',
       welcome: '欢迎就公司、行业、估值或研究方法来信探讨。不同观点没有关系，最好带着证据。',
-      socialTitle: 'Social Media', socialBody: '小红书、抖音、Instagram、WeChat 公众号、Bilibili 与 YouTube 将在内容准备好后逐步开放。',
-      appTitle: 'App', appBody: 'YiCapital App 尚未开放。我们会先把网页端的研究、组合与账户体验做好。',
-      helpTitle: 'Support & Help', faqAccount: '注册账户有什么用途？',
-      faqAccountA: '账户可解锁完整研报、组合档案与后续个性化功能；Guest 仍可查看公开预览。',
+      socialTitle: '社交媒体', socialBody: '小红书、抖音、Instagram、微信公众号、Bilibili 与 YouTube 将在内容准备好后逐步开放。',
+      socialChannels: ['小红书', '抖音', 'Instagram', '微信', 'Bilibili', 'YouTube'],
+      appTitle: '应用程序', appBody: 'YiCapital 应用程序尚未开放。我们会先把网页端的研究、组合与账户体验做好。',
+      helpKicker: '支持', helpTitle: '支持与帮助', helpMore: '仍需要帮助？', helpEmail: '发送电子邮件',
+      faqAccount: '注册账户有什么用途？',
+      faqAccountA: '账户可解锁完整研报、组合档案与后续个性化功能；访客仍可查看公开预览。',
       faqNews: 'Insights 订阅会寄什么？', faqNewsA: '只寄精选研究、重要文章与有实质内容的组合更新。你可随时在账户设置取消。',
       faqIdentity: '可以更改登录邮箱或 Google 账号吗？', faqIdentityA: '目前不可以。为避免账户被错误转移，已绑定的邮箱与 Google 身份保持锁定；显示名称、ID 与头像可以修改。',
       faqResearch: '网站内容是投资建议吗？', faqResearchA: '不是。所有内容仅供研究与学习，不构成任何证券的买卖要约、招揽或投资建议。',
-      promptKicker: 'INSIGHTS, WITHOUT THE NOISE', promptTitle: '把真正值得读的研究送到收件箱。',
+      promptKicker: '只收真正值得读的研究', promptTitle: '把真正值得读的研究送到收件箱。',
       promptBody: '精选深度研究、重要新文章与组合更新。不发促销，随时可以取消。',
       subscribe: '一键订阅', subscribing: '订阅中…', subscribed: '已订阅',
       idHelp: '2–24 位中英文、数字、_ 或 -；全站不可重复。',
       photoReady: '新头像已准备好，保存后生效。',
       adminRole: '管理员安全账号', adminManaged: '这是独立的管理员安全身份，登录名称与凭证由安全配置管理。客户个人资料、Google／邮箱绑定及 Insights 偏好请使用普通会员账号管理。',
+      adminOpen: '打开管理后台',
     },
     en: {
       guest: 'Guest', guestRole: 'Guest access', signIn: 'Sign in / Register',
@@ -104,6 +114,8 @@
       loadError: 'Your account details are temporarily unavailable. Please try again.',
       accountKicker: 'ACCOUNT', accountTitle: 'Account Settings & Profile',
       accountIntro: 'Manage your public name, YiCapital ID, avatar, connected identities and email preferences.',
+      navAccount: 'Account', navConnect: 'MCPs & APIs', navContact: 'Operator',
+      navSocial: 'Social Media', navApp: 'App', navHelp: 'Support & Help',
       displayName: 'Display name', userId: 'YiCapital ID', email: 'Email',
       immutable: 'Your sign-in identity is locked and cannot be changed here.', connectionTitle: 'Connected identities',
       connected: 'Connected', notConnected: 'Not connected', google: 'Google', emailAccount: 'Email',
@@ -115,13 +127,15 @@
       copy: 'Copy link', copied: 'Copied', save: 'Save changes', saving: 'Saving…',
       saved: 'Your account settings have been updated.', genericError: 'Unable to complete this action. Please try again.',
       connectTitle: 'Connect MCPs & APIs', connectBody: 'Connect research tools, data services and personal workflows here in the future. Secure authorization and permission controls are in development.',
-      contactTitle: 'Contact Site Operator', contactRole: 'Founder & Site Operator · Yi Capital',
+      contactKicker: 'OPERATOR', contactTitle: 'Contact Site Operator', contactRole: 'Founder & Site Operator · Yi Capital',
       philosophyTitle: 'Investment philosophy',
       philosophy: 'I am a fundamental investor who works through financial statements line by line, much like using Bloomberg FA. My research centers on long-term free cash flow, capital allocation, moats and price discipline. Every judgment should be traceable to evidence—and falsifiable by new facts.',
       welcome: 'You are welcome to discuss companies, industries, valuation or research methods. Different views are welcome; evidence makes the conversation better.',
       socialTitle: 'Social Media', socialBody: 'Xiaohongshu, Douyin, Instagram, WeChat Official Account, Bilibili and YouTube will open progressively when the content is ready.',
+      socialChannels: ['Xiaohongshu', 'Douyin', 'Instagram', 'WeChat', 'Bilibili', 'YouTube'],
       appTitle: 'App', appBody: 'The YiCapital app is not available yet. We are finishing the web research, portfolio and account experience first.',
-      helpTitle: 'Support & Help', faqAccount: 'What does a registered account unlock?',
+      helpKicker: 'SUPPORT', helpTitle: 'Support & Help', helpMore: 'Still need help?', helpEmail: 'Email',
+      faqAccount: 'What does a registered account unlock?',
       faqAccountA: 'An account unlocks full research, portfolio profiles and future personalized features. Guest access still includes the public preview.',
       faqNews: 'What will Insights send me?', faqNewsA: 'Only selected research, important essays and meaningful portfolio updates. You can unsubscribe here at any time.',
       faqIdentity: 'Can I change my sign-in email or Google account?', faqIdentityA: 'Not currently. Bound email and Google identities stay locked to prevent an accidental account transfer. You can change your display name, ID and avatar.',
@@ -132,6 +146,7 @@
       idHelp: '2–24 Chinese/English characters, numbers, _ or -. Unique across YiCapital.',
       photoReady: 'Your new avatar is ready. Save to apply it.',
       adminRole: 'Administrator security account', adminManaged: 'This is a separate administrator identity managed by secure configuration. Use a regular member account for customer profile details, Google/email connections and Insights preferences.',
+      adminOpen: 'Open administration',
     },
   }[locale];
 
@@ -186,13 +201,13 @@
     .yc-ava-button{width:38px;height:38px;border-radius:50%;border:1px solid rgba(117,167,255,.7);padding:0;background:#0a1424;color:#f5f2ea;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 0 rgba(117,167,255,0);transition:border-color .16s ease,box-shadow .16s ease}
     .yc-ava-button:hover,.yc-ava-button:focus-visible{border-color:#75a7ff;box-shadow:0 0 0 4px rgba(117,167,255,.12);outline:none}
     .yc-avatar,.yc-avatar-lg{display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:50%;background:#10233e;color:#f5f2ea;font-weight:720;letter-spacing:-.02em}
-    .yc-avatar{width:32px;height:32px;font-size:12px}.yc-avatar-lg{width:66px;height:66px;font-size:19px;flex:0 0 auto}
+    .yc-avatar{width:32px;height:32px;font-size:12px;flex:0 0 32px}.yc-avatar-lg{width:66px;height:66px;font-size:19px;flex:0 0 auto}
     .yc-avatar img,.yc-avatar-lg img{width:100%;height:100%;object-fit:cover}
-    .yc-account-menu{position:absolute;top:48px;right:0;width:min(360px,calc(100vw - 28px));max-height:min(690px,calc(100vh - 92px));overflow:auto;background:rgba(7,12,21,.98);border:1px solid #24324a;border-radius:18px;padding:12px;z-index:1290;display:none;color:#e9eef7;box-shadow:0 28px 78px rgba(0,0,0,.66);backdrop-filter:blur(18px)}
+    .yc-account-menu{position:absolute;top:48px;right:0;box-sizing:border-box;width:min(360px,calc(100vw - 28px));max-height:min(690px,calc(100vh - 92px));overflow:auto;background:rgba(7,12,21,.98);border:1px solid #24324a;border-radius:18px;padding:12px;z-index:1290;display:none;color:#e9eef7;box-shadow:0 28px 78px rgba(0,0,0,.66);backdrop-filter:blur(18px)}
     .yc-account-menu.open{display:block;animation:yc-menu-in .14s ease-out}
     .yc-menu-identity{display:flex;gap:12px;align-items:center;padding:12px 10px 16px;border-bottom:1px solid #202b3d;margin-bottom:8px}
-    .yc-menu-identity-copy{min-width:0}.yc-menu-identity b,.yc-menu-identity span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .yc-menu-identity b{color:#f5f2ea;font-size:16px;font-weight:680}.yc-menu-identity span{color:#7f8da1;font-size:12.5px;margin-top:4px}
+    .yc-menu-identity-copy{min-width:0}.yc-menu-identity-copy>b,.yc-menu-identity-copy>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .yc-menu-identity-copy>b{color:#f5f2ea;font-size:16px;font-weight:680}.yc-menu-identity-copy>span{color:#7f8da1;font-size:12.5px;margin-top:4px}
     .yc-menu-item{display:flex!important;align-items:center!important;gap:12px;width:100%;box-sizing:border-box;border:0;background:none;color:#ced7e4!important;text-decoration:none!important;text-align:left;font:600 13.5px/1.3 var(--sans,"Space Grotesk",sans-serif);padding:11px 10px!important;border-radius:9px;cursor:pointer}
     .yc-menu-item:hover,.yc-menu-item:focus-visible{background:#111d30;color:#fff!important;outline:none}
     .yc-menu-icon{display:inline-flex;width:24px;height:24px;align-items:center;justify-content:center;color:#8290a3;font:500 17px/1 var(--mono,"IBM Plex Mono",monospace);flex:0 0 auto}
@@ -208,7 +223,7 @@
     .yc-account-nav button{display:flex;align-items:center;gap:11px;width:100%;border:0;border-left:3px solid transparent;border-radius:7px;padding:10px 10px;background:none;color:#8e9aac;text-align:left;font:590 13px/1.3 inherit;cursor:pointer}
     .yc-account-nav button:hover,.yc-account-nav button:focus-visible{background:#141e2d;color:#e8edf5;outline:none}.yc-account-nav button.active{border-left-color:#75a7ff;background:#151f2e;color:#fff}
     .yc-account-nav .yc-nav-icon{display:inline-flex;width:20px;justify-content:center;color:#8392a7;font-family:var(--mono,"IBM Plex Mono",monospace)}
-    .yc-account-side-spacer{flex:1}.yc-side-logout{margin-top:15px!important;color:#ff8b7c!important}
+    .yc-account-side-spacer{flex:1}.yc-side-admin{margin-top:15px!important}.yc-side-logout{margin-top:6px!important;color:#ff8b7c!important}
     .yc-account-main{overflow:auto;padding:34px clamp(22px,4vw,54px) 46px}
     .yc-section-kicker{margin:0 0 8px;color:#75a7ff;font:650 10px/1 var(--mono,"IBM Plex Mono",monospace);letter-spacing:2px}
     .yc-section-title{margin:0 46px 8px 0;color:#f5f2ea;font-size:26px;line-height:1.22;letter-spacing:-.025em}.yc-section-intro{margin:0 0 25px;color:#8f9bad;font-size:13.5px;line-height:1.7}
@@ -233,7 +248,7 @@
     .yc-faq{border-top:1px solid #2b3749}.yc-faq details{border-bottom:1px solid #2b3749;padding:0 2px}.yc-faq summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 0;color:#e6ecf5;font-size:13.5px;font-weight:650;cursor:pointer}.yc-faq summary::-webkit-details-marker{display:none}.yc-faq summary::after{content:"+";color:#75a7ff;font-size:18px}.yc-faq details[open] summary::after{content:"−"}.yc-faq p{margin:-4px 32px 18px 0;color:#8b98aa;font-size:12.5px;line-height:1.75}
     .yc-subscribe-card{position:fixed;left:max(18px,env(safe-area-inset-left));bottom:max(18px,env(safe-area-inset-bottom));z-index:1170;width:min(340px,calc(100vw - 28px));box-sizing:border-box;border:1px solid rgba(117,167,255,.45);border-radius:14px;padding:17px;background:rgba(8,15,26,.96);color:#e8edf5;box-shadow:0 18px 52px rgba(0,0,0,.5);backdrop-filter:blur(14px)}.yc-subscribe-card.hide{display:none}.yc-subscribe-kicker{color:#75a7ff;font:650 8.5px var(--mono,"IBM Plex Mono",monospace);letter-spacing:1.5px}.yc-subscribe-card h3{margin:7px 0 6px;color:#f5f2ea;font-size:15px;line-height:1.35}.yc-subscribe-card p{margin:0 0 12px;color:#8794a7;font-size:11.5px;line-height:1.55}.yc-subscribe-card button{border:0;border-radius:7px;background:#75a7ff;color:#07101c;padding:8px 12px;font:700 11.5px inherit;cursor:pointer}.yc-subscribe-card button:disabled{opacity:.6;cursor:wait}
     @keyframes yc-menu-in{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
-    @media(max-width:760px){.yc-ava-wrap{margin-left:auto}.yc-account-menu{position:fixed;top:74px;right:14px;max-height:calc(100vh - 92px)}.yc-account-overlay{padding:0}.yc-account-dialog{display:flex;flex-direction:column;width:100%;height:100%;border:0;border-radius:0}.yc-account-side{display:block;flex:0 0 auto;padding:18px 14px 9px;border-right:0;border-bottom:1px solid #263144;overflow:hidden}.yc-account-brand{padding:0 8px 14px}.yc-account-nav{flex-direction:row;overflow-x:auto;padding-bottom:5px;scrollbar-width:none}.yc-account-nav::-webkit-scrollbar{display:none}.yc-account-nav button{flex:0 0 auto;width:auto;border-left:0;border-bottom:2px solid transparent;padding:8px 10px;white-space:nowrap}.yc-account-nav button.active{border-left:0;border-bottom-color:#75a7ff}.yc-account-side-spacer,.yc-side-logout{display:none!important}.yc-account-main{padding:24px 18px 40px}.yc-section-title{font-size:23px}.yc-form-grid,.yc-connections{grid-template-columns:1fr}.yc-profile-hero{align-items:flex-start;padding:17px}.yc-invite{align-items:flex-start;flex-direction:column}.yc-invite .yc-secondary-button{width:100%}.yc-social-grid{grid-template-columns:1fr}.yc-subscribe-card{bottom:max(70px,calc(env(safe-area-inset-bottom) + 60px));left:14px}}
+    @media(max-width:760px){.yc-ava-wrap{margin-left:auto}.yc-account-menu{position:fixed;top:74px;left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));width:auto;max-height:calc(100vh - 92px)}.yc-account-overlay{padding:0}.yc-account-dialog{display:flex;flex-direction:column;width:100%;height:100%;border:0;border-radius:0}.yc-account-side{display:block;flex:0 0 auto;padding:18px 14px 9px;border-right:0;border-bottom:1px solid #263144;overflow:hidden}.yc-account-brand{padding:0 8px 14px}.yc-account-nav{flex-direction:row;overflow-x:auto;padding-bottom:5px;scrollbar-width:none}.yc-account-nav::-webkit-scrollbar{display:none}.yc-account-nav button{flex:0 0 auto;width:auto;border-left:0;border-bottom:2px solid transparent;padding:8px 10px;white-space:nowrap}.yc-account-nav button.active{border-left:0;border-bottom-color:#75a7ff}.yc-account-side-spacer,.yc-side-admin,.yc-side-logout{display:none!important}.yc-account-main{padding:24px 18px 40px}.yc-section-title{font-size:23px}.yc-form-grid,.yc-connections{grid-template-columns:1fr}.yc-profile-hero{align-items:flex-start;padding:17px}.yc-invite{align-items:flex-start;flex-direction:column}.yc-invite .yc-secondary-button{width:100%}.yc-social-grid{grid-template-columns:1fr}.yc-subscribe-card{bottom:max(70px,calc(env(safe-area-inset-bottom) + 60px));left:14px}}
     @media(max-width:420px){.yc-account-menu{top:66px}.yc-avatar-lg{width:56px;height:56px}.yc-profile-hero{gap:12px}.yc-preference{align-items:flex-start}.yc-empty-card{padding:34px 22px}.yc-account-close{top:14px;right:13px}}
     @media(prefers-reduced-motion:reduce){.yc-account-menu.open{animation:none}.yc-switch span,.yc-switch span::after{transition:none}}
   `;
@@ -280,14 +295,20 @@
   function menuItem(section, icon, label, future) {
     return '<button class="yc-menu-item" type="button" data-account-section="' + section + '">' +
       '<span class="yc-menu-icon" aria-hidden="true">' + icon + '</span>' +
-      '<span class="yc-menu-label">' + label + '</span>' +
+      '<span class="yc-menu-label">' + esc(label) + '</span>' +
       (future ? '<span class="yc-menu-badge">' + esc(L.unavailable) + '</span>' : '') + '</button>';
   }
 
   function sideItem(section, icon, label) {
     return '<button type="button" data-account-section="' + section + '" class="' +
       (activeSection === section ? 'active' : '') + '"><span class="yc-nav-icon" aria-hidden="true">' +
-      icon + '</span><span>' + label + '</span></button>';
+      icon + '</span><span>' + esc(label) + '</span></button>';
+  }
+
+  function adminLink(className) {
+    if (role !== 'admin') return '';
+    return '<a class="yc-menu-item ' + (className || '') + '" href="/admin"><span class="yc-menu-icon" aria-hidden="true">◆</span>' +
+      '<span class="yc-menu-label">' + esc(L.admin) + '</span></a>';
   }
 
   function shell() {
@@ -299,12 +320,13 @@
         (isGuest
           ? '<a class="yc-menu-item" href="' + loginPath + '"><span class="yc-menu-icon">↗</span><span class="yc-menu-label">' + esc(L.signIn) + '</span></a>' +
             '<a class="yc-menu-item" href="' + portfolioPath + '"><span class="yc-menu-icon">⌁</span><span class="yc-menu-label">' + esc(L.portfolio) + '</span></a>'
-          : menuItem('account', '◎', 'Account Settings & Profile', false) +
-            menuItem('connect', '⌁', 'Connect MCPs & APIs', true) +
-            menuItem('contact', '@', 'Contact Site Operator', false) +
-            menuItem('social', '◉', 'Social Media', true) +
-            menuItem('app', '▣', 'App', true) +
-            menuItem('help', '?', 'Support & Help', false)) +
+          : adminLink('yc-menu-admin') +
+            menuItem('account', '◎', L.accountTitle, false) +
+            menuItem('connect', '⌁', L.connectTitle, true) +
+            menuItem('contact', '@', L.contactTitle, false) +
+            menuItem('social', '◉', L.socialTitle, true) +
+            menuItem('app', '▣', L.appTitle, true) +
+            menuItem('help', '?', L.helpTitle, false)) +
         '<div class="yc-menu-divider"></div><button class="yc-menu-item yc-logout" type="button" data-account-logout><span class="yc-menu-icon">↪</span><span class="yc-menu-label">' +
         esc(isGuest ? L.exit : L.logout) + '</span></button></div>';
     avatarButton = wrap.querySelector('.yc-ava-button');
@@ -356,7 +378,8 @@
       '<section class="yc-account-dialog" role="dialog" aria-modal="true" aria-labelledby="yc-account-page-title" tabindex="-1">' +
         '<button class="yc-account-close" type="button" aria-label="' + esc(L.close) + '">×</button>' +
         '<aside class="yc-account-side"><div class="yc-account-brand">YiCapital</div><nav class="yc-account-nav" aria-label="' + esc(L.account) + '"></nav>' +
-          '<div class="yc-account-side-spacer"></div><button class="yc-menu-item yc-logout yc-side-logout" type="button" data-account-logout><span class="yc-menu-icon">↪</span><span class="yc-menu-label">' + esc(L.logout) + '</span></button></aside>' +
+          '<div class="yc-account-side-spacer"></div>' + adminLink('yc-side-admin') +
+          '<button class="yc-menu-item yc-logout yc-side-logout" type="button" data-account-logout><span class="yc-menu-icon">↪</span><span class="yc-menu-label">' + esc(L.logout) + '</span></button></aside>' +
         '<main class="yc-account-main"></main></section>';
     main = overlay.querySelector('.yc-account-main');
     overlay.querySelector('.yc-account-close').addEventListener('click', closeAccount);
@@ -369,9 +392,9 @@
   function renderSide() {
     const nav = overlay.querySelector('.yc-account-nav');
     nav.innerHTML =
-      sideItem('account', '◎', 'Account') + sideItem('connect', '⌁', 'MCPs & APIs') +
-      sideItem('contact', '@', 'Operator') + sideItem('social', '◉', 'Social Media') +
-      sideItem('app', '▣', 'App') + sideItem('help', '?', 'Support & Help');
+      sideItem('account', '◎', L.navAccount) + sideItem('connect', '⌁', L.navConnect) +
+      sideItem('contact', '@', L.navContact) + sideItem('social', '◉', L.navSocial) +
+      sideItem('app', '▣', L.navApp) + sideItem('help', '?', L.navHelp);
     nav.querySelectorAll('[data-account-section]').forEach(button => {
       button.addEventListener('click', () => {
         activeSection = button.dataset.accountSection;
@@ -448,7 +471,8 @@
       main.innerHTML = pageHeading(L.accountKicker, L.accountTitle, L.accountIntro) +
         '<div class="yc-profile-hero">' + avatarMarkup('yc-avatar-lg') +
         '<div class="yc-profile-hero-copy"><b>' + esc(profile.displayName) + '</b><span>' + esc(L.adminRole) + '</span></div></div>' +
-        '<div class="yc-empty-card"><p>' + esc(L.adminManaged) + '</p></div>';
+        '<div class="yc-empty-card"><p>' + esc(L.adminManaged) + '</p><a class="yc-primary-button" href="/admin" style="display:inline-block;margin-top:18px;text-decoration:none">' +
+        esc(L.adminOpen) + '</a></div>';
       return;
     }
     main.innerHTML =
@@ -581,7 +605,7 @@
   }
 
   function renderContact() {
-    main.innerHTML = pageHeading('OPERATOR', L.contactTitle, '') +
+    main.innerHTML = pageHeading(L.contactKicker, L.contactTitle, '') +
       '<section class="yc-operator"><div class="yc-operator-head"><span class="yc-operator-mark">YT</span><div><h2>Yi Tingxun (Preston Yi)</h2><p>' +
       esc(L.contactRole) + '</p><a class="yc-operator-email" href="mailto:eprestonyi@gmail.com">eprestonyi@gmail.com</a></div></div>' +
       '<div class="yc-operator-body"><h3>' + esc(L.philosophyTitle) + '</h3><p>' + esc(L.philosophy) + '</p><p>' +
@@ -590,10 +614,10 @@
 
   function renderHelp() {
     const faq = [[L.faqAccount, L.faqAccountA], [L.faqNews, L.faqNewsA], [L.faqIdentity, L.faqIdentityA], [L.faqResearch, L.faqResearchA]];
-    main.innerHTML = pageHeading('SUPPORT', L.helpTitle, '') + '<div class="yc-faq">' +
+    main.innerHTML = pageHeading(L.helpKicker, L.helpTitle, '') + '<div class="yc-faq">' +
       faq.map(item => '<details><summary>' + esc(item[0]) + '</summary><p>' + esc(item[1]) + '</p></details>').join('') +
-      '</div><div class="yc-preference" style="margin-top:24px"><div class="yc-preference-copy"><b>Still need help?</b><p>eprestonyi@gmail.com</p></div>' +
-      '<a class="yc-secondary-button" href="mailto:eprestonyi@gmail.com" style="text-decoration:none">Email</a></div>';
+      '</div><div class="yc-preference" style="margin-top:24px"><div class="yc-preference-copy"><b>' + esc(L.helpMore) + '</b><p>eprestonyi@gmail.com</p></div>' +
+      '<a class="yc-secondary-button" href="mailto:eprestonyi@gmail.com" style="text-decoration:none">' + esc(L.helpEmail) + '</a></div>';
   }
 
   function renderSection() {
@@ -601,7 +625,7 @@
     if (activeSection === 'account') renderAccount();
     else if (activeSection === 'connect') comingPage('⌁', L.connectTitle, L.connectBody);
     else if (activeSection === 'contact') renderContact();
-    else if (activeSection === 'social') comingPage('◉', L.socialTitle, L.socialBody, ['小紅書', '抖音', 'Instagram', 'WeChat', 'Bilibili', 'YouTube']);
+    else if (activeSection === 'social') comingPage('◉', L.socialTitle, L.socialBody, L.socialChannels);
     else if (activeSection === 'app') comingPage('▣', L.appTitle, L.appBody);
     else renderHelp();
   }

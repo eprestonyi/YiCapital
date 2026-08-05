@@ -131,6 +131,36 @@ test('signed-in account center exposes editable profile, locked identities and o
   assert.match(worker, /revokeUserSessions\(env, sess\.u\)/);
 });
 
+test('account center is trilingual, keeps avatars in-bounds and restores the admin-only portal entry', async () => {
+  const session = await read('assets/yc-session.js');
+
+  for (const label of [
+    '帳戶設定與個人資料', '連接 MCP 與 API', '聯絡網站營運者', '社交媒體', '應用程式', '支援與協助',
+    '账户设置与个人资料', '连接 MCP 与 API', '联系网站运营者', '社交媒体', '应用程序', '支持与帮助',
+    'Account Settings & Profile', 'Connect MCPs & APIs', 'Contact Site Operator', 'Social Media', 'Support & Help',
+  ]) assert.match(session, new RegExp(label.replace(/[&]/g, '\\&')));
+
+  assert.match(session, /menuItem\('account', '◎', L\.accountTitle/);
+  assert.match(session, /sideItem\('account', '◎', L\.navAccount/);
+  assert.match(session, /pageHeading\(L\.contactKicker, L\.contactTitle/);
+  assert.match(session, /pageHeading\(L\.helpKicker, L\.helpTitle/);
+  assert.match(session, /L\.socialChannels/);
+  assert.doesNotMatch(session, /logout: '登出'[\s\S]{0,80}logoutRetry: '登出失败/);
+
+  const englishBlock = session.slice(session.indexOf('    en: {'), session.indexOf('  }[locale];'));
+  assert.doesNotMatch(englishBlock, /[\u3400-\u9fff]/);
+
+  assert.match(session, /\.yc-menu-identity-copy>b,\.yc-menu-identity-copy>span/);
+  assert.doesNotMatch(session, /\.yc-menu-identity b,\.yc-menu-identity span/);
+  assert.match(session, /\.yc-account-menu\{[^}]*box-sizing:border-box/);
+  assert.match(session, /\.yc-account-menu\{position:fixed;top:74px;left:max\(14px,env\(safe-area-inset-left\)\);right:max\(14px,env\(safe-area-inset-right\)\);width:auto/);
+  assert.match(session, /if \(role !== 'admin'\) return ''/);
+  assert.match(session, /href="\/admin"/);
+  assert.match(session, /adminLink\('yc-menu-admin'\)/);
+  assert.match(session, /adminLink\('yc-side-admin'\)/);
+  assert.match(session, /esc\(L\.adminOpen\)/);
+});
+
 test('all member surfaces load the current account-center release', async () => {
   const pages = [
     'index.html', 'about.html', 'insights.html', 'forum.html', 'portfolios.html',
@@ -138,7 +168,7 @@ test('all member surfaces load the current account-center release', async () => 
     'cn/index.html', 'cn/about.html', 'cn/insights.html', 'cn/forum.html', 'cn/portfolios.html',
     'en/index.html', 'en/about.html', 'en/insights.html', 'en/forum.html', 'en/portfolios.html',
   ];
-  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.1/);
+  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.2/);
 });
 
 test('Google verification uses persistent signing-key resilience', async () => {
