@@ -735,20 +735,7 @@
 
   async function ensureXLSX() {
     if (window.XLSX) return window.XLSX;
-    const urls = [
-      'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js',
-      'https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.min.js',
-    ];
-    for (const url of urls) {
-      try {
-        await new Promise((resolve, reject) => {
-          const script = document.createElement('script');
-          script.src = url; script.onload = resolve; script.onerror = reject; document.head.append(script);
-        });
-        if (window.XLSX) return window.XLSX;
-      } catch (error) { /* try next CDN */ }
-    }
-    throw new Error('表格解析庫加載失敗，請刷新或更換瀏覽器。');
+    throw new Error('本地表格解析庫加載失敗，已停止匯入。');
   }
 
   async function sha256Buffer(buffer) {

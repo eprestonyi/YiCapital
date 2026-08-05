@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -292,8 +293,10 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
     read('admin-ledger.html'),
     read('assets/yc-ledger-admin.js'),
   ]);
-  assert.match(page, /xlsx-js-style@1\.2\.0\/dist\/xlsx\.min\.js/);
+  assert.match(page, /assets\/vendor\/xlsx-js-style-1\.2\.0\/xlsx\.min\.js/);
   assert.match(page, /yc-ledger-admin\.js\?v=20260805b/);
+  assert.doesNotMatch(page, /cdn\.jsdelivr\.net|unpkg\.com/);
+  assert.doesNotMatch(ledgerAdmin, /cdn\.jsdelivr\.net|unpkg\.com/);
   assert.match(ledgerAdmin, /\['trade_no', 'tradeNo', 'sequence_no', 'sequence'\]/);
   assert.match(ledgerAdmin, /Hidden:\s*2/);
   assert.match(ledgerAdmin, /'2F5B7C'/);
@@ -310,4 +313,9 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
   assert.match(ledgerAdmin, /templateStyleCount !== CANONICAL_CELL_STYLES\.length/);
   assert.match(ledgerAdmin, /writeXml\(generatedStyles\.entry, templateStyles\.xml\)/);
   assert.match(ledgerAdmin, /XLSX\.write\(workbook/);
+  const vendor = await readFile(path.join(ROOT, 'assets/vendor/xlsx-js-style-1.2.0/xlsx.min.js'));
+  assert.equal(
+    createHash('sha384').update(vendor).digest('hex'),
+    '4cacdd631abfb7d5292eb25c210bb68697d083ea12a0954392159c4b8ceecd09b3413071e6048c8483570f6b86bf48f0',
+  );
 });

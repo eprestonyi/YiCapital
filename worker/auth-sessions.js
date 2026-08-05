@@ -4,6 +4,11 @@ export const SESSION_IDLE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SESSION_ABSOLUTE_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 export const SESSION_REFRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const SESSION_TOUCH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const ADMIN_SESSION_IDLE_TTL_MS = 12 * 60 * 60 * 1000;
+export const ADMIN_SESSION_ABSOLUTE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const ADMIN_SESSION_REFRESH_WINDOW_MS = 2 * 60 * 60 * 1000;
+const ADMIN_SESSION_TOUCH_INTERVAL_MS = 15 * 60 * 1000;
+const ADMIN_PROVIDER_PREFIX = 'admin-password-v1:';
 
 const LEGACY_KV_TTL_SECONDS = Math.ceil(SESSION_IDLE_TTL_MS / 1000);
 const encoder = new TextEncoder();
@@ -44,6 +49,40 @@ async function hmacSha256Hex(secret, value) {
     .join('');
 }
 
+function safeTextEqual(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string' || left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
+async function currentAdminProvider(env) {
+  const username = String(env && env.ADMIN_USERNAME || '');
+  const password = String(env && env.ADMIN_PASSWORD || '');
+  if (!username || !password) return null;
+  const secret = String(env && (env.AUTH_RATE_SALT || env.FEEDBACK_RATE_SALT) || password);
+  const fingerprint = await hmacSha256Hex(secret, ['admin-session-v1', username, password].join('\u0000'));
+  return ADMIN_PROVIDER_PREFIX + fingerprint;
+}
+
+function sessionTiming(role) {
+  return role === 'admin'
+    ? {
+        idleTtl: ADMIN_SESSION_IDLE_TTL_MS,
+        absoluteTtl: ADMIN_SESSION_ABSOLUTE_TTL_MS,
+        refreshWindow: ADMIN_SESSION_REFRESH_WINDOW_MS,
+        touchInterval: ADMIN_SESSION_TOUCH_INTERVAL_MS,
+      }
+    : {
+        idleTtl: SESSION_IDLE_TTL_MS,
+        absoluteTtl: SESSION_ABSOLUTE_TTL_MS,
+        refreshWindow: SESSION_REFRESH_WINDOW_MS,
+        touchInterval: SESSION_TOUCH_INTERVAL_MS,
+      };
+}
+
 export async function authRateAllowed(request, env, action, limit, windowSeconds, options = {}) {
   const address = request.headers.get('CF-Connecting-IP') ||
     request.headers.get('X-Forwarded-For') || 'unknown';
@@ -51,7 +90,9 @@ export async function authRateAllowed(request, env, action, limit, windowSeconds
   const window = Math.floor(now / (windowSeconds * 1000));
   const identity = await hmacSha256Hex(
     env && (env.AUTH_RATE_SALT || env.FEEDBACK_RATE_SALT),
-    address.split(',')[0].trim(),
+    options.identity == null
+      ? 'ip\u0000' + address.split(',')[0].trim()
+      : 'subject\u0000' + String(options.identity).trim().toLowerCase(),
   );
   const bucketKey = ['authrate', action, identity, window].join(':');
   const expiresAt = (window + 1) * windowSeconds * 1000 + 60 * 1000;
@@ -313,22 +354,26 @@ export async function getSession(request, env, options = {}) {
 
   if (stored.row) {
     const session = normalizedSession(stored.row);
+    const expectedAdminProvider = session.role === 'admin' ? await currentAdminProvider(env) : null;
     const malformed = !session.u || !validRole(session.role) ||
       !Number.isFinite(session.issuedAt) || !Number.isFinite(session.lastSeenAt) ||
       !Number.isFinite(session.expiresAt) || !Number.isFinite(session.absoluteExpiresAt);
     const revokedProvider = session.provider === 'google-admin';
+    const staleAdminCredential = session.role === 'admin' &&
+      (!expectedAdminProvider || !safeTextEqual(session.provider, expectedAdminProvider));
     const accountRevoked = Number.isFinite(session.accountRevokedBefore) &&
       session.issuedAt <= session.accountRevokedBefore;
     const expired = session.expiresAt <= now || session.absoluteExpiresAt <= now;
-    if (malformed || revokedProvider || accountRevoked || expired) {
+    if (malformed || revokedProvider || staleAdminCredential || accountRevoked || expired) {
       await revokeToken(env, token, tokenHash);
       return null;
     }
 
-    if (now - session.lastSeenAt >= SESSION_TOUCH_INTERVAL_MS ||
-        session.expiresAt - now <= SESSION_REFRESH_WINDOW_MS) {
+    const timing = sessionTiming(session.role);
+    if (now - session.lastSeenAt >= timing.touchInterval ||
+        session.expiresAt - now <= timing.refreshWindow) {
       const previousExpiresAt = session.expiresAt;
-      const refreshedExpiresAt = Math.min(now + SESSION_IDLE_TTL_MS, session.absoluteExpiresAt);
+      const refreshedExpiresAt = Math.min(now + timing.idleTtl, session.absoluteExpiresAt);
       if (refreshedExpiresAt > previousExpiresAt) {
         const refreshed = {
           ...session,
@@ -339,9 +384,6 @@ export async function getSession(request, env, options = {}) {
         if (await refreshD1Session(env, tokenHash, refreshed)) {
           session.lastSeenAt = refreshed.lastSeenAt;
           session.expiresAt = refreshed.expiresAt;
-          // One-release compatibility copy makes an emergency Worker rollback
-          // non-destructive while D1 becomes authoritative.
-          await writeLegacyKvSession(env, token, session);
         }
       }
     }
@@ -350,7 +392,10 @@ export async function getSession(request, env, options = {}) {
 
   const legacy = await readLegacyKvSession(env, token);
   if (!legacy) return null;
-  if (legacy.provider === 'google-admin' || !legacy.u || !validRole(legacy.role)) {
+  const expectedLegacyAdminProvider = legacy.role === 'admin' ? await currentAdminProvider(env) : null;
+  const staleLegacyAdminCredential = legacy.role === 'admin' &&
+    (!expectedLegacyAdminProvider || !safeTextEqual(legacy.provider, expectedLegacyAdminProvider));
+  if (legacy.provider === 'google-admin' || staleLegacyAdminCredential || !legacy.u || !validRole(legacy.role)) {
     await revokeToken(env, token, tokenHash);
     return null;
   }
@@ -388,31 +433,35 @@ export async function getSession(request, env, options = {}) {
   if (sessionDatabase(env) && !migratedToD1) {
     throw new AuthStoreUnavailableError('session_migrate_d1');
   }
+  if (migratedToD1) await deleteLegacyKvSession(env, token);
   return { token, ...migrated, store: migratedToD1 ? 'd1-migrated' : 'kv' };
 }
 
 export async function newSession(env, username, role, details = {}, options = {}) {
   if (!username || !validRole(role)) throw new Error('invalid_session_identity');
   const now = Number(typeof options.now === 'function' ? options.now() : Date.now());
+  const timing = sessionTiming(role);
+  const provider = role === 'admin' ? await currentAdminProvider(env) : details.provider || null;
+  if (role === 'admin' && !provider) throw new Error('invalid_admin_session_configuration');
   const token = [...crypto.getRandomValues(new Uint8Array(32))]
     .map(byte => byte.toString(16).padStart(2, '0'))
     .join('');
   const session = {
     u: String(username),
     role,
-    provider: details.provider || null,
+    provider,
     issuedAt: now,
     lastSeenAt: now,
-    expiresAt: now + SESSION_IDLE_TTL_MS,
-    absoluteExpiresAt: now + SESSION_ABSOLUTE_TTL_MS,
+    expiresAt: now + timing.idleTtl,
+    absoluteExpiresAt: now + timing.absoluteTtl,
   };
   const tokenHash = await sha256Hex(token);
   const d1Stored = await writeD1Session(env, tokenHash, session);
-  const kvStored = await writeLegacyKvSession(env, token, session);
+  const kvStored = sessionDatabase(env) ? false : await writeLegacyKvSession(env, token, session);
   // Once the D1 binding exists, it is the immediate-consistency authority.
-  // KV-only creation is allowed solely for installations that have not bound
-  // D1 at all; deployments with D1 must apply the additive migration first.
-  if ((sessionDatabase(env) && !d1Stored) || (!d1Stored && !kvStored)) {
+  // New D1 sessions never copy the plaintext bearer token into KV. KV-only
+  // creation remains solely for installations that have not bound D1.
+  if ((sessionDatabase(env) && !d1Stored) || (!sessionDatabase(env) && !kvStored)) {
     throw new AuthStoreUnavailableError('session_create');
   }
   return token;

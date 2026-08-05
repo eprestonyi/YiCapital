@@ -41,6 +41,8 @@
       inviteTitle: '邀請', inviteBody: '把你的專屬註冊連結分享給同樣重視深度研究的人。',
       copy: '複製連結', copied: '已複製', save: '儲存變更', saving: '正在儲存…',
       saved: '帳戶設定已更新。', genericError: '暫時無法完成操作，請稍後重試。',
+      sessionError: '登入已失效，請重新登入。', forbiddenError: '此帳戶目前不可使用。',
+      conflictError: '這個 YiCapital ID 已被使用。', rateError: '操作過於頻繁，請稍後再試。',
       connectTitle: '連接 MCP 與 API', connectBody: '未來可在這裡連接研究工具、資料服務與個人工作流。目前正在設計安全授權與權限管理。',
       contactKicker: '網站營運', contactTitle: '聯絡網站營運者', contactRole: '創辦人兼網站營運者 · Yi Capital',
       philosophyTitle: '投資哲學',
@@ -51,7 +53,7 @@
       appTitle: '應用程式', appBody: 'YiCapital 應用程式尚未開放。我們會先把網頁端的研究、組合與帳戶體驗做好。',
       helpKicker: '支援', helpTitle: '支援與協助', helpMore: '仍需要協助？', helpEmail: '傳送電子郵件',
       faqAccount: '註冊帳戶有甚麼用途？',
-      faqAccountA: '帳戶可解鎖完整研報、組合檔案與後續個人化功能；訪客仍可查看公開預覽。',
+      faqAccountA: '公開研究與組合毋須帳戶即可閱讀；帳戶用於管理身份、頭像、Insights 與後續個人化功能。',
       faqNews: 'Insights 訂閱會寄甚麼？', faqNewsA: '只寄精選研究、重要文章與有實質內容的組合更新。你可隨時在帳戶設定取消。',
       faqIdentity: '可以更改登入郵箱或 Google 帳號嗎？', faqIdentityA: '目前不可以。為避免帳號被錯誤轉移，已綁定的郵箱與 Google 身份保持鎖定；顯示名稱、ID 與頭像可以修改。',
       faqResearch: '網站內容是投資建議嗎？', faqResearchA: '不是。所有內容僅供研究與學習，不構成任何證券的買賣要約、招攬或投資建議。',
@@ -83,6 +85,8 @@
       inviteTitle: '邀请', inviteBody: '把你的专属注册链接分享给同样重视深度研究的人。',
       copy: '复制链接', copied: '已复制', save: '保存更改', saving: '正在保存…',
       saved: '账户设置已更新。', genericError: '暂时无法完成操作，请稍后重试。',
+      sessionError: '登录已失效，请重新登录。', forbiddenError: '此账户目前不可使用。',
+      conflictError: '这个 YiCapital ID 已被使用。', rateError: '操作过于频繁，请稍后再试。',
       connectTitle: '连接 MCP 与 API', connectBody: '未来可在这里连接研究工具、数据服务与个人工作流。目前正在设计安全授权与权限管理。',
       contactKicker: '网站运营', contactTitle: '联系网站运营者', contactRole: '创办人兼网站运营者 · Yi Capital',
       philosophyTitle: '投资哲学',
@@ -93,7 +97,7 @@
       appTitle: '应用程序', appBody: 'YiCapital 应用程序尚未开放。我们会先把网页端的研究、组合与账户体验做好。',
       helpKicker: '支持', helpTitle: '支持与帮助', helpMore: '仍需要帮助？', helpEmail: '发送电子邮件',
       faqAccount: '注册账户有什么用途？',
-      faqAccountA: '账户可解锁完整研报、组合档案与后续个性化功能；访客仍可查看公开预览。',
+      faqAccountA: '公开研究与组合无需账户即可阅读；账户用于管理身份、头像、Insights 与后续个性化功能。',
       faqNews: 'Insights 订阅会寄什么？', faqNewsA: '只寄精选研究、重要文章与有实质内容的组合更新。你可随时在账户设置取消。',
       faqIdentity: '可以更改登录邮箱或 Google 账号吗？', faqIdentityA: '目前不可以。为避免账户被错误转移，已绑定的邮箱与 Google 身份保持锁定；显示名称、ID 与头像可以修改。',
       faqResearch: '网站内容是投资建议吗？', faqResearchA: '不是。所有内容仅供研究与学习，不构成任何证券的买卖要约、招揽或投资建议。',
@@ -125,6 +129,8 @@
       inviteTitle: 'Invite', inviteBody: 'Share your personal registration link with someone who values deep research.',
       copy: 'Copy link', copied: 'Copied', save: 'Save changes', saving: 'Saving…',
       saved: 'Your account settings have been updated.', genericError: 'Unable to complete this action. Please try again.',
+      sessionError: 'Your session is no longer valid. Sign in again.', forbiddenError: 'This account is not currently available.',
+      conflictError: 'That YiCapital ID is already in use.', rateError: 'Too many attempts. Try again later.',
       connectTitle: 'Connect MCPs & APIs', connectBody: 'Connect research tools, data services and personal workflows here in the future. Secure authorization and permission controls are in development.',
       contactKicker: 'OPERATOR', contactTitle: 'Contact Site Operator', contactRole: 'Founder & Site Operator · Yi Capital',
       philosophyTitle: 'Investment philosophy',
@@ -135,7 +141,7 @@
       appTitle: 'App', appBody: 'The YiCapital app is not available yet. We are finishing the web research, portfolio and account experience first.',
       helpKicker: 'SUPPORT', helpTitle: 'Support & Help', helpMore: 'Still need help?', helpEmail: 'Email',
       faqAccount: 'What does a registered account unlock?',
-      faqAccountA: 'An account unlocks full research, portfolio profiles and future personalized features. Guest access still includes the public preview.',
+      faqAccountA: 'Public research and portfolios require no account. Accounts manage identity, avatars, Insights and future personalized features.',
       faqNews: 'What will Insights send me?', faqNewsA: 'Only selected research, important essays and meaningful portfolio updates. You can unsubscribe here at any time.',
       faqIdentity: 'Can I change my sign-in email or Google account?', faqIdentityA: 'Not currently. Bound email and Google identities stay locked to prevent an accidental account transfer. You can change your display name, ID and avatar.',
       faqResearch: 'Is this site investment advice?', faqResearchA: 'No. Everything is for research and education only and is not an offer, solicitation or investment advice.',
@@ -268,7 +274,12 @@
       const response = await fetch(API + path, init);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const error = new Error(payload.error || L.genericError);
+        const localized = response.status === 401 ? L.sessionError
+          : response.status === 403 ? L.forbiddenError
+          : response.status === 409 ? L.conflictError
+          : response.status === 429 ? L.rateError
+          : locale === 'tw' && payload.error ? payload.error : L.genericError;
+        const error = new Error(localized);
         error.status = response.status;
         throw error;
       }
@@ -702,7 +713,7 @@
     document.body.appendChild(subscribeCard);
   }
 
-  async function loadProfile() {
+  async function loadProfile(attempt = 0) {
     if (!isMember) return;
     try {
       const result = await api('/api/me', { cache: 'no-store' });
@@ -710,6 +721,10 @@
       if (overlay && overlay.classList.contains('open') && activeSection === 'account') renderAccount();
     } catch (error) {
       if (error && (error.status === 401 || error.status === 403)) {
+        if (attempt < 1) {
+          window.setTimeout(() => loadProfile(attempt + 1), 750);
+          return;
+        }
         clearSession();
         window.__YC_SESSION_VERIFIED__ = null;
         window.dispatchEvent(new CustomEvent('yc:session-invalid', { detail: { status: error.status } }));
@@ -737,12 +752,25 @@
     nav.appendChild(shell());
     if (isMember) {
       createOverlay();
-      loadProfile();
+      loadProfile(0);
     }
   }
 
   if (isMember && API) {
     const sameToken = () => String(localStorage.getItem('yc-token') || '').toLowerCase() === token.toLowerCase();
+    const reconcileStoredIdentity = () => {
+      const nextToken = String(localStorage.getItem('yc-token') || '');
+      const nextUser = String(localStorage.getItem('yc-user') || '');
+      const nextMember = /^[a-f0-9]{64}$/i.test(nextToken) && Boolean(nextUser);
+      if (nextMember && nextToken.toLowerCase() === token.toLowerCase() && nextUser === storedUser) return true;
+      if (nextMember || localStorage.getItem('yc-guest') === '1') {
+        location.reload();
+        return false;
+      }
+      clearSession();
+      location.replace(loginPath + '?reason=signedout');
+      return false;
+    };
     const validate = attempt => {
       if (!sameToken()) return Promise.resolve();
       return fetch(API + '/api/me', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' }).then(async response => {
@@ -767,8 +795,9 @@
         location.replace(loginPath + '?reason=' + (response.status === 403 ? 'disabled' : 'expired'));
       }).catch(() => { window.dispatchEvent(new CustomEvent('yc:session-unavailable')); });
     };
-    validate(0);
-    window.addEventListener('pageshow', event => { if (event.persisted) validate(0); });
+    window.addEventListener('pageshow', event => {
+      if (event.persisted && reconcileStoredIdentity()) validate(0);
+    });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) validate(0); });
   }
 

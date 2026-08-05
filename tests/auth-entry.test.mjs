@@ -237,20 +237,22 @@ test('verification codes keep an absolute expiry and recheck case-insensitive id
 
 test('server roles gate account profile and administrator APIs independently of browser state', async () => {
   const now = Date.now();
-  const adminToken = 'c'.repeat(64);
   const memberToken = 'd'.repeat(64);
   const kv = kvStore({
-    ['sess:' + adminToken]: JSON.stringify({
-      u: 'site-admin', role: 'admin', issuedAt: now, lastSeenAt: now,
-      expiresAt: now + 86400000, absoluteExpiresAt: now + 172800000,
-    }),
     ['sess:' + memberToken]: JSON.stringify({
       u: 'member', role: 'guest', issuedAt: now, lastSeenAt: now,
       expiresAt: now + 86400000, absoluteExpiresAt: now + 172800000,
     }),
     'user:member': JSON.stringify({ u: 'member', email: 'member@example.com', disabled: false }),
   });
-  const env = { YC_KV: kv, ADMIN_USERNAME: 'site-admin' };
+  const env = { YC_KV: kv, ADMIN_USERNAME: 'site-admin', ADMIN_PASSWORD: 'strong-administrator-password' };
+  const adminLogin = await worker.fetch(new Request('https://portal.test/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.20' },
+    body: JSON.stringify({ username: 'site-admin', password: 'strong-administrator-password' }),
+  }), env);
+  assert.equal(adminLogin.status, 200);
+  const adminToken = (await adminLogin.json()).token;
 
   const adminProfile = await worker.fetch(new Request('https://portal.test/api/account/profile', {
     method: 'POST',
@@ -657,5 +659,5 @@ test('administrator username and password still create an admin session', async 
   const session = JSON.parse(kv.values.get('sess:' + body.token));
   assert.equal(session.role, 'admin');
   assert.equal(session.u, 'site-admin');
-  assert.equal(session.provider, undefined);
+  assert.match(session.provider, /^admin-password-v1:[a-f0-9]{64}$/);
 });

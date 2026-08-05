@@ -395,7 +395,7 @@ async function sendResetCode(env, email, code) {
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: env.MAIL_FROM || 'Yi Capital <onboarding@resend.dev>', to: [email], subject: 'Yi Capital 密碼重設驗證碼 Password Reset Code: ' + code, html }),
+    body: JSON.stringify({ from: env.MAIL_FROM || 'Yi Capital <onboarding@resend.dev>', to: [email], subject: 'Yi Capital 密碼重設驗證 Password Reset Verification', html }),
   });
   return r.ok;
 }
@@ -424,7 +424,7 @@ async function sendCode(env, email, code) {
     body: JSON.stringify({
       from: env.MAIL_FROM || 'Yi Capital <onboarding@resend.dev>',
       to: [email],
-      subject: 'Yi Capital 郵箱驗證碼 Verification Code: ' + code,
+      subject: 'Yi Capital 郵箱驗證 Email Verification',
       html,
     }),
   });
@@ -4653,6 +4653,9 @@ export default {
         if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
         const b = parsed.body;
         const email = String(b.email || '').trim().toLowerCase();
+        if (!await authRateAllowed(request, env, 'verify-subject', 6, 900, { identity: email })) {
+          return J(env, { error: '驗證嘗試過多，請稍後再試' }, 429);
+        }
         const pkey = 'pending:' + email;
         const raw = await env.YC_KV.get(pkey);
         if (!raw) return J(env, { error: '驗證已過期，請重新註冊' }, 410);
@@ -4689,6 +4692,9 @@ export default {
           return J(env, { error: '帳號或密碼錯誤' }, 401, { 'Cache-Control': 'no-store' });
         }
         if (username === env.ADMIN_USERNAME) {
+          if (!await authRateAllowed(request, env, 'login-subject', 12, 900, { identity: username })) {
+            return J(env, { error: '登入嘗試過多，請稍後再試' }, 429);
+          }
           if (!safeEqual(password, env.ADMIN_PASSWORD)) return J(env, { error: '帳號或密碼錯誤' }, 401);
           const token = await newSession(env, username, 'admin');
           return J(env, { ok: true, token, role: 'admin', username });
@@ -4697,6 +4703,9 @@ export default {
           const mapped = await env.YC_KV.get('email:' + username.toLowerCase());
           if (!mapped) return J(env, { error: '帳號或密碼錯誤' }, 401);
           username = mapped;
+        }
+        if (!await authRateAllowed(request, env, 'login-subject', 30, 900, { identity: username })) {
+          return J(env, { error: '登入嘗試過多，請稍後再試' }, 429);
         }
         const raw = await env.YC_KV.get('user:' + username);
         if (!raw) return J(env, { error: '帳號或密碼錯誤' }, 401);
@@ -5567,6 +5576,9 @@ export default {
         const b = parsed.body;
         const email = String(b.email || '').trim().toLowerCase();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return J(env, { error: '郵箱格式不正確' }, 400);
+        if (!await authRateAllowed(request, env, 'forgot-subject', 4, 3600, { identity: email })) {
+          return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
+        }
         // 用 email 索引直查（避免枚舉：無論是否存在都返回成功文案）
         const uname = await env.YC_KV.get('email:' + email);
         if (env.RESEND_API_KEY && uname && await env.YC_KV.get('user:' + uname)) {
@@ -5585,6 +5597,9 @@ export default {
         const email = String(b.email || '').trim().toLowerCase();
         const code = String(b.code || '').trim();
         const password = b.password;
+        if (!await authRateAllowed(request, env, 'reset-subject', 6, 900, { identity: email })) {
+          return J(env, { error: '重設嘗試過多，請稍後再試' }, 429);
+        }
         const passwordError = passwordProblem(password);
         if (passwordError) return J(env, { error: passwordError }, 400);
         const recRaw = await env.YC_KV.get('reset:' + email);

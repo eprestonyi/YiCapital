@@ -35,6 +35,10 @@
   const copy = {
     tw: {
       language: '繁',
+      languageNav: '語言',
+      marketNav: '組合市場',
+      sloganLead: '成為少數，',
+      sloganAccent: '不隨多數',
       intro: '投資市場裡，真正賺錢的只有少數人。',
       fullHistory: '全部可追溯歷史 · 共同收市日',
       closes: '個共同收市日',
@@ -46,7 +50,7 @@
       alpha: '相對收益',
       authKicker: '投資者入口',
       authTitle: '進入工作台',
-      authCopy: '登入解鎖完整研報與組合；訪客模式保留目前的公開預覽權限。',
+      authCopy: '登入可管理帳戶、頭像與 Insights；訪客也可閱讀全部公開研究與組合。',
       login: '登入',
       register: '註冊',
       googleWait: 'Google 登入正在配置',
@@ -65,7 +69,7 @@
       verify: '驗證並進入工作台',
       completeGoogle: '完成 Google 註冊',
       guest: '以訪客模式繼續',
-      guestNote: '訪客可瀏覽工作台；完整研報、組合頁面與後台功能仍受限制。',
+      guestNote: '訪客可瀏覽全部公開研究與組合；帳戶設定及管理後台仍需相應身份。',
       forgot: '忘記密碼？',
       resetTitle: '重設密碼',
       sendCode: '發送驗證碼',
@@ -76,7 +80,7 @@
       terms: '我同意《服務條款》',
       newsletter: '訂閱 Yi Capital Insights（可隨時取消）',
       googleNewsletter: '首次以 Google 建立帳號時訂閱 Insights（可隨時取消）',
-      legal: '繼續即表示你同意服務條款與私隱政策。',
+      legal: '只有建立新帳號時才會要求明確同意服務條款；登入或訪客瀏覽不視為同意。',
       required: '請完整填寫必填欄位。',
       mismatch: '兩次密碼不一致。',
       termsRequired: '必須同意服務條款才能註冊。',
@@ -110,6 +114,10 @@
     },
     cn: {
       language: '简',
+      languageNav: '语言',
+      marketNav: '组合市场',
+      sloganLead: '成为少数，',
+      sloganAccent: '不随多数',
       intro: '投资市场里，真正赚钱的只有少数人。',
       fullHistory: '全部可追溯历史 · 共同收市日',
       closes: '个共同收市日',
@@ -121,7 +129,7 @@
       alpha: '相对收益',
       authKicker: '投资者入口',
       authTitle: '进入工作台',
-      authCopy: '登录解锁完整研报与组合；访客模式保留目前的公开预览权限。',
+      authCopy: '登录可管理账户、头像与 Insights；访客也可阅读全部公开研究与组合。',
       login: '登录',
       register: '注册',
       googleWait: 'Google 登录正在配置',
@@ -140,7 +148,7 @@
       verify: '验证并进入工作台',
       completeGoogle: '完成 Google 注册',
       guest: '以访客模式继续',
-      guestNote: '访客可浏览工作台；完整研报、组合页面与后台功能仍受限制。',
+      guestNote: '访客可浏览全部公开研究与组合；账户设置及管理后台仍需相应身份。',
       forgot: '忘记密码？',
       resetTitle: '重设密码',
       sendCode: '发送验证码',
@@ -151,7 +159,7 @@
       terms: '我同意《服务条款》',
       newsletter: '订阅 Yi Capital Insights（可随时取消）',
       googleNewsletter: '首次以 Google 建立账号时订阅 Insights（可随时取消）',
-      legal: '继续即表示你同意服务条款与隐私政策。',
+      legal: '只有创建新账号时才会要求明确同意服务条款；登录或访客浏览不视为同意。',
       required: '请完整填写必填字段。',
       mismatch: '两次密码不一致。',
       termsRequired: '必须同意服务条款才能注册。',
@@ -185,6 +193,10 @@
     },
     en: {
       language: 'EN',
+      languageNav: 'Language',
+      marketNav: 'Portfolio market',
+      sloganLead: 'Be Like Us,',
+      sloganAccent: 'Not Them',
       intro: 'Only a few make money in investing.',
       fullHistory: 'Full trackable history · common closes',
       closes: 'common closes',
@@ -196,7 +208,7 @@
       alpha: 'Relative return',
       authKicker: 'INVESTOR ACCESS',
       authTitle: 'Enter the Dashboard',
-      authCopy: 'Sign in for full research and portfolios. Guest keeps the existing restricted preview.',
+      authCopy: 'Sign in to manage your account, avatar and Insights. Guests can read all public research and portfolios.',
       login: 'Sign in',
       register: 'Register',
       googleWait: 'Google sign-in is being configured',
@@ -215,7 +227,7 @@
       verify: 'Verify and enter Dashboard',
       completeGoogle: 'Complete Google registration',
       guest: 'Continue as Guest',
-      guestNote: 'Guest can view the Dashboard; full research, portfolio pages and admin functions remain restricted.',
+      guestNote: 'Guests can browse all public research and portfolios. Account settings and administration still require the appropriate identity.',
       forgot: 'Forgot password?',
       resetTitle: 'Reset password',
       sendCode: 'Send verification code',
@@ -226,7 +238,7 @@
       terms: 'I agree to the Terms of Service',
       newsletter: 'Subscribe to Yi Capital Insights (unsubscribe anytime)',
       googleNewsletter: 'For a new Google account, subscribe to Insights (unsubscribe anytime)',
-      legal: 'By continuing, you agree to the Terms of Service and Privacy Policy.',
+      legal: 'Explicit Terms acceptance is required only when creating an account; signing in or browsing as Guest does not record consent.',
       required: 'Please complete all required fields.',
       mismatch: 'The passwords do not match.',
       termsRequired: 'You must accept the Terms of Service to register.',
@@ -267,9 +279,19 @@
     login: locale === 'tw' ? '/login' : '/' + locale + '/login',
     terms: locale === 'tw' ? '/terms' : '/' + locale + '/terms',
   };
+  const termsConsentHtml = copy.terms
+    .replace('《服務條款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服務條款》</a>`)
+    .replace('《服务条款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服务条款》</a>`)
+    .replace('Terms of Service', `<a href="${paths.terms}" target="_blank" rel="noopener">Terms of Service</a>`);
   const languageBase = MODE === 'login'
     ? { tw: '/login', cn: '/cn/login', en: '/en/login' }
     : { tw: '/', cn: '/cn/', en: '/en/' };
+  const requestedReason = new URLSearchParams(location.search).get('reason');
+  const preservedReason = ['expired', 'disabled', 'signedout'].includes(requestedReason) ? requestedReason : '';
+  const preservedAuthHash = MODE === 'login' && location.hash === '#signup' ? '#signup' : '';
+  const languageHref = target => languageBase[target]
+    + (MODE === 'login' && preservedReason ? '?reason=' + encodeURIComponent(preservedReason) : '')
+    + preservedAuthHash;
 
   const root = document.createElement('div');
   root.className = 'yc-entry-root';
@@ -281,17 +303,17 @@
   root.innerHTML = `
     <div class="yc-entry-topbar">
       <a class="yc-entry-logo" href="${paths.home}" aria-label="YiCapital">Yi<b>Capital</b></a>
-      <nav class="yc-entry-languages" aria-label="Language">
-        <a href="${languageBase.tw}" ${locale === 'tw' ? 'aria-current="page"' : ''}>繁</a>
-        <a href="${languageBase.cn}" ${locale === 'cn' ? 'aria-current="page"' : ''}>简</a>
-        <a href="${languageBase.en}" ${locale === 'en' ? 'aria-current="page"' : ''}>EN</a>
+      <nav class="yc-entry-languages" aria-label="${copy.languageNav}">
+        <a href="${languageHref('tw')}" ${locale === 'tw' ? 'aria-current="page"' : ''}>繁</a>
+        <a href="${languageHref('cn')}" ${locale === 'cn' ? 'aria-current="page"' : ''}>简</a>
+        <a href="${languageHref('en')}" ${locale === 'en' ? 'aria-current="page"' : ''}>EN</a>
       </nav>
     </div>
     <main class="yc-entry-shell">
       <section class="yc-entry-story" aria-labelledby="yc-entry-slogan">
         <div class="yc-entry-intro">
           <div class="yc-entry-eyebrow" id="yc-entry-eyebrow">${copy.scene.hk.eyebrow}</div>
-          <h1 class="yc-entry-title" id="yc-entry-slogan">Be Like Us, <span>Not Them</span></h1>
+          <h1 class="yc-entry-title" id="yc-entry-slogan">${copy.sloganLead} <span>${copy.sloganAccent}</span></h1>
           <p class="yc-entry-subtitle">${copy.intro}</p>
         </div>
         <div class="yc-entry-chart">
@@ -320,7 +342,7 @@
               <div class="yc-entry-metric-value" id="yc-entry-alpha">—</div>
             </div>
           </div>
-          <div class="yc-entry-scene-nav" aria-label="Portfolio market">
+          <div class="yc-entry-scene-nav" aria-label="${copy.marketNav}">
             <button class="yc-entry-scene-btn" data-scene-index="0" aria-pressed="true">01 · HK</button>
             <button class="yc-entry-scene-btn" data-scene-index="1" aria-pressed="false">02 · US</button>
             <button class="yc-entry-scene-btn" data-scene-index="2" aria-pressed="false">03 · A</button>
@@ -340,6 +362,7 @@
           <div class="yc-entry-google-note" id="yc-entry-google-note">${copy.googleWait}</div>
           <div class="yc-entry-google-consent" id="yc-entry-google-consent">
             <label class="yc-entry-check"><input id="yc-entry-google-newsletter" type="checkbox"><span>${copy.googleNewsletter}</span></label>
+            <label class="yc-entry-check"><input id="yc-entry-google-terms" type="checkbox"><span>${termsConsentHtml}</span></label>
           </div>
           <div class="yc-entry-divider" id="yc-entry-divider">${copy.orEmail}</div>
           <form id="yc-entry-form" novalidate></form>
@@ -456,7 +479,7 @@
             ${field('yc-entry-password', copy.password, 'password', 'new-password', true, 'required minlength="15" maxlength="128"')}
           </div>
           <label class="yc-entry-check"><input id="yc-entry-newsletter" type="checkbox"><span>${copy.newsletter}</span></label>
-          <label class="yc-entry-check"><input id="yc-entry-terms" type="checkbox"><span>${copy.terms.replace('《服務條款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服務條款》</a>`).replace('《服务条款》', `<a href="${paths.terms}" target="_blank" rel="noopener">《服务条款》</a>`).replace('Terms of Service', `<a href="${paths.terms}" target="_blank" rel="noopener">Terms of Service</a>`)}</span></label>
+          <label class="yc-entry-check"><input id="yc-entry-terms" type="checkbox"><span>${termsConsentHtml}</span></label>
           <button class="yc-entry-submit" type="submit">${setupToken ? copy.completeGoogle : copy.createAccount}</button>
           ${setupToken ? '' : `<div class="yc-entry-admin-row"><button class="yc-entry-link-button" type="button" id="yc-entry-signup-back">${copy.backOptions}</button></div>`}`;
         const signupBack = $('yc-entry-signup-back');
@@ -582,13 +605,22 @@
     const currentToken = String(localStorage.getItem('yc-token') || sessionStorage.getItem('yc-token') || '');
     if (!/^[a-f0-9]{64}$/i.test(currentToken)) return;
     if (!API) throw new Error(copy.signOutFailed);
-    const response = await fetch(API + '/api/logout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + currentToken },
-      body: '{}',
-      cache: 'no-store',
-    });
-    if (!response.ok) throw new Error(copy.signOutFailed);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(API + '/api/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + currentToken },
+        body: '{}',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(copy.signOutFailed);
+    } catch (error) {
+      throw new Error(copy.signOutFailed);
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 
   guestButton.addEventListener('click', async () => {
@@ -708,13 +740,17 @@
   });
 
   async function handleGoogle(response) {
-    setMessage(copy.googleChecking);
     try {
       const googleNewsletter = $('yc-entry-google-newsletter');
+      const googleTerms = $('yc-entry-google-terms');
+      if (authMode === 'signup' && (!googleTerms || !googleTerms.checked)) {
+        throw new Error(copy.termsRequired);
+      }
+      setMessage(copy.googleChecking);
       const googleRequest = {
         credential: response && response.credential,
         autoCreate: authMode === 'signup',
-        terms: authMode === 'signup',
+        terms: authMode === 'signup' && googleTerms.checked,
         newsletter: googleNewsletter ? googleNewsletter.checked : false,
         locale,
       };
@@ -762,6 +798,7 @@
       size: 'large',
       shape: 'rectangular',
       text: authMode === 'signup' ? 'signup_with' : 'continue_with',
+      locale: locale === 'tw' ? 'zh_TW' : locale === 'cn' ? 'zh_CN' : 'en',
       width: Math.min(340, Math.max(240, Math.round(googleBox.getBoundingClientRect().width || 320))),
     });
   }
@@ -786,7 +823,8 @@
     if (googleLoading || !GCID) return;
     googleLoading = true;
     const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
+    const googleLocale = locale === 'tw' ? 'zh_TW' : locale === 'cn' ? 'zh_CN' : 'en';
+    script.src = 'https://accounts.google.com/gsi/client?hl=' + encodeURIComponent(googleLocale);
     script.async = true;
     script.defer = true;
     script.onload = renderGoogleButton;

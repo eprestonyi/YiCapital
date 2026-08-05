@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  ADMIN_SESSION_ABSOLUTE_TTL_MS,
+  ADMIN_SESSION_IDLE_TTL_MS,
   AuthStoreUnavailableError,
   SESSION_ABSOLUTE_TTL_MS,
   SESSION_IDLE_TTL_MS,
@@ -182,18 +184,45 @@ test('new sessions are immediately readable from D1 even when KV reads are stale
   const database = authDatabase();
   const kv = kvStore({ hideReads: true });
   const now = Date.UTC(2026, 7, 4);
-  const env = { FEEDBACK_DB: database, YC_KV: kv };
+  const env = {
+    FEEDBACK_DB: database,
+    YC_KV: kv,
+    ADMIN_USERNAME: 'tyi',
+    ADMIN_PASSWORD: 'a-strong-administrator-password',
+    FEEDBACK_RATE_SALT: 'test-rate-salt',
+  };
   const token = await newSession(env, 'tyi', 'admin', {}, { now: () => now });
 
   assert.match(token, /^[a-f0-9]{64}$/);
   assert.equal(database.sessions.has(token), false, 'D1 must never store the bearer token in plaintext');
   assert.equal(database.sessions.size, 1);
+  assert.equal(kv.values.has('sess:' + token), false, 'D1 sessions must not duplicate plaintext bearer tokens in KV');
 
   const session = await getSession(requestWithToken(token), env, { now: () => now + 1000 });
   assert.equal(session.u, 'tyi');
   assert.equal(session.role, 'admin');
   assert.equal(session.store, 'd1');
-  assert.equal(session.expiresAt, now + SESSION_IDLE_TTL_MS);
+  assert.equal(session.expiresAt, now + ADMIN_SESSION_IDLE_TTL_MS);
+  assert.equal(session.absoluteExpiresAt, now + ADMIN_SESSION_ABSOLUTE_TTL_MS);
+});
+
+test('administrator credential rotation revokes existing sessions automatically', async () => {
+  const database = authDatabase();
+  const kv = kvStore();
+  const now = Date.UTC(2026, 7, 4);
+  const env = {
+    FEEDBACK_DB: database,
+    YC_KV: kv,
+    ADMIN_USERNAME: 'tyi',
+    ADMIN_PASSWORD: 'first-strong-administrator-password',
+    FEEDBACK_RATE_SALT: 'test-rate-salt',
+  };
+  const token = await newSession(env, 'tyi', 'admin', {}, { now: () => now });
+  assert.equal((await getSession(requestWithToken(token), env, { now: () => now + 1000 })).role, 'admin');
+
+  const rotated = { ...env, ADMIN_PASSWORD: 'rotated-strong-administrator-password' };
+  assert.equal(await getSession(requestWithToken(token), rotated, { now: () => now + 2000 }), null);
+  assert.equal(database.sessions.size, 0);
 });
 
 test('a bound but unavailable D1 session store cannot silently create KV-only sessions', async () => {
@@ -280,7 +309,7 @@ test('activity well before the expiry window still preserves a full idle period'
   assert.equal(returned.expiresAt, createdAt + 61 * DAY);
 });
 
-test('logout revokes both the D1 authority and the rollback KV copy', async () => {
+test('logout tombstones D1 authority and removes any legacy KV copy', async () => {
   const database = authDatabase();
   const kv = kvStore();
   const env = { FEEDBACK_DB: database, YC_KV: kv };
@@ -298,6 +327,7 @@ test('a stale KV delete cannot resurrect a session after logout', async () => {
   const kv = kvStore({ staleDeletes: true });
   const env = { FEEDBACK_DB: database, YC_KV: kv };
   const token = await newSession(env, 'member', 'guest');
+  kv.values.set('sess:' + token, JSON.stringify({ u: 'member', role: 'guest' }));
 
   assert.equal(await revokeSession(env, token), true);
   assert.equal(kv.values.has('sess:' + token), true, 'simulated remote KV location still sees the old value');
@@ -334,6 +364,22 @@ test('D1 rate limiting increments atomically without touching a hot KV key', asy
   assert.equal(await authRateAllowed(request, env, 'login', 2, 900, { now: () => now }), true);
   assert.equal(await authRateAllowed(request, env, 'login', 2, 900, { now: () => now }), true);
   assert.equal(await authRateAllowed(request, env, 'login', 2, 900, { now: () => now }), false);
+  assert.equal(database.rateLimits.size, 1);
+});
+
+test('subject rate limits stay shared across source IP addresses', async () => {
+  const database = authDatabase();
+  const env = { FEEDBACK_DB: database, YC_KV: kvStore(), FEEDBACK_RATE_SALT: 'test-rate-salt' };
+  const first = new Request('https://portal.test/api/login', {
+    headers: { 'CF-Connecting-IP': '203.0.113.8' },
+  });
+  const second = new Request('https://portal.test/api/login', {
+    headers: { 'CF-Connecting-IP': '198.51.100.9' },
+  });
+  const options = { now: () => Date.UTC(2026, 7, 4), identity: 'Member@Example.com' };
+
+  assert.equal(await authRateAllowed(first, env, 'login-subject', 1, 900, options), true);
+  assert.equal(await authRateAllowed(second, env, 'login-subject', 1, 900, options), false);
   assert.equal(database.rateLimits.size, 1);
 });
 

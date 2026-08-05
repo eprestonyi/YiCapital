@@ -40,13 +40,20 @@ test('the shared portal config canonicalizes apex pages before auth state is reu
 
 test('anonymous Guest never receives an authentication token', async () => {
   const entry = await read('assets/yc-entry.js');
-  const gate = await read('assets/yc-gate.js');
   assert.match(entry, /localStorage\.setItem\('yc-guest', '1'\)/);
   assert.match(entry, /\['yc-token', 'yc-role', 'yc-user'\]/);
-  assert.match(gate, /candidate = \/\^\[a-f0-9\]\{64\}\$\/i\.test\(token\) && Boolean\(user\)/);
-  assert.match(gate, /addEventListener\('yc:session-valid', unlock\)/);
-  assert.doesNotMatch(gate, /if \(localStorage\.getItem\('yc-token'\)\) return/);
   assert.doesNotMatch(entry, /\/api\/guest/);
+});
+
+test('public research and portfolios do not pretend that a browser soft wall is authorization', async () => {
+  const entry = await read('assets/yc-entry.js');
+  assert.match(entry, /訪客也可閱讀全部公開研究與組合/);
+  assert.match(entry, /signing in or browsing as Guest does not record consent/);
+  for (const page of [
+    'forum.html', 'fund-a.html', 'fund-hk.html', 'fund-us.html', 'portfolios.html',
+    'cn/forum.html', 'cn/fund-a.html', 'cn/fund-hk.html', 'cn/fund-us.html', 'cn/portfolios.html',
+    'en/forum.html', 'en/fund-a.html', 'en/fund-hk.html', 'en/fund-us.html', 'en/portfolios.html',
+  ]) assert.doesNotMatch(await read(page), /yc-gate\.js/);
 });
 
 test('entry chart uses all common closes from the privacy-minimized market snapshot', async () => {
@@ -99,16 +106,35 @@ test('member registration is progressive and Google sign-up exposes optional Ins
   assert.match(entry, /let signupStep = 1/);
   assert.match(entry, /signupStep === 1 && !setupToken/);
   assert.match(entry, /id="yc-entry-google-newsletter" type="checkbox"/);
+  assert.match(entry, /id="yc-entry-google-terms" type="checkbox"/);
   assert.doesNotMatch(entry, /id="yc-entry-google-newsletter" type="checkbox" checked/);
+  assert.doesNotMatch(entry, /id="yc-entry-google-terms" type="checkbox" checked/);
   assert.match(entry, /newsletter: googleNewsletter \? googleNewsletter\.checked : false/);
   assert.match(entry, /googleConsent\.style\.display = providersVisible && GCID && authMode === 'signup'/);
   assert.match(entry, /autoCreate: authMode === 'signup'/);
+  assert.match(entry, /authMode === 'signup' && \(!googleTerms \|\| !googleTerms\.checked\)/);
+  assert.match(entry, /terms: authMode === 'signup' && googleTerms\.checked/);
+  assert.match(entry, /locale: locale === 'tw' \? 'zh_TW' : locale === 'cn' \? 'zh_CN' : 'en'/);
+  assert.match(entry, /gsi\/client\?hl=/);
   assert.match(entry, /minlength="15" maxlength="128"/);
   assert.doesNotMatch(entry, /id="yc-entry-newsletter" type="checkbox" checked/);
   assert.doesNotMatch(entry, /id="yc-entry-terms" type="checkbox" checked/);
   assert.match(entry, /error\.code !== 'google_keys_unavailable'/);
   assert.match(entry, /googleRetrying/);
   assert.doesNotMatch(entry, /id="yc-entry-password-2"/);
+});
+
+test('entry language chrome and visible slogan stay within the selected locale', async () => {
+  const entry = await read('assets/yc-entry.js');
+  assert.match(entry, /languageNav: '語言'/);
+  assert.match(entry, /marketNav: '組合市場'/);
+  assert.match(entry, /sloganLead: '成為少數，'/);
+  assert.match(entry, /languageNav: '语言'/);
+  assert.match(entry, /marketNav: '组合市场'/);
+  assert.match(entry, /sloganLead: '成为少数，'/);
+  assert.match(entry, /aria-label="\$\{copy\.languageNav\}"/);
+  assert.match(entry, /aria-label="\$\{copy\.marketNav\}"/);
+  assert.match(entry, /\$\{copy\.sloganLead\} <span>\$\{copy\.sloganAccent\}<\/span>/);
 });
 
 test('signed-in account center exposes editable profile, locked identities and opt-in recovery', async () => {
@@ -185,19 +211,45 @@ test('account state clears disabled sessions and synchronizes identity changes a
   assert.match(session, /addEventListener\('storage'/);
   assert.match(session, /nextToken\.toLowerCase\(\) !== token\.toLowerCase\(\)/);
   assert.match(session, /addEventListener\('pageshow'/);
+  assert.match(session, /reconcileStoredIdentity\(\)/);
+  assert.match(session, /location\.replace\(loginPath \+ '\?reason=signedout'\)/);
   assert.match(session, /visibilitychange/);
+  assert.match(session, /async function loadProfile\(attempt = 0\)/);
+  assert.match(session, /if \(attempt < 1\) \{[\s\S]{0,120}loadProfile\(attempt \+ 1\)/);
+  assert.doesNotMatch(session, /\n    validate\(0\);\n/);
+});
+
+test('administrator password copy and shared auth assets match the hardened release', async () => {
+  const users = await read('admin-users.html');
+  assert.match(users, /15–128 個字元/);
+  assert.doesNotMatch(users, /至少 6 位/);
+  for (const page of ['admin.html', 'admin-feedback.html', 'admin-inbox.html', 'admin-insights.html', 'admin-ledger.html', 'admin-mail.html', 'admin-reports.html', 'admin-users.html']) {
+    assert.match(await read(page), /yc-admin\.js\?v=8\.13/);
+  }
+  for (const page of ['index.html', 'login.html', 'cn\/index.html', 'cn\/login.html', 'en\/index.html', 'en\/login.html']) {
+    assert.match(await read(page), /portal-config\.js\?v=9\.4/);
+    assert.match(await read(page), /yc-entry\.js\?v=9\.6/);
+  }
 });
 
 test('managed research content is escaped and links are restricted to the same origin', async () => {
-  const [reports, posts] = await Promise.all([read('assets/reports.js'), read('assets/posts.js')]);
+  const [reports, posts, adminReports, adminInsights] = await Promise.all([
+    read('assets/reports.js'), read('assets/posts.js'), read('admin-reports.html'), read('admin-insights.html'),
+  ]);
   assert.match(reports, /url\.origin === location\.origin/);
   assert.match(reports, /_RE\(_RF\(r\.title/);
   assert.match(posts, /url\.origin===location\.origin/);
   assert.match(posts, /_PE\(_PF\(p\.excerpt/);
+  for (const adminPage of [adminReports, adminInsights]) {
+    assert.match(adminPage, /const H=\(v\)=>/);
+    assert.match(adminPage, /data-id="\$\{H\(it\.id\)\}"/);
+  }
 });
 
 test('auth mutations fail closed on origin, body, verification and password boundaries', async () => {
-  const worker = await read('worker/worker.js');
+  const [worker, sessions, wrangler] = await Promise.all([
+    read('worker/worker.js'), read('worker/auth-sessions.js'), read('wrangler.toml'),
+  ]);
   assert.match(worker, /AUTH_MUTATION_PATHS/);
   assert.match(worker, /normalizedCorsOrigin\(request, env\) === null/);
   assert.match(worker, /AUTH_JSON_MAX_BYTES = 16 \* 1024/);
@@ -207,6 +259,13 @@ test('auth mutations fail closed on origin, body, verification and password boun
   assert.match(worker, /if \(!env\.RESEND_API_KEY\) return J\(env, \{ error: '郵箱驗證服務暫時不可用/);
   assert.match(worker, /remainingCodeTtl\(expiresAt\)/);
   assert.match(worker, /reservedUsername\(username, env\)/);
+  assert.doesNotMatch(worker, /subject: [^\n]*\+ code/);
+  assert.match(sessions, /ADMIN_PROVIDER_PREFIX = 'admin-password-v1:'/);
+  assert.match(sessions, /staleAdminCredential/);
+  assert.match(sessions, /ADMIN_SESSION_IDLE_TTL_MS = 12 \* 60 \* 60 \* 1000/);
+  assert.match(sessions, /'subject\\u0000' \+ String\(options\.identity\)/);
+  assert.match(worker, /authRateAllowed\(request, env, 'login-subject'/);
+  assert.match(wrangler, /\[limits\][\s\S]*cpu_ms = 30000/);
 });
 
 test('all member surfaces load the current account-center release', async () => {
@@ -216,7 +275,7 @@ test('all member surfaces load the current account-center release', async () => 
     'cn/index.html', 'cn/about.html', 'cn/insights.html', 'cn/forum.html', 'cn/portfolios.html',
     'en/index.html', 'en/about.html', 'en/insights.html', 'en/forum.html', 'en/portfolios.html',
   ];
-  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.3/);
+  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.4/);
 });
 
 test('Google verification uses persistent signing-key resilience', async () => {
@@ -239,8 +298,9 @@ test('an expired admin session clears browser identity before redirecting', asyn
     'admin-mail.html',
     'admin-inbox.html',
     'admin-feedback.html',
+    'admin-ledger.html',
   ]) {
-    assert.match(await read(page), /assets\/yc-admin\.js\?v=8\.12/);
+    assert.match(await read(page), /assets\/yc-admin\.js\?v=8\.13/);
   }
 });
 

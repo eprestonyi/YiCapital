@@ -13,6 +13,8 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
      npx wrangler@latest deploy --dry-run --keep-vars
    確認無誤後執行：
      npx wrangler@latest deploy --keep-vars
+   wrangler.toml 明確要求 30 秒 CPU 上限，以容納密碼雜湊與既有賬本重算；若套餐
+   無法提供該上限，部署必須失敗關閉，不得刪除 limits 後勉強發布。
    新環境需先建立下列 KV/D1 並把 wrangler.toml 內的 id 改成該環境資源；現有環境
    則直接使用已核對的綁定。
 
@@ -37,8 +39,11 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
    不要把登入 token、
    用戶意見、投資組合事件或稅務資料存入公開 GitHub 文件。
 
-   v9.1 以 D1 作為登入會話真源：30 天閒置滑動續期、180 天絕對上限；KV 的
-   sess:{token} 只保留一個版本作舊會話懶遷移與緊急回退，之後應刪除兼容寫入。
+   v9.4 以 D1 作為登入會話真源：普通帳戶為 30 天閒置滑動續期、180 天絕對上限；
+   管理員為 12 小時閒置、7 天絕對上限，並以不可逆指紋綁定目前管理員憑證，輪換
+   ADMIN_USERNAME、ADMIN_PASSWORD 或限流 salt 後，舊管理員會話會自動失效。新 D1
+   會話不再把明文 bearer token 複製到 KV；既有 sess:{token} 只供懶遷移，成功
+   遷入 D1 後即刪除。
    回退時只可回退到仍理解 D1 會話與撤銷墓碑的 v9.1 build；回退至舊 KV-only
    Worker 會破壞即時登出語義，因此不屬於安全回退路徑。
 
