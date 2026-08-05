@@ -760,6 +760,102 @@
     return sha256Buffer(new TextEncoder().encode(text));
   }
 
+  function xmlElementPattern(tag) {
+    return new RegExp(`<${tag}(?:\\s[^>]*)?\\s*\\/>|<${tag}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${tag}>`);
+  }
+
+  function graftTemplateXmlElement(targetXml, templateXml, tag, beforeTags, closingTag) {
+    const templateNode = templateXml.match(xmlElementPattern(tag));
+    if (!templateNode) return targetXml;
+    const targetPattern = xmlElementPattern(tag);
+    if (targetPattern.test(targetXml)) return targetXml.replace(targetPattern, templateNode[0]);
+    let insertion = -1;
+    (beforeTags || []).forEach(anchor => {
+      const index = targetXml.search(new RegExp(`<${anchor}(?:\\s|>)`));
+      if (index >= 0 && (insertion < 0 || index < insertion)) insertion = index;
+    });
+    if (insertion < 0) insertion = targetXml.indexOf(closingTag);
+    if (insertion < 0) throw new Error(`工作簿 XML 缺少 ${tag} 的安全插入點。`);
+    return targetXml.slice(0, insertion) + templateNode[0] + targetXml.slice(insertion);
+  }
+
+  function preserveTemplateWorkbookLayout(templateBuffer, generatedBuffer, visibleSheetCount) {
+    if (!XLSX.CFB || typeof XLSX.CFB.read !== 'function' ||
+        typeof XLSX.CFB.write !== 'function' || typeof XLSX.CFB.find !== 'function') {
+      throw new Error('表格庫缺少模板版式保真能力，已停止導出。');
+    }
+    const templateZip = XLSX.CFB.read(new Uint8Array(templateBuffer), { type: 'array' });
+    const generatedZip = XLSX.CFB.read(new Uint8Array(generatedBuffer), { type: 'array' });
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    const readXml = (archive, part) => {
+      const entry = XLSX.CFB.find(archive, `Root Entry/${part}`);
+      if (!entry || !entry.content) throw new Error(`工作簿缺少 ${part}。`);
+      return { entry, xml: decoder.decode(entry.content) };
+    };
+    const writeXml = (entry, xml) => {
+      entry.content = encoder.encode(xml);
+      entry.size = entry.content.length;
+    };
+
+    const templateWorkbook = readXml(templateZip, 'xl/workbook.xml');
+    const generatedWorkbook = readXml(generatedZip, 'xl/workbook.xml');
+    let workbookXml = generatedWorkbook.xml;
+    [
+      ['workbookPr', ['workbookProtection', 'bookViews', 'sheets']],
+      ['workbookProtection', ['bookViews', 'sheets']],
+      ['bookViews', ['sheets']],
+      ['definedNames', ['calcPr']],
+      ['calcPr', []],
+    ].forEach(([tag, anchors]) => {
+      workbookXml = graftTemplateXmlElement(
+        workbookXml, templateWorkbook.xml, tag, anchors, '</workbook>',
+      );
+    });
+    writeXml(generatedWorkbook.entry, workbookXml);
+
+    const tailAnchors = [
+      'pageSetup', 'headerFooter', 'rowBreaks', 'colBreaks', 'customProperties',
+      'cellWatches', 'ignoredErrors', 'smartTags', 'drawing', 'legacyDrawing',
+      'legacyDrawingHF', 'picture', 'oleObjects', 'controls', 'webPublishItems',
+      'tableParts', 'extLst',
+    ];
+    for (let index = 1; index <= visibleSheetCount; index += 1) {
+      const part = `xl/worksheets/sheet${index}.xml`;
+      const templateSheet = readXml(templateZip, part);
+      const generatedSheet = readXml(generatedZip, part);
+      let sheetXml = generatedSheet.xml;
+      [
+        ['sheetPr', ['dimension']],
+        ['sheetViews', ['sheetFormatPr', 'cols', 'sheetData']],
+        ['sheetFormatPr', ['cols', 'sheetData']],
+        ['printOptions', ['pageMargins', ...tailAnchors]],
+        ['pageMargins', tailAnchors],
+        ['pageSetup', tailAnchors.slice(1)],
+        ['headerFooter', tailAnchors.slice(2)],
+      ].forEach(([tag, anchors]) => {
+        sheetXml = graftTemplateXmlElement(
+          sheetXml, templateSheet.xml, tag, anchors, '</worksheet>',
+        );
+      });
+      writeXml(generatedSheet.entry, sheetXml);
+    }
+    return XLSX.CFB.write(generatedZip, {
+      type: 'array', fileType: 'zip', compression: true,
+    });
+  }
+
+  function downloadWorkbookBytes(bytes, fileName) {
+    const blob = new Blob([bytes], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = fileName; anchor.rel = 'noopener';
+    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function bindDropzone() {
     const zone = $('import-drop');
     ['dragover', 'drop'].forEach(name => document.addEventListener(name, event => event.preventDefault()));
@@ -1277,7 +1373,13 @@
         exportId: first(result, ['exportId', 'export_id'], ''), syncToken: first(result, ['syncToken', 'sync_token'], ''),
         layoutHash: first(result, ['layoutHash', 'layout_hash'], ''),
       });
-      XLSX.writeFile(workbook, config.file, { bookType: 'xlsx', compression: true, cellStyles: true });
+      const generatedWorkbook = XLSX.write(workbook, {
+        type: 'array', bookType: 'xlsx', compression: true, cellStyles: true,
+      });
+      const preservedWorkbook = preserveTemplateWorkbookLayout(
+        templateBuffer, generatedWorkbook, requiredOrder.length,
+      );
+      downloadWorkbookBytes(preservedWorkbook, config.file);
       const revision = asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.ledgerRevision), state.ledgerRevision);
       const availableCount = Math.max(0, projectionCount - unavailableProjection.length);
       const unavailableText = unavailableProjection.length

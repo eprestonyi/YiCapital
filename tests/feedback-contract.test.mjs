@@ -298,4 +298,11 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
   assert.match(ledgerAdmin, /'D9E2EC'/);
   assert.match(ledgerAdmin, /\['pre_quantity', 'preQuantity', 'quantity', 'qty'\]/);
   assert.match(ledgerAdmin, /function corporateActionOutput\(event, field\)/);
+  assert.match(ledgerAdmin, /function preserveTemplateWorkbookLayout\(/);
+  assert.match(ledgerAdmin, /XLSX\.CFB\.read\(new Uint8Array\(templateBuffer\)/);
+  assert.match(ledgerAdmin, /'sheetFormatPr'/);
+  assert.match(ledgerAdmin, /'pageMargins'/);
+  assert.match(ledgerAdmin, /'bookViews'/);
+  assert.match(ledgerAdmin, /'calcPr'/);
+  assert.match(ledgerAdmin, /XLSX\.write\(workbook/);
 });
