@@ -149,7 +149,7 @@
 
   async function loadSeed(){
     try{
-      const txt=await (await fetch('assets/reports.js?v='+Date.now(),{cache:'no-store'})).text();
+      const txt=await (await fetch('assets/reports.js?v=2.1&t='+Date.now(),{cache:'no-store'})).text();
       const m=txt.match(/const REPORTS = (\[[\s\S]*?\n\]);/);
       if(!m) throw new Error('無法解析內置條目');
       return ensureIds(Function('return '+m[1])());

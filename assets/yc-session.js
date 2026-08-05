@@ -257,7 +257,7 @@
     .yc-faq{border-top:1px solid #2b3749}.yc-faq details{border-bottom:1px solid #2b3749;padding:0 2px}.yc-faq summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 0;color:#e6ecf5;font-size:13.5px;font-weight:650;cursor:pointer}.yc-faq summary::-webkit-details-marker{display:none}.yc-faq summary::after{content:"+";color:#75a7ff;font-size:18px}.yc-faq details[open] summary::after{content:"−"}.yc-faq p{margin:-4px 32px 18px 0;color:#8b98aa;font-size:12.5px;line-height:1.75}
     .yc-subscribe-card{position:fixed;left:max(18px,env(safe-area-inset-left));bottom:max(18px,env(safe-area-inset-bottom));z-index:1170;width:min(340px,calc(100vw - 28px));box-sizing:border-box;border:1px solid rgba(117,167,255,.45);border-radius:14px;padding:17px;background:rgba(8,15,26,.96);color:#e8edf5;box-shadow:0 18px 52px rgba(0,0,0,.5);backdrop-filter:blur(14px)}.yc-subscribe-card.hide{display:none}.yc-subscribe-kicker{color:#75a7ff;font:650 8.5px var(--mono,"IBM Plex Mono",monospace);letter-spacing:1.5px}.yc-subscribe-card h3{margin:7px 0 6px;color:#f5f2ea;font-size:15px;line-height:1.35}.yc-subscribe-card p{margin:0 0 12px;color:#8794a7;font-size:11.5px;line-height:1.55}.yc-subscribe-card button{border:0;border-radius:7px;background:#75a7ff;color:#07101c;padding:8px 12px;font:700 11.5px inherit;cursor:pointer}.yc-subscribe-card button:disabled{opacity:.6;cursor:wait}
     @keyframes yc-menu-in{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
-    @media(max-width:760px){.yc-ava-wrap{margin-left:auto}.yc-account-menu{position:fixed;top:74px;left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));width:auto;max-height:calc(100vh - 92px)}.yc-account-overlay{padding:0}.yc-account-dialog{display:flex;flex-direction:column;width:100%;height:100%;border:0;border-radius:0}.yc-account-side{display:block;flex:0 0 auto;padding:18px 14px 9px;border-right:0;border-bottom:1px solid #263144;overflow:hidden}.yc-account-brand{padding:0 8px 14px}.yc-account-nav{flex-direction:row;overflow-x:auto;padding-bottom:5px;scrollbar-width:none}.yc-account-nav::-webkit-scrollbar{display:none}.yc-account-nav button{flex:0 0 auto;width:auto;border-left:0;border-bottom:2px solid transparent;padding:8px 10px;white-space:nowrap}.yc-account-nav button.active{border-left:0;border-bottom-color:#75a7ff}.yc-account-side-spacer,.yc-side-admin,.yc-side-logout{display:none!important}.yc-account-main{padding:24px 18px 40px}.yc-section-title{font-size:23px}.yc-form-grid,.yc-connections{grid-template-columns:1fr}.yc-profile-hero{align-items:flex-start;padding:17px}.yc-invite{align-items:flex-start;flex-direction:column}.yc-invite .yc-secondary-button{width:100%}.yc-social-grid{grid-template-columns:1fr}.yc-subscribe-card{bottom:max(70px,calc(env(safe-area-inset-bottom) + 60px));left:14px}}
+    @media(max-width:760px){.yc-ava-wrap{margin-left:auto}.yc-account-menu{position:fixed;top:74px;left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));width:auto;max-height:calc(100vh - 92px)}.yc-account-overlay{padding:0}.yc-account-dialog{display:flex;flex-direction:column;width:100%;height:100%;border:0;border-radius:0}.yc-account-side{display:block;flex:0 0 auto;padding:18px 14px 9px;border-right:0;border-bottom:1px solid #263144;overflow:hidden}.yc-account-brand{padding:0 8px 14px}.yc-account-nav{flex-direction:row;overflow-x:auto;padding-bottom:5px;scrollbar-width:none}.yc-account-nav::-webkit-scrollbar{display:none}.yc-account-nav button{flex:0 0 auto;width:auto;border-left:0;border-bottom:2px solid transparent;padding:8px 10px;white-space:nowrap}.yc-account-nav button.active{border-left:0;border-bottom-color:#75a7ff}.yc-account-side-spacer,.yc-side-admin,.yc-side-logout{display:none!important}.yc-account-main{padding:24px 18px 40px}.yc-section-title{font-size:23px}.yc-form-grid,.yc-connections{grid-template-columns:1fr}.yc-profile-hero{align-items:flex-start;padding:17px}.yc-invite{align-items:stretch;flex-direction:column}.yc-invite-copy{width:100%;max-width:100%}.yc-invite .yc-secondary-button{width:100%}.yc-social-grid{grid-template-columns:1fr}.yc-subscribe-card{bottom:max(70px,calc(env(safe-area-inset-bottom) + 60px));left:14px}}
     @media(max-width:420px){.yc-account-menu{top:66px}.yc-avatar-lg{width:56px;height:56px}.yc-profile-hero{gap:12px}.yc-preference{align-items:flex-start}.yc-empty-card{padding:34px 22px}.yc-account-close{top:14px;right:13px}}
     @media(prefers-reduced-motion:reduce){.yc-account-menu.open{animation:none}.yc-switch span,.yc-switch span::after{transition:none}}
   `;
@@ -315,18 +315,21 @@
     if (!wrap) return;
     if (isGuest) {
       avatarButton.title = L.guestRole;
+      avatarButton.setAttribute('aria-label', L.guestRole);
       identityBox.innerHTML = '<div class="yc-menu-identity-copy"><b>' + esc(L.guest) + '</b><span>' + esc(L.guestRole) + '</span></div>';
       return;
     }
     if (!profileLoaded) {
       avatarButton.innerHTML = '<span class="yc-account-dot" aria-hidden="true"></span>';
       avatarButton.title = L.loading;
+      avatarButton.setAttribute('aria-label', L.loading);
       identityBox.innerHTML = '<div class="yc-menu-identity-copy"><b>' + esc(L.loading) + '</b></div>';
       return;
     }
     avatarButton.classList.remove('yc-account-pending');
     avatarButton.innerHTML = avatarMarkup('yc-avatar');
     avatarButton.title = profile.displayName || profile.username;
+    avatarButton.setAttribute('aria-label', profile.displayName || profile.username);
     identityBox.innerHTML = avatarMarkup('yc-avatar') +
       '<div class="yc-menu-identity-copy"><b>' + esc(profile.displayName || profile.username) + '</b>' +
       '<span>' + esc(profile.email || (profile.role === 'admin' ? L.adminRole : profile.username)) + '</span></div>';

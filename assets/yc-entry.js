@@ -90,6 +90,10 @@
       networkError: '暫時無法連接登入服務，請檢查網絡後重試。',
       rateLimited: '登入嘗試過多，請稍後再試。',
       googleUnavailable: 'Google 登入暫時未能完成。請重試，或使用郵箱繼續。',
+      googleInvalid: 'Google 憑證無效，請重新登入。',
+      googleMismatch: '這個 Google 身份與既有帳號不匹配。',
+      googleSetupExpired: 'Google 註冊設定已過期，請重新登入。',
+      googleNotConfigured: 'Google 登入尚未配置，請使用郵箱繼續。',
       googleRetrying: 'Google 連線短暫中斷，正在自動重試…',
       googleChecking: '正在驗證 Google 帳號…',
       googleSetup: 'Google 身份已驗證，請設定用戶名。',
@@ -169,6 +173,10 @@
       networkError: '暂时无法连接登录服务，请检查网络后重试。',
       rateLimited: '登录尝试过多，请稍后再试。',
       googleUnavailable: 'Google 登录暂时未能完成。请重试，或使用邮箱继续。',
+      googleInvalid: 'Google 凭证无效，请重新登录。',
+      googleMismatch: '这个 Google 身份与现有账号不匹配。',
+      googleSetupExpired: 'Google 注册设置已过期，请重新登录。',
+      googleNotConfigured: 'Google 登录尚未配置，请使用邮箱继续。',
       googleRetrying: 'Google 连接短暂中断，正在自动重试…',
       googleChecking: '正在验证 Google 账号…',
       googleSetup: 'Google 身份已验证，请设置用户名。',
@@ -248,6 +256,10 @@
       networkError: 'Unable to reach the identity service. Check your connection and try again.',
       rateLimited: 'Too many sign-in attempts. Please try again later.',
       googleUnavailable: 'Google sign-in could not finish. Try again or continue with email.',
+      googleInvalid: 'The Google credential is invalid. Sign in again.',
+      googleMismatch: 'This Google identity does not match the existing account.',
+      googleSetupExpired: 'Google registration setup expired. Sign in again.',
+      googleNotConfigured: 'Google sign-in is not configured. Continue with email.',
       googleRetrying: 'The Google connection was interrupted. Retrying…',
       googleChecking: 'Verifying your Google account…',
       googleSetup: 'Google identity verified. Choose a username.',
@@ -570,7 +582,13 @@
     if (/郵箱.*註冊|邮箱.*注册/.test(raw)) return locale === 'en' ? 'This email is already registered.' : '该邮箱已被注册。';
     if (/用戶名.*存在|用户名.*存在|用戶名.*佔用|用户名.*占用/.test(raw)) return locale === 'en' ? 'That username is unavailable.' : '该用户名不可用。';
     if (/驗證碼|验证码/.test(raw)) return locale === 'en' ? 'The verification code is invalid or expired.' : '验证码无效或已过期。';
-    if (/google/i.test(key)) return locale === 'en' ? raw.replace(/未配置/, 'is not configured: ') : raw;
+    if (/google/i.test(key)) {
+      if (/憑證無效|凭证无效/.test(raw)) return copy.googleInvalid;
+      if (/身份.*不匹配/.test(raw)) return copy.googleMismatch;
+      if (/設置已過期|设置已过期/.test(raw)) return copy.googleSetupExpired;
+      if (/未配置/.test(raw)) return copy.googleNotConfigured;
+      return copy.googleUnavailable;
+    }
     return copy.genericError;
   }
 

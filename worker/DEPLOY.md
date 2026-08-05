@@ -1,4 +1,4 @@
-Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Password-only Admin + Wrangler ES Module + Terminal Atlas + 用戶意見 D1）
+Cloudflare Worker v9.4 部署步驟（D1 登入會話 + D1 事件賬本 + Password-only Admin + Wrangler ES Module + Terminal Atlas + 用戶意見 D1）
 ════════════════════════════════════════════════════════
 
 ① 創建 KV（用戶數據庫）
@@ -13,8 +13,9 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
      npx wrangler@latest deploy --dry-run --keep-vars
    確認無誤後執行：
      npx wrangler@latest deploy --keep-vars
-   wrangler.toml 明確要求 30 秒 CPU 上限，以容納密碼雜湊與既有賬本重算；若套餐
-   無法提供該上限，部署必須失敗關閉，不得刪除 limits 後勉強發布。
+   wrangler.toml 不覆蓋帳戶的 CPU 上限。首次把 PBKDF2 寫入成本由 100k 升至 600k
+   前，必須按下方「v9.4 密碼相容橋」順序發布，並用臨時帳戶實測註冊、登入、
+   /api/me、登出與刪除；任一步超時或失敗即停在相容橋，不得發布靜態前端。
    新環境需先建立下列 KV/D1 並把 wrangler.toml 內的 id 改成該環境資源；現有環境
    則直接使用已核對的綁定。
 
@@ -33,7 +34,7 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
    migrations/0002_portfolio_ledger.sql、migrations/0003_frozen_price_tapes.sql 與
    migrations/0004_auth_sessions.sql、migrations/0005_public_portfolio_snapshots.sql。
    0003 為每個 ledger revision 建立 immutable、未復權 raw-close price tape，
-   是 NAV 發布門禁；0004 必須先於 v9.1 Worker 部署完成；0005 把賬本物化投影、
+   是 NAV 發布門禁；0004 必須先於 v9.4 Worker 部署完成；0005 把賬本物化投影、
    最後完整公開快照及最新刷新狀態放入 D1，以單行 guarded UPSERT 取代分鐘級
    KV 多鍵發布。0005 是 additive migration，必須先套用再部署讀取它的 Worker。
    不要把登入 token、
@@ -44,8 +45,12 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
    ADMIN_USERNAME、ADMIN_PASSWORD 或限流 salt 後，舊管理員會話會自動失效。新 D1
    會話不再把明文 bearer token 複製到 KV；既有 sess:{token} 只供懶遷移，成功
    遷入 D1 後即刪除。
-   回退時只可回退到仍理解 D1 會話與撤銷墓碑的 v9.1 build；回退至舊 KV-only
-   Worker 會破壞即時登出語義，因此不屬於安全回退路徑。
+   v9.4 密碼相容橋：第一次發布使用同一套強化後的 D1／管理員會話程式碼，但暫時
+   以 100k 寫入 PBKDF2、關閉懶升級，同時保留按 passwordIterations 驗證 100k／600k
+   雜湊的能力。相容橋健康及登入回歸全部通過、且 deployment id 已記錄後，才可發布
+   寫入 600k 的完整 v9.4。不得在兩版本間做流量混跑。完整 v9.4 的回退目標只能是這個
+   相容橋；v9.3 固定按 100k 驗證，亦會延長管理員會話及重建 KV 明文 bearer 副本，
+   因此絕不是安全回退版本。
 
    v9 過渡期可讓事件賬本與 user log 共用 FEEDBACK_DB。若另建專用 D1，綁定名
    必須是 LEDGER_DB；Worker 會優先使用 LEDGER_DB，未配置時才回退 FEEDBACK_DB。
@@ -98,8 +103,8 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
    你的域名/login.html → Admin Login 用 ④ 設的帳密登入 → 進入後台
    → 進入「事件賬本」，依次選 US / HK / A：人工新增只測 BUY / SELL / CAPITAL；
      股息、公司行動、負債與基金行動必須以自動 source record 進 Pending，再驗證
-     修改/扣稅/Confirm。Excel 可新建的仍只限 BUY / SELL / CAPITAL；已由後台簽名
-     導出的其他既有事件可反向 UPDATE，但也只會重新進 Pending
+     修改/扣稅/Confirm。瀏覽器中的外部 Excel 上傳／拖放／匯入已停用；工作簿只可
+     從已驗證的 D1 事件賬本匯出，不能反向建立或修改任何事件
    → Confirm 後應自動完成最早受影響日起的全歷史 Cash / Position / Liability /
      Units / NAV 重算，然後重建 D1 物化投影、公開快照與 Excel；outbox 最終應回到 0
    → /api/health 的 ledger_storage_ready 應為 true，三市場 projectionRevision 應等於
@@ -155,8 +160,8 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
    parity 核验，不得作为 operational seed。SPGI → SPGI + MBGL 只转换数量，不分配
    成本，不要求 Form 8937，也不是 migration blocker。
    不要再通过 admin-publish 或 GitHub 工作簿更新投资组合；Excel 只从数据库导出，
-   上传可为 BUY / SELL / CAPITAL 新建事实，也可修改带签名元数据的既有事件；两者
-   都必须经过 Preview → Pending → Confirm，四张 derived statements 永不反写。
+   浏览器不接受外部工作簿上传、拖放或导入。所有新事实及修改只能在受控事件账本中
+   经过 Preview → Pending → Confirm，四张 derived statements 永不反写。
    0005 首次上线后保留旧 navcache/ledger KV 原值，不删除；由后台实时刷新或完整重算
    验证当前 ledger revision 后自动 backfill 三市场 D1 projection/public snapshot。确认
    /api/health 的 ledger_storage_ready=true、三个 public snapshot SHA 校验通过、公开接口
@@ -184,12 +189,12 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
   6. 完成。普通用戶入口會出現 Google 官方按鈕；首次授權會直接建號並寄歡迎信，
      後續點擊直接登入，不需要再設用戶名或密碼。
 
-■ 帳號模型（v8.5）
-  · 註冊 = 用戶名 + 密碼 + 郵箱（配置了 Resend 則需輸入 6 位驗證碼）
+■ 帳號模型（v9.4）
+  · 註冊 = 用戶名 + 密碼 + 郵箱；郵箱必須先完成 6 位驗證碼確認
   · Google 註冊 = Google 驗證身份 → 一鍵建立無密碼帳號
   · 登入 = 用戶名或郵箱 + 密碼；Google 用戶也可直接點 Google 按鈕
-  · Guest = 不建立帳號、不發 session token；只在本機記錄入口選擇，進站後沿用
-    現有匿名訪客限制
+  · Guest = 不建立帳號、不發 session token；公開研究內容保持可讀，但沒有會員帳戶
+    資料、訂閱設定或管理員權限。前端明確顯示「訪客模式」，不偽裝成 YI 頭像
 
 ■ 郵箱驗證碼註冊（免費，約 10 分鐘，用 Resend）
   1. resend.com 註冊（免費 100 封/天）→ API Keys → Create → 複製 re_ 開頭的 Key
@@ -198,9 +203,9 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
   3. Cloudflare Worker → Settings → Variables 加兩條：
      Secret: RESEND_API_KEY = re_xxxx
      Text:   MAIL_FROM = Yi Capital <login@yicapital.co>
-  4. 完成。之後訪客用「郵箱」註冊時自動發 6 位驗證碼（15 分鐘有效、限錯 5 次），
-     驗證通過才建號；用普通用戶名註冊則不需要驗證。
-     不配 RESEND_API_KEY = 郵箱註冊退化為直接註冊，功能不受影響。
+  4. 完成。之後所有郵箱註冊都先發 6 位驗證碼（15 分鐘有效、限錯 5 次），驗證通過
+     才建號。未配置 RESEND_API_KEY 時註冊端點返回 503 並保持 fail closed，絕不退化
+     為未驗證的直接註冊。
 
 ■ Apple 登入
   需要 Apple Developer Program（99 美元/年）+ 域名驗證，暫不接入。

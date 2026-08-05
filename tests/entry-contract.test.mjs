@@ -138,6 +138,11 @@ test('member registration is progressive and Google sign-up exposes optional Ins
   assert.doesNotMatch(entry, /id="yc-entry-terms" type="checkbox" checked/);
   assert.match(entry, /error\.code !== 'google_keys_unavailable'/);
   assert.match(entry, /googleRetrying/);
+  assert.match(entry, /googleInvalid: 'Google 凭证无效，请重新登录。'/);
+  assert.match(entry, /googleMismatch: 'This Google identity does not match the existing account.'/);
+  assert.match(entry, /\/憑證無效\|凭证无效\/\.test\(raw\).*copy\.googleInvalid/);
+  assert.match(entry, /\/身份\.\*不匹配\/\.test\(raw\).*copy\.googleMismatch/);
+  assert.match(entry, /return copy\.googleUnavailable/);
   assert.doesNotMatch(entry, /id="yc-entry-password-2"/);
 });
 
@@ -152,6 +157,22 @@ test('entry language chrome and visible slogan stay within the selected locale',
   assert.match(entry, /aria-label="\$\{copy\.languageNav\}"/);
   assert.match(entry, /aria-label="\$\{copy\.marketNav\}"/);
   assert.match(entry, /\$\{copy\.sloganLead\} <span>\$\{copy\.sloganAccent\}<\/span>/);
+});
+
+test('localized public copy keeps deterministic Traditional and Simplified variants separate', async () => {
+  const simplifiedPages = [
+    'cn/index.html', 'cn/insights.html', 'cn/about.html', 'cn/portfolios.html', 'cn/fund-us.html',
+    'cn/posts/tencent-0700-ch12.html', 'cn/posts/yicapital-risk-report.html',
+    'cn/posts/great-company-great-investment.html',
+  ];
+  const simplifiedOnly = /節选|所載|组合數据|意味著|倍數|恒生指數|冷靜|即將|合併|縮減|矩陣|視频|加載|廣告|杠桿|雲|賴|乘數|壁壘|关係|轉換|次數|彙总|款數|衰減|收穫|閥门|AI雲|將于|天數|橫跨|防禦|賬户|數据|昇陽|償還|樂观|災難|數学|靜态|押韻|什麼/;
+  for (const page of simplifiedPages) {
+    assert.doesNotMatch(await read(page), simplifiedOnly, `${page} contains deterministic Traditional copy`);
+  }
+
+  const posts = await read('assets/posts.js');
+  assert.doesNotMatch(posts, /"cn": "[^"]*(?:款數|断直連)/);
+  assert.doesNotMatch(await read('posts/yicapital-risk-report.html'), /無杠杆/);
 });
 
 test('signed-in account center exposes editable profile, locked identities and opt-in recovery', async () => {
@@ -204,11 +225,13 @@ test('account center is trilingual, keeps avatars in-bounds and restores the adm
   assert.doesNotMatch(session, /\.yc-menu-identity b,\.yc-menu-identity span/);
   assert.match(session, /\.yc-account-menu\{[^}]*box-sizing:border-box/);
   assert.match(session, /\.yc-account-menu\{position:fixed;top:74px;left:max\(14px,env\(safe-area-inset-left\)\);right:max\(14px,env\(safe-area-inset-right\)\);width:auto/);
+  assert.match(session, /\.yc-invite\{align-items:stretch;flex-direction:column\}\.yc-invite-copy\{width:100%;max-width:100%\}/);
   assert.match(session, /if \(!profileLoaded \|\| profile\.role !== 'admin'\) return ''/);
   assert.match(session, /href="\/admin"/);
   assert.match(session, /data-admin-menu-slot/);
   assert.match(session, /data-admin-side-slot/);
   assert.match(session, /esc\(L\.adminOpen\)/);
+  assert.match(session, /avatarButton\.setAttribute\('aria-label', profile\.displayName \|\| profile\.username\)/);
 });
 
 test('Guest uses an explicit localized trigger and never renders a synthetic member avatar', async () => {
@@ -246,7 +269,7 @@ test('administrator password copy and shared auth assets match the hardened rele
   }
   for (const page of ['index.html', 'login.html', 'cn\/index.html', 'cn\/login.html', 'en\/index.html', 'en\/login.html']) {
     assert.match(await read(page), /portal-config\.js\?v=9\.4/);
-    assert.match(await read(page), /yc-entry\.js\?v=9\.6/);
+    assert.match(await read(page), /yc-entry\.js\?v=9\.7/);
   }
 });
 
@@ -276,6 +299,15 @@ test('managed research content is escaped and links are restricted to the same o
   for (const adminPage of [adminReports, adminInsights]) {
     assert.match(adminPage, /const H=\(v\)=>/);
     assert.match(adminPage, /data-id="\$\{H\(it\.id\)\}"/);
+  }
+  for (const page of await htmlDocuments()) {
+    const html = await read(page);
+    if (/<script[^>]+src=["'][^"']*posts\.js(?:\?[^"']*)?["']/i.test(html)) {
+      assert.match(html, /posts\.js\?v=2\.1/, `${page} has a stale posts cache key`);
+    }
+    if (/<script[^>]+src=["'][^"']*reports\.js(?:\?[^"']*)?["']/i.test(html)) {
+      assert.match(html, /reports\.js\?v=2\.1/, `${page} has a stale reports cache key`);
+    }
   }
 });
 
@@ -308,14 +340,14 @@ test('all member surfaces load the current account-center release', async () => 
     'cn/index.html', 'cn/about.html', 'cn/insights.html', 'cn/forum.html', 'cn/portfolios.html',
     'en/index.html', 'en/about.html', 'en/insights.html', 'en/forum.html', 'en/portfolios.html',
   ];
-  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.5/);
+  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.6/);
 
   let accountSurfaceCount = 0;
   for (const page of await htmlDocuments()) {
     const html = await read(page);
     if (!html.includes('yc-session.js')) continue;
     accountSurfaceCount += 1;
-    assert.match(html, /yc-session\.js\?v=10\.5/, `${page} has a stale account-center cache key`);
+    assert.match(html, /yc-session\.js\?v=10\.6/, `${page} has a stale account-center cache key`);
   }
   assert.ok(accountSurfaceCount >= 40, 'expected account center on all public content surfaces');
 });
