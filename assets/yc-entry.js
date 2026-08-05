@@ -86,6 +86,7 @@
       termsRequired: '必須同意服務條款才能註冊。',
       invalidCode: '請輸入 6 位數字驗證碼。',
       backendMissing: '身份服務暫時不可用。',
+      storeUnavailable: '帳號服務暫時繁忙，請稍後再試。',
       requestTimeout: '登入服務回應逾時，請重試。',
       networkError: '暫時無法連接登入服務，請檢查網絡後重試。',
       rateLimited: '登入嘗試過多，請稍後再試。',
@@ -169,6 +170,7 @@
       termsRequired: '必须同意服务条款才能注册。',
       invalidCode: '请输入 6 位数字验证码。',
       backendMissing: '身份服务暂时不可用。',
+      storeUnavailable: '账号服务暂时繁忙，请稍后再试。',
       requestTimeout: '登录服务响应超时，请重试。',
       networkError: '暂时无法连接登录服务，请检查网络后重试。',
       rateLimited: '登录尝试过多，请稍后再试。',
@@ -252,6 +254,7 @@
       termsRequired: 'You must accept the Terms of Service to register.',
       invalidCode: 'Enter the 6-digit verification code.',
       backendMissing: 'The identity service is temporarily unavailable.',
+      storeUnavailable: 'The account service is temporarily busy. Please try again later.',
       requestTimeout: 'The identity service timed out. Please try again.',
       networkError: 'Unable to reach the identity service. Check your connection and try again.',
       rateLimited: 'Too many sign-in attempts. Please try again later.',
@@ -555,6 +558,8 @@
           ? copy.rateLimited
           : payload.code === 'google_keys_unavailable'
             ? copy.googleUnavailable
+            : payload.code === 'auth_store_unavailable'
+              ? copy.storeUnavailable
             : localizeServerError(payload.error)
         );
         requestError.code = String(payload.code || 'request_failed');

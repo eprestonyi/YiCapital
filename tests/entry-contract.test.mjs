@@ -26,7 +26,7 @@ test('all three home routes mount the market entry before the existing dashboard
     const html = await read(path);
     assert.match(html, /YC_ENTRY_MODE='gate'/);
     assert.match(html, /yc-entry\.css/);
-    assert.match(html, /yc-entry\.js/);
+    assert.match(html, /yc-entry\.js\?v=9\.8/);
     assert.match(html, /yc-entry-pending/);
     assert.match(html, /yc-entry-fallback/);
     assert.match(html, /yc-token/);
@@ -42,7 +42,7 @@ test('all direct login routes use the same entry experience', async () => {
     const html = await read(path);
     assert.match(html, /YC_ENTRY_MODE='login'/);
     assert.match(html, /yc-entry\.css/);
-    assert.match(html, /yc-entry\.js/);
+    assert.match(html, /yc-entry\.js\?v=9\.8/);
     assert.match(html, /yc-entry-fallback/);
     assert.match(html, /location\.hostname==='yicapital\.co'/);
     assert.doesNotMatch(html, /id="p"|id="u"/);
@@ -140,6 +140,10 @@ test('member registration is progressive and Google sign-up exposes optional Ins
   assert.match(entry, /googleRetrying/);
   assert.match(entry, /googleInvalid: 'Google 凭证无效，请重新登录。'/);
   assert.match(entry, /googleMismatch: 'This Google identity does not match the existing account.'/);
+  assert.match(entry, /storeUnavailable: '帳號服務暫時繁忙，請稍後再試。'/);
+  assert.match(entry, /storeUnavailable: '账号服务暂时繁忙，请稍后再试。'/);
+  assert.match(entry, /storeUnavailable: 'The account service is temporarily busy\. Please try again later\.'/);
+  assert.match(entry, /payload\.code === 'auth_store_unavailable'/);
   assert.match(entry, /\/憑證無效\|凭证无效\/\.test\(raw\).*copy\.googleInvalid/);
   assert.match(entry, /\/身份\.\*不匹配\/\.test\(raw\).*copy\.googleMismatch/);
   assert.match(entry, /return copy\.googleUnavailable/);
@@ -269,7 +273,7 @@ test('administrator password copy and shared auth assets match the hardened rele
   }
   for (const page of ['index.html', 'login.html', 'cn\/index.html', 'cn\/login.html', 'en\/index.html', 'en\/login.html']) {
     assert.match(await read(page), /portal-config\.js\?v=9\.4/);
-    assert.match(await read(page), /yc-entry\.js\?v=9\.7/);
+    assert.match(await read(page), /yc-entry\.js\?v=9\.8/);
   }
 });
 

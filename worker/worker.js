@@ -325,7 +325,9 @@ async function usernameOwner(env, username) {
     const match = (page.keys || []).find(key => key.name.slice(5).toLowerCase() === normalized);
     if (match) {
       const owner = match.name.slice(5);
-      await env.YC_KV.put('username-ci:' + normalized, owner);
+      // This is only a cache backfill. Account reads must stay available when
+      // the shared KV write quota is temporarily exhausted.
+      await tryAuthKvPut(env, 'username-ci:' + normalized, owner, undefined, 'username_index_backfill');
       return owner;
     }
     if (page.list_complete !== false || !page.cursor) break;
@@ -392,12 +394,19 @@ async function sendResetCode(env, email, code) {
     + '</div>'
     + '<hr style="border:none;border-top:1px solid #ddd;margin:26px 0 12px">'
     + '<p style="color:#999;font-size:11.5px;font-family:Arial,sans-serif;line-height:1.8">此為系統郵件（服務條款 04）。Yi Capital · <a href="https://www.yicapital.co" style="color:#0e7490">yicapital.co</a></p></div>';
-  const r = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: env.MAIL_FROM || 'Yi Capital <onboarding@resend.dev>', to: [email], subject: 'Yi Capital 密碼重設驗證 Password Reset Verification', html }),
-  });
-  return r.ok;
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: env.MAIL_FROM || 'Yi Capital <onboarding@resend.dev>', to: [email], subject: 'Yi Capital 密碼重設驗證 Password Reset Verification', html }),
+      signal: typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(8000) : undefined,
+    });
+    return r.ok;
+  } catch (error) {
+    console.error('auth_email_failed', 'password_reset', error instanceof Error ? error.name : 'unknown');
+    return false;
+  }
 }
 
 async function sendCode(env, email, code) {
@@ -418,17 +427,24 @@ async function sendCode(env, email, code) {
     + '</div>'
     + '<hr style="border:none;border-top:1px solid #ddd;margin:26px 0 12px">'
     + '<p style="color:#999;font-size:11.5px;font-family:Arial,sans-serif;line-height:1.8">此為系統郵件，由 Yi Capital 帳號服務發出（服務條款 04）。This is an automated message from Yi Capital account services.<br>Yi Capital · <a href="https://www.yicapital.co" style="color:#0e7490">yicapital.co</a> · Key to Extraordinary Research and Opensource Portfolio</p></div>';
-  const r = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      from: env.MAIL_FROM || 'Yi Capital <onboarding@resend.dev>',
-      to: [email],
-      subject: 'Yi Capital 郵箱驗證 Email Verification',
-      html,
-    }),
-  });
-  return r.ok;
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: env.MAIL_FROM || 'Yi Capital <onboarding@resend.dev>',
+        to: [email],
+        subject: 'Yi Capital 郵箱驗證 Email Verification',
+        html,
+      }),
+      signal: typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(8000) : undefined,
+    });
+    return r.ok;
+  } catch (error) {
+    console.error('auth_email_failed', 'account_verification', error instanceof Error ? error.name : 'unknown');
+    return false;
+  }
 }
 async function sendWelcome(env, email, username) {
   if (!env.RESEND_API_KEY) return;
@@ -459,10 +475,73 @@ async function afterResponse(ctx, promise) {
   await promise;
 }
 
+function authStoreFailure(operation, error) {
+  console.error('auth_store_failed', operation, error instanceof Error ? error.name : 'unknown');
+  const unavailable = new AuthStoreUnavailableError(operation);
+  if (/limit exceeded for the day/i.test(String(error && error.message || ''))) {
+    const now = new Date();
+    const nextUtcDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+    unavailable.retryAfterSeconds = Math.max(2, Math.ceil((nextUtcDay - now.getTime()) / 1000));
+  }
+  return unavailable;
+}
+
+async function authKvPut(env, key, value, options, operation = 'account_write_kv') {
+  try {
+    await env.YC_KV.put(key, value, options);
+    return true;
+  } catch (error) {
+    throw authStoreFailure(operation, error);
+  }
+}
+
+async function authKvDelete(env, key, operation = 'account_delete_kv') {
+  try {
+    await env.YC_KV.delete(key);
+    return true;
+  } catch (error) {
+    throw authStoreFailure(operation, error);
+  }
+}
+
+async function tryAuthKvPut(env, key, value, options, operation = 'account_metadata_write_kv') {
+  try {
+    await env.YC_KV.put(key, value, options);
+    return true;
+  } catch (error) {
+    console.error('auth_store_failed', operation, error instanceof Error ? error.name : 'unknown');
+    return false;
+  }
+}
+
+async function tryAuthKvDelete(env, key, operation = 'account_metadata_delete_kv') {
+  try {
+    await env.YC_KV.delete(key);
+    return true;
+  } catch (error) {
+    console.error('auth_store_failed', operation, error instanceof Error ? error.name : 'unknown');
+    return false;
+  }
+}
+
 async function createUser(env, rec) {
-  await env.YC_KV.put('user:' + rec.u, JSON.stringify(rec));
-  await env.YC_KV.put('username-ci:' + String(rec.u).toLowerCase(), rec.u);
-  if (rec.email) await env.YC_KV.put('email:' + rec.email, rec.u);
+  // Publish the login record last. A mid-write quota failure can temporarily
+  // reserve an index, but cannot expose a login with incomplete indexes.
+  const written = [];
+  try {
+    const usernameIndex = 'username-ci:' + String(rec.u).toLowerCase();
+    await authKvPut(env, usernameIndex, rec.u, undefined, 'account_create_username_index');
+    written.push(usernameIndex);
+    if (rec.email) {
+      const emailIndex = 'email:' + rec.email;
+      await authKvPut(env, emailIndex, rec.u, undefined, 'account_create_email_index');
+      written.push(emailIndex);
+    }
+    await authKvPut(env, 'user:' + rec.u, JSON.stringify(rec), undefined, 'account_create_user');
+  } catch (error) {
+    await Promise.all(written.map(key => tryAuthKvDelete(env, key, 'account_create_rollback')));
+    throw error;
+  }
 }
 
 /* ── 收件：極簡 MIME 文本提取（best-effort，覆蓋常見 text/plain、QP、base64、multipart）── */
@@ -4638,11 +4717,14 @@ export default {
         const hash = await pbkdf2(password, salt);
         const code = verificationCode();
         const expiresAt = Date.now() + 900000;
-        await env.YC_KV.put('pending:' + email, JSON.stringify({
+        await authKvPut(env, 'pending:' + email, JSON.stringify({
           u: username, email, salt, hash, passwordIterations: PBKDF2_ITERATIONS,
           code, tries: 0, expiresAt, newsletter,
-        }), { expirationTtl: 900 });
-        if (!await sendCode(env, email, code)) { await env.YC_KV.delete('pending:' + email); return J(env, { error: '驗證郵件發送失敗，請稍後再試' }, 502); }
+        }), { expirationTtl: 900 }, 'signup_pending_write');
+        if (!await sendCode(env, email, code)) {
+          await authKvDelete(env, 'pending:' + email, 'signup_pending_cleanup');
+          return J(env, { error: '驗證郵件發送失敗，請稍後再試' }, 502);
+        }
         return J(env, { ok: true, needCode: true, message: '驗證碼已發送至 ' + email }, 200, { 'Cache-Control': 'no-store' });
       }
 
@@ -4662,19 +4744,21 @@ export default {
         const p = JSON.parse(raw);
         const expiresAt = Number(p.expiresAt || 0);
         if (!expiresAt || remainingCodeTtl(expiresAt) === 0) {
-          await env.YC_KV.delete(pkey);
+          await authKvDelete(env, pkey, 'signup_expired_cleanup');
           return J(env, { error: '驗證已過期，請重新註冊' }, 410);
         }
         p.tries = (p.tries || 0) + 1;
-        if (p.tries > 5) { await env.YC_KV.delete(pkey); return J(env, { error: '嘗試次數過多，請重新註冊' }, 429); }
+        if (p.tries > 5) { await authKvDelete(env, pkey, 'signup_attempt_cleanup'); return J(env, { error: '嘗試次數過多，請重新註冊' }, 429); }
         if (String(b.code || '').trim() !== p.code) {
-          await env.YC_KV.put(pkey, JSON.stringify(p), { expirationTtl: remainingCodeTtl(expiresAt) });
+          await authKvPut(env, pkey, JSON.stringify(p), { expirationTtl: remainingCodeTtl(expiresAt) }, 'signup_attempt_write');
           return J(env, { error: '驗證碼錯誤' }, 400);
         }
-        if (reservedUsername(p.u, env) || await usernameOwner(env, p.u)) { await env.YC_KV.delete(pkey); return J(env, { error: '用戶名剛被佔用，請重新註冊' }, 409); }
-        if (await env.YC_KV.get('email:' + p.email)) { await env.YC_KV.delete(pkey); return J(env, { error: '郵箱剛被佔用，請重新註冊' }, 409); }
+        if (reservedUsername(p.u, env) || await usernameOwner(env, p.u)) { await authKvDelete(env, pkey, 'signup_collision_cleanup'); return J(env, { error: '用戶名剛被佔用，請重新註冊' }, 409); }
+        if (await env.YC_KV.get('email:' + p.email)) { await authKvDelete(env, pkey, 'signup_collision_cleanup'); return J(env, { error: '郵箱剛被佔用，請重新註冊' }, 409); }
+        // Consume the one-time code before creating any durable identity. If
+        // deletion fails, do not create a user or session that can be replayed.
+        await authKvDelete(env, pkey, 'signup_code_consume');
         await createUser(env, { u: p.u, email: p.email, salt: p.salt, hash: p.hash, passwordIterations: Number(p.passwordIterations) || PBKDF2_ITERATIONS, provider: 'password', role: 'guest', disabled: false, newsletter: p.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: null });
-        await env.YC_KV.delete(pkey);
         const token = await newSession(env, p.u, 'guest');
         await afterResponse(ctx, sendWelcome(env, p.email, p.u));
         return J(env, { ok: true, token, role: 'guest', username: p.u });
@@ -4717,14 +4801,19 @@ export default {
         const iterations = Number(u.passwordIterations) || LEGACY_PBKDF2_ITERATIONS;
         const hash = await pbkdf2(password, u.salt, iterations);
         if (!safeEqual(hash, u.hash)) return J(env, { error: '帳號或密碼錯誤' }, 401);
-        if (iterations < PBKDF2_ITERATIONS) {
+        const passwordUpgradeRequired = iterations < PBKDF2_ITERATIONS;
+        if (passwordUpgradeRequired) {
           u.salt = randomHex(16);
           u.hash = await pbkdf2(password, u.salt, PBKDF2_ITERATIONS);
           u.passwordIterations = PBKDF2_ITERATIONS;
           u.passwordUpgradedAt = new Date().toISOString();
         }
-        u.lastLogin = new Date().toISOString();
-        await env.YC_KV.put('user:' + username, JSON.stringify(u));
+        if (passwordUpgradeRequired) {
+          // A password-cost migration is security state, not optional metadata.
+          // Never issue a session unless the upgraded verifier is durable.
+          u.lastLogin = new Date().toISOString();
+          await authKvPut(env, 'user:' + username, JSON.stringify(u), undefined, 'password_upgrade_write');
+        }
         const token = await newSession(env, username, 'guest');
         return J(env, { ok: true, token, role: 'guest', username });
       }
@@ -4769,9 +4858,11 @@ export default {
           if (!u) return J(env, { error: '帳號數據異常' }, 500);
           if (u.disabled) return J(env, { error: '此帳號已被停用' }, 403);
           if (u.googleSub && !safeEqual(String(u.googleSub), String(t.sub))) return J(env, { error: 'Google 身份與既有帳號不匹配' }, 409);
-          u.googleSub = String(t.sub);
-          u.lastLogin = new Date().toISOString();
-          await env.YC_KV.put('user:' + mapped, JSON.stringify(u));
+          if (!u.googleSub) {
+            u.googleSub = String(t.sub);
+            u.lastLogin = new Date().toISOString();
+            await authKvPut(env, 'user:' + mapped, JSON.stringify(u), undefined, 'google_identity_bind');
+          }
           const token = await newSession(env, mapped, 'guest');
           return J(env, { ok: true, token, role: 'guest', username: mapped });
         }
@@ -4790,7 +4881,7 @@ export default {
         }
         // 新用戶 → 發放 15 分鐘設置票據，前端引導其設置用戶名+密碼
         const setupToken = randomHex(24);
-        await env.YC_KV.put('gsetup:' + setupToken, JSON.stringify({ email, name: t.name || '', googleSub: String(t.sub) }), { expirationTtl: 900 });
+        await authKvPut(env, 'gsetup:' + setupToken, JSON.stringify({ email, name: t.name || '', googleSub: String(t.sub) }), { expirationTtl: 900 }, 'google_setup_write');
         return J(env, { ok: true, needSetup: true, setupToken, email });
       }
 
@@ -4813,8 +4904,9 @@ export default {
         if (await env.YC_KV.get('email:' + g.email)) return J(env, { error: '該郵箱已被註冊' }, 409);
         const salt = randomHex(16);
         const hash = await pbkdf2(password, salt);
+        // Consume the one-time Google setup ticket before publishing identity.
+        await authKvDelete(env, skey, 'google_setup_consume');
         await createUser(env, { u: username, email: g.email, name: g.name, googleSub: g.googleSub || null, salt, hash, passwordIterations: PBKDF2_ITERATIONS, provider: 'google', role: 'guest', disabled: false, newsletter: b.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: new Date().toISOString() });
-        await env.YC_KV.delete(skey);
         const token = await newSession(env, username, 'guest');
         await afterResponse(ctx, sendWelcome(env, g.email, username));
         return J(env, { ok: true, token, role: 'guest', username });
@@ -5137,19 +5229,18 @@ export default {
           const previousUsername = sess.u;
           user.u = nextUsername;
           user.updatedAt = new Date().toISOString();
-          await env.YC_KV.put('user:' + nextUsername, JSON.stringify(user));
-          await env.YC_KV.put('username-ci:' + nextUsername.toLowerCase(), nextUsername);
-          if (user.email) await env.YC_KV.put('email:' + user.email, nextUsername);
-          await env.YC_KV.delete('user:' + previousUsername);
+          await authKvPut(env, 'user:' + nextUsername, JSON.stringify(user), undefined, 'profile_rename_user');
+          await authKvPut(env, 'username-ci:' + nextUsername.toLowerCase(), nextUsername, undefined, 'profile_rename_username_index');
+          if (user.email) await authKvPut(env, 'email:' + user.email, nextUsername, undefined, 'profile_rename_email_index');
+          await authKvDelete(env, 'user:' + previousUsername, 'profile_rename_previous_user');
           if (previousUsername.toLowerCase() !== nextUsername.toLowerCase()) {
-            await env.YC_KV.delete('username-ci:' + previousUsername.toLowerCase());
+            await authKvDelete(env, 'username-ci:' + previousUsername.toLowerCase(), 'profile_rename_previous_index');
           }
           token = await newSession(env, nextUsername, sess.role);
         } else {
           user.u = sess.u;
           user.updatedAt = new Date().toISOString();
-          await env.YC_KV.put('user:' + sess.u, JSON.stringify(user));
-          await env.YC_KV.put('username-ci:' + sess.u.toLowerCase(), sess.u);
+          await authKvPut(env, 'user:' + sess.u, JSON.stringify(user), undefined, 'profile_write');
         }
         return J(env, {
           ok: true,
@@ -5401,6 +5492,11 @@ export default {
         if (!raw) return J(env, { error: '用戶不存在' }, 404);
         const u = JSON.parse(raw);
         if (action === 'delete') {
+          // Disable durably before any multi-store deletion work. If a later
+          // D1/KV step fails, the partially deleted account cannot log in.
+          u.disabled = true;
+          u.deletionPendingAt = new Date().toISOString();
+          await authKvPut(env, key, JSON.stringify(u), undefined, 'admin_account_delete_disable');
           if (!await revokeUserSessions(env, username)) {
             return J(env, { error: '會話撤銷暫時失敗，未刪除帳號，請重試' }, 503);
           }
@@ -5437,24 +5533,35 @@ export default {
             }
             await env.FEEDBACK_DB.batch(statements);
           }
-          await env.YC_KV.delete(key);
-          await env.YC_KV.delete('username-ci:' + String(username).toLowerCase());
-          if (u.email) await env.YC_KV.delete('email:' + u.email);
+          await authKvDelete(env, key, 'admin_account_delete_user');
+          await authKvDelete(env, 'username-ci:' + String(username).toLowerCase(), 'admin_account_delete_username_index');
+          if (u.email) await authKvDelete(env, 'email:' + u.email, 'admin_account_delete_email_index');
           return J(env, { ok: true, message: '已刪除 ' + username });
         }
         if (action === 'resetpw' && passwordProblem(newPassword)) {
           return J(env, { error: passwordProblem(newPassword) }, 400);
         }
-        if ((action === 'disable' || action === 'resetpw') &&
-            !await revokeUserSessions(env, username)) {
+        if (action === 'disable') {
+          // Persist the deny state before revocation. If D1 revocation then
+          // fails, the account still cannot establish a replacement session.
+          u.disabled = true;
+          await authKvPut(env, key, JSON.stringify(u), undefined, 'admin_account_disable');
+          if (!await revokeUserSessions(env, username)) {
+            return J(env, { error: '帳號已停用，但會話撤銷仍在重試，請再次確認' }, 503);
+          }
+          return J(env, { ok: true, message: '已更新 ' + username });
+        }
+        if (action === 'resetpw' && !await revokeUserSessions(env, username)) {
           return J(env, { error: '會話撤銷暫時失敗，帳號未更新，請重試' }, 503);
         }
-        if (action === 'disable') u.disabled = true;
-        else if (action === 'enable') u.disabled = false;
+        if (action === 'enable') {
+          u.disabled = false;
+          delete u.deletionPendingAt;
+        }
         else if (action === 'resetpw') {
           u.salt = randomHex(16); u.hash = await pbkdf2(newPassword, u.salt); u.passwordIterations = PBKDF2_ITERATIONS;
         } else return J(env, { error: '未知操作' }, 400);
-        await env.YC_KV.put(key, JSON.stringify(u));
+        await authKvPut(env, key, JSON.stringify(u), undefined, 'admin_account_update');
         return J(env, { ok: true, message: '已更新 ' + username });
       }
 
@@ -5586,8 +5693,16 @@ export default {
         if (env.RESEND_API_KEY && uname && await env.YC_KV.get('user:' + uname)) {
           const code = verificationCode();
           const expiresAt = Date.now() + 900000;
-          await env.YC_KV.put('reset:' + email, JSON.stringify({ code, u: uname, tries: 0, ts: Date.now(), expiresAt }), { expirationTtl: 900 });
-          if (!await sendResetCode(env, email, code)) await env.YC_KV.delete('reset:' + email);
+          try {
+            await authKvPut(env, 'reset:' + email, JSON.stringify({ code, u: uname, tries: 0, ts: Date.now(), expiresAt }), { expirationTtl: 900 }, 'password_reset_pending_write');
+            if (!await sendResetCode(env, email, code)) {
+              await tryAuthKvDelete(env, 'reset:' + email, 'password_reset_email_cleanup');
+            }
+          } catch (error) {
+            // Password recovery must not reveal whether an email is registered,
+            // including during a KV quota or delivery outage.
+            console.error('password_reset_request_failed', error instanceof Error ? error.name : 'unknown');
+          }
         }
         return J(env, { ok: true, message: '若該郵箱已註冊，重設驗證碼已發送（15 分鐘內有效，請查收郵件含垃圾箱）。' }, 200, { 'Cache-Control': 'no-store' });
       }
@@ -5609,12 +5724,12 @@ export default {
         const rec = JSON.parse(recRaw);
         const expiresAt = Number(rec.expiresAt || 0);
         if (!expiresAt || remainingCodeTtl(expiresAt) === 0) {
-          await env.YC_KV.delete('reset:' + email);
+          await authKvDelete(env, 'reset:' + email, 'password_reset_expired_cleanup');
           return J(env, { error: '驗證碼不存在或已過期，請重新獲取' }, 400);
         }
-        if (rec.tries >= 5) { await env.YC_KV.delete('reset:' + email); return J(env, { error: '錯誤次數過多，請重新獲取驗證碼' }, 400); }
+        if (rec.tries >= 5) { await authKvDelete(env, 'reset:' + email, 'password_reset_attempt_cleanup'); return J(env, { error: '錯誤次數過多，請重新獲取驗證碼' }, 400); }
         if (rec.code !== code) {
-          rec.tries++; await env.YC_KV.put('reset:' + email, JSON.stringify(rec), { expirationTtl: remainingCodeTtl(expiresAt) });
+          rec.tries++; await authKvPut(env, 'reset:' + email, JSON.stringify(rec), { expirationTtl: remainingCodeTtl(expiresAt) }, 'password_reset_attempt_write');
           return J(env, { error: '驗證碼不正確（剩餘 ' + (5 - rec.tries) + ' 次）' }, 400);
         }
         const uRaw = await env.YC_KV.get('user:' + rec.u);
@@ -5624,8 +5739,10 @@ export default {
           return J(env, { error: '會話撤銷暫時失敗，密碼未重設，請重試' }, 503);
         }
         u.salt = randomHex(16); u.hash = await pbkdf2(password, u.salt); u.passwordIterations = PBKDF2_ITERATIONS;
-        await env.YC_KV.put('user:' + rec.u, JSON.stringify(u));
-        await env.YC_KV.delete('reset:' + email);
+        // Consume the one-time reset proof before changing the verifier. A
+        // failed account write then requires a new code but cannot be replayed.
+        await authKvDelete(env, 'reset:' + email, 'password_reset_consume');
+        await authKvPut(env, 'user:' + rec.u, JSON.stringify(u), undefined, 'password_reset_user_write');
         return J(env, { ok: true, username: rec.u, message: '密碼已重設，請用新密碼登入。' });
       }
 
@@ -5646,7 +5763,7 @@ export default {
           return J(env, { error: '會話撤銷暫時失敗，密碼未更新，請重試' }, 503);
         }
         u.salt = randomHex(16); u.hash = await pbkdf2(password, u.salt); u.passwordIterations = PBKDF2_ITERATIONS;
-        await env.YC_KV.put('user:' + username, JSON.stringify(u));
+        await authKvPut(env, 'user:' + username, JSON.stringify(u), undefined, 'admin_password_write');
         return J(env, { ok: true, username });
       }
 
@@ -5735,11 +5852,12 @@ export default {
       const requestId = 'req_' + Date.now().toString(36) + '_' + randomHex(3);
       if (e instanceof AuthStoreUnavailableError) {
         console.error('auth_request_unavailable', requestId, e.operation);
+        const retryAfter = Math.max(2, Number(e.retryAfterSeconds) || 2);
         return J(env, {
           error: '身份服務暫時不可用，請稍後重試',
           code: 'auth_store_unavailable',
           requestId,
-        }, 503, { 'Cache-Control': 'no-store', 'Retry-After': '2' });
+        }, 503, { 'Cache-Control': 'no-store', 'Retry-After': String(retryAfter) });
       }
       console.error('request_failed', requestId, e);
       return J(env, { error: '服務器暫時發生錯誤', requestId }, 500);

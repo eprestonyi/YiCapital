@@ -19,7 +19,7 @@ window.YC_ENTRY_MODE='gate';
 (()=>{try{const q=new URLSearchParams(location.search);if(q.get('guest')==='1')localStorage.setItem('yc-guest','1');const token=localStorage.getItem('yc-token')||sessionStorage.getItem('yc-token')||'';const user=localStorage.getItem('yc-user')||sessionStorage.getItem('yc-user')||'';const member=/^[a-f0-9]{64}$/i.test(token)&&!!user;const guest=localStorage.getItem('yc-guest')==='1';document.documentElement.classList.add(member||guest?'yc-dashboard-requested':'yc-entry-pending');}catch(e){document.documentElement.classList.add('yc-entry-pending');}})();
 </script>
 <script src="assets/portal-config.js?v=9.4"></script>
-<script src="assets/yc-entry.js?v=9.7" defer></script>
+<script src="assets/yc-entry.js?v=9.8" defer></script>
 </head>
 <body>
 <div class="yc-entry-fallback" role="status"><div class="yc-entry-fallback-card">
