@@ -116,19 +116,28 @@ const POSTS = window.POSTS = [
 const _T=(k,fb)=>(window.YCI?YCI.t(k):fb);
 const _PLANG=()=> (window.YCI&&YCI.lang)||window.YC_LANG||'tw';
 const _PF=o=> (typeof o==='string')?o:(o[_PLANG()]||o.tw);
+const _PE=value=>String(value==null?'':value)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const _PH=value=>{
+  try {
+    const url=new URL(String(value||''),document.baseURI);
+    return url.origin===location.origin&&/^https?:$/.test(url.protocol)?_PE(url.href):'#';
+  } catch(error){ return '#'; }
+};
 function renderPosts(elId, opts) {
   const el = document.getElementById(elId);
   if (!el) return;
   const limit = (opts && opts.limit) || POSTS.length;
   const prefix = (opts && opts.prefix) || "";
   el.innerHTML = POSTS.slice(0, limit).map(p => `
-    <article class="card${p.soon ? " soon" : ""}">
-      <div class="c-meta"><b>${_PF(p.tag)}</b><span>${p.date}</span></div>
-      <h3>${_PF(p.title)}</h3>
-      <blockquote>${_PF(p.excerpt)}</blockquote>
+    <article class="card${p.soon === true ? " soon" : ""}">
+      <div class="c-meta"><b>${_PE(_PF(p.tag||{}))}</b><span>${_PE(p.date)}</span></div>
+      <h3>${_PE(_PF(p.title||{}))}</h3>
+      <blockquote>${_PE(_PF(p.excerpt||{}))}</blockquote>
       <div class="c-foot">
-        <span class="pill ${p.pillStyle || ""}">${_PF(p.pill)}</span>
-        ${p.more ? `<a class="more" href="${prefix}${p.more}">${_PF(p.moreLabel) || _T('post.more','更多資訊 →')}</a>` : `<span>${p.foot || ""}</span>`}
+        <span class="pill${p.pillStyle === 'gray' ? ' gray' : ''}">${_PE(_PF(p.pill||{}))}</span>
+        ${p.more ? `<a class="more" href="${_PH(prefix+String(p.more))}">${_PE(_PF(p.moreLabel||{}) || _T('post.more','更多資訊 →'))}</a>` : `<span>${_PE(p.foot || "")}</span>`}
       </div>
     </article>`).join("");
 }

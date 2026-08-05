@@ -16,7 +16,6 @@
   });
   let token = localStorage.getItem('yc-token') || '';
   const storedUser = localStorage.getItem('yc-user') || '';
-  const role = localStorage.getItem('yc-role') || '';
   const isMember = /^[a-f0-9]{64}$/i.test(token) && Boolean(storedUser);
   const isGuest = !isMember && localStorage.getItem('yc-guest') === '1';
   if (!isMember && !isGuest) return;
@@ -174,6 +173,7 @@
   let overlay;
   let main;
   let subscribeCard;
+  let externalSyncTimer = 0;
 
   function initials() {
     const source = String(profile.displayName || profile.username || 'Yi').trim();
@@ -200,6 +200,9 @@
     .yc-ava-wrap{position:relative;display:inline-flex;align-items:center;margin-left:18px;font-family:var(--sans,"Space Grotesk",sans-serif)}
     .yc-ava-button{width:38px;height:38px;border-radius:50%;border:1px solid rgba(117,167,255,.7);padding:0;background:#0a1424;color:#f5f2ea;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 0 rgba(117,167,255,0);transition:border-color .16s ease,box-shadow .16s ease}
     .yc-ava-button:hover,.yc-ava-button:focus-visible{border-color:#75a7ff;box-shadow:0 0 0 4px rgba(117,167,255,.12);outline:none}
+    .yc-guest-button{min-height:38px;border:1px solid #31405a;border-radius:999px;padding:8px 12px;background:#0a1424;color:#cbd5e3;cursor:pointer;display:inline-flex;align-items:center;gap:8px;font:650 12px/1 var(--sans,"Space Grotesk",sans-serif);white-space:nowrap;transition:border-color .16s ease,color .16s ease,box-shadow .16s ease}
+    .yc-guest-button:hover,.yc-guest-button:focus-visible{border-color:#75a7ff;color:#fff;box-shadow:0 0 0 4px rgba(117,167,255,.12);outline:none}.yc-guest-chevron{color:#75a7ff;font-size:11px}
+    .yc-account-pending{border-style:dashed}.yc-account-dot{width:9px;height:9px;border-radius:50%;background:#75a7ff;box-shadow:0 0 0 4px rgba(117,167,255,.13)}
     .yc-avatar,.yc-avatar-lg{display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:50%;background:#10233e;color:#f5f2ea;font-weight:720;letter-spacing:-.02em}
     .yc-avatar{width:32px;height:32px;font-size:12px;flex:0 0 32px}.yc-avatar-lg{width:66px;height:66px;font-size:19px;flex:0 0 auto}
     .yc-avatar img,.yc-avatar-lg img{width:100%;height:100%;object-fit:cover}
@@ -264,7 +267,11 @@
     try {
       const response = await fetch(API + path, init);
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || L.genericError);
+      if (!response.ok) {
+        const error = new Error(payload.error || L.genericError);
+        error.status = response.status;
+        throw error;
+      }
       return payload;
     } finally {
       window.clearTimeout(timeout);
@@ -276,20 +283,43 @@
     profileLoaded = true;
     if (payload.token && /^[a-f0-9]{64}$/i.test(payload.token)) {
       token = payload.token;
+      sessionStorage.removeItem('yc-token');
       localStorage.setItem('yc-token', token);
     }
-    if (payload.username) localStorage.setItem('yc-user', payload.username);
+    if (payload.username) {
+      sessionStorage.removeItem('yc-user');
+      localStorage.setItem('yc-user', payload.username);
+    }
+    if (payload.role === 'admin' || payload.role === 'guest') {
+      sessionStorage.removeItem('yc-role');
+      localStorage.setItem('yc-role', payload.role);
+    }
+    window.__YC_SESSION_VERIFIED__ = { token: token.toLowerCase(), role: profile.role || '' };
+    window.dispatchEvent(new CustomEvent('yc:session-valid', { detail: window.__YC_SESSION_VERIFIED__ }));
     refreshIdentity();
     syncSubscribePrompt();
   }
 
   function refreshIdentity() {
     if (!wrap) return;
+    if (isGuest) {
+      avatarButton.title = L.guestRole;
+      identityBox.innerHTML = '<div class="yc-menu-identity-copy"><b>' + esc(L.guest) + '</b><span>' + esc(L.guestRole) + '</span></div>';
+      return;
+    }
+    if (!profileLoaded) {
+      avatarButton.innerHTML = '<span class="yc-account-dot" aria-hidden="true"></span>';
+      avatarButton.title = L.loading;
+      identityBox.innerHTML = '<div class="yc-menu-identity-copy"><b>' + esc(L.loading) + '</b></div>';
+      return;
+    }
+    avatarButton.classList.remove('yc-account-pending');
     avatarButton.innerHTML = avatarMarkup('yc-avatar');
     avatarButton.title = profile.displayName || profile.username;
     identityBox.innerHTML = avatarMarkup('yc-avatar') +
       '<div class="yc-menu-identity-copy"><b>' + esc(profile.displayName || profile.username) + '</b>' +
       '<span>' + esc(profile.email || (profile.role === 'admin' ? L.adminRole : profile.username)) + '</span></div>';
+    syncAdminLinks();
   }
 
   function menuItem(section, icon, label, future) {
@@ -306,21 +336,33 @@
   }
 
   function adminLink(className) {
-    if (role !== 'admin') return '';
+    if (!profileLoaded || profile.role !== 'admin') return '';
     return '<a class="yc-menu-item ' + (className || '') + '" href="/admin"><span class="yc-menu-icon" aria-hidden="true">◆</span>' +
       '<span class="yc-menu-label">' + esc(L.admin) + '</span></a>';
+  }
+
+  function syncAdminLinks() {
+    if (!wrap) return;
+    const menuSlot = wrap.querySelector('[data-admin-menu-slot]');
+    if (menuSlot) menuSlot.innerHTML = adminLink('yc-menu-admin');
+    if (overlay) {
+      const sideSlot = overlay.querySelector('[data-admin-side-slot]');
+      if (sideSlot) sideSlot.innerHTML = adminLink('yc-side-admin');
+    }
   }
 
   function shell() {
     wrap = document.createElement('div');
     wrap.className = 'yc-ava-wrap';
-    wrap.innerHTML =
-      '<button class="yc-ava-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="' + esc(L.account) + '">' + avatarMarkup('yc-avatar') + '</button>' +
+    const trigger = isGuest
+      ? '<button class="yc-guest-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="' + esc(L.guestRole) + '"><span>' + esc(L.guestRole) + '</span><span class="yc-guest-chevron" aria-hidden="true">⌄</span></button>'
+      : '<button class="yc-ava-button yc-account-pending" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="' + esc(L.loading) + '"><span class="yc-account-dot" aria-hidden="true"></span></button>';
+    wrap.innerHTML = trigger +
       '<div class="yc-account-menu" role="menu"><div class="yc-menu-identity"></div>' +
         (isGuest
           ? '<a class="yc-menu-item" href="' + loginPath + '"><span class="yc-menu-icon">↗</span><span class="yc-menu-label">' + esc(L.signIn) + '</span></a>' +
             '<a class="yc-menu-item" href="' + portfolioPath + '"><span class="yc-menu-icon">⌁</span><span class="yc-menu-label">' + esc(L.portfolio) + '</span></a>'
-          : adminLink('yc-menu-admin') +
+          : '<span data-admin-menu-slot></span>' +
             menuItem('account', '◎', L.accountTitle, false) +
             menuItem('connect', '⌁', L.connectTitle, true) +
             menuItem('contact', '@', L.contactTitle, false) +
@@ -329,7 +371,7 @@
             menuItem('help', '?', L.helpTitle, false)) +
         '<div class="yc-menu-divider"></div><button class="yc-menu-item yc-logout" type="button" data-account-logout><span class="yc-menu-icon">↪</span><span class="yc-menu-label">' +
         esc(isGuest ? L.exit : L.logout) + '</span></button></div>';
-    avatarButton = wrap.querySelector('.yc-ava-button');
+    avatarButton = wrap.querySelector('.yc-ava-button, .yc-guest-button');
     menu = wrap.querySelector('.yc-account-menu');
     identityBox = wrap.querySelector('.yc-menu-identity');
     refreshIdentity();
@@ -378,7 +420,7 @@
       '<section class="yc-account-dialog" role="dialog" aria-modal="true" aria-labelledby="yc-account-page-title" tabindex="-1">' +
         '<button class="yc-account-close" type="button" aria-label="' + esc(L.close) + '">×</button>' +
         '<aside class="yc-account-side"><div class="yc-account-brand">YiCapital</div><nav class="yc-account-nav" aria-label="' + esc(L.account) + '"></nav>' +
-          '<div class="yc-account-side-spacer"></div>' + adminLink('yc-side-admin') +
+          '<div class="yc-account-side-spacer"></div><span data-admin-side-slot></span>' +
           '<button class="yc-menu-item yc-logout yc-side-logout" type="button" data-account-logout><span class="yc-menu-icon">↪</span><span class="yc-menu-label">' + esc(L.logout) + '</span></button></aside>' +
         '<main class="yc-account-main"></main></section>';
     main = overlay.querySelector('.yc-account-main');
@@ -387,6 +429,7 @@
     overlay.addEventListener('mousedown', event => { if (event.target === overlay) closeAccount(); });
     overlay.addEventListener('keydown', trapDialogKeys);
     document.body.appendChild(overlay);
+    syncAdminLinks();
   }
 
   function renderSide() {
@@ -631,7 +674,7 @@
   }
 
   function syncSubscribePrompt() {
-    if (!isMember || !profileLoaded || role === 'admin') return;
+    if (!isMember || !profileLoaded || profile.role === 'admin') return;
     if (profile.newsletter) {
       if (subscribeCard) subscribeCard.remove();
       subscribeCard = null;
@@ -666,6 +709,14 @@
       updateProfile(result);
       if (overlay && overlay.classList.contains('open') && activeSection === 'account') renderAccount();
     } catch (error) {
+      if (error && (error.status === 401 || error.status === 403)) {
+        clearSession();
+        window.__YC_SESSION_VERIFIED__ = null;
+        window.dispatchEvent(new CustomEvent('yc:session-invalid', { detail: { status: error.status } }));
+        location.replace(loginPath + '?reason=' + (error.status === 403 ? 'disabled' : 'expired'));
+        return;
+      }
+      window.dispatchEvent(new CustomEvent('yc:session-unavailable'));
       if (overlay && overlay.classList.contains('open') && activeSection === 'account') {
         main.innerHTML = pageHeading(L.accountKicker, L.accountTitle, L.accountIntro) +
           '<div class="yc-empty-panel"><div class="yc-empty-card"><p>' + esc(L.loadError) + '</p></div></div>';
@@ -694,19 +745,54 @@
     const sameToken = () => String(localStorage.getItem('yc-token') || '').toLowerCase() === token.toLowerCase();
     const validate = attempt => {
       if (!sameToken()) return Promise.resolve();
-      return fetch(API + '/api/me', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' }).then(response => {
-        if (response.status !== 401) return;
+      return fetch(API + '/api/me', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' }).then(async response => {
+        if (response.ok) {
+          const payload = await response.json().catch(() => null);
+          if (payload && sameToken()) updateProfile(payload);
+          return;
+        }
+        if (response.status >= 500) {
+          window.dispatchEvent(new CustomEvent('yc:session-unavailable', { detail: { status: response.status } }));
+          return;
+        }
+        if (response.status !== 401 && response.status !== 403) return;
         if (attempt < 1) {
           window.setTimeout(() => validate(attempt + 1), 750);
           return;
         }
         if (!sameToken()) return;
         clearSession();
-        location.replace(loginPath + '?reason=expired');
-      }).catch(() => {});
+        window.__YC_SESSION_VERIFIED__ = null;
+        window.dispatchEvent(new CustomEvent('yc:session-invalid', { detail: { status: response.status } }));
+        location.replace(loginPath + '?reason=' + (response.status === 403 ? 'disabled' : 'expired'));
+      }).catch(() => { window.dispatchEvent(new CustomEvent('yc:session-unavailable')); });
     };
     validate(0);
+    window.addEventListener('pageshow', event => { if (event.persisted) validate(0); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) validate(0); });
   }
+
+  window.addEventListener('storage', event => {
+    if (event.storageArea && event.storageArea !== localStorage) return;
+    if (event.key && !['yc-token', 'yc-user', 'yc-guest'].includes(event.key)) return;
+    window.clearTimeout(externalSyncTimer);
+    externalSyncTimer = window.setTimeout(() => {
+      const nextToken = String(localStorage.getItem('yc-token') || '');
+      const nextUser = String(localStorage.getItem('yc-user') || '');
+      const nextMember = /^[a-f0-9]{64}$/i.test(nextToken) && Boolean(nextUser);
+      const nextGuest = !nextMember && localStorage.getItem('yc-guest') === '1';
+      if (nextMember) {
+        if (!isMember || nextToken.toLowerCase() !== token.toLowerCase() || nextUser !== storedUser) location.reload();
+        return;
+      }
+      if (nextGuest) {
+        if (!isGuest) location.reload();
+        return;
+      }
+      clearSession();
+      location.replace(isMember ? loginPath + '?reason=signedout' : homePath);
+    }, 0);
+  });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
   else mount();

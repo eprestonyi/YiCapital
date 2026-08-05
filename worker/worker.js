@@ -94,21 +94,58 @@ import {
    ═══════════════════════════════════════════════════════════════ */
 
 const enc = new TextEncoder();
+const PASSWORD_MIN_LENGTH = 15;
+const PASSWORD_MAX_LENGTH = 128;
+const PBKDF2_ITERATIONS = 600000;
+const LEGACY_PBKDF2_ITERATIONS = 100000;
+const AUTH_JSON_MAX_BYTES = 16 * 1024;
 
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 const randomHex = n => hex(crypto.getRandomValues(new Uint8Array(n)));
 const verificationCode = () => String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
 
-async function pbkdf2(password, saltHex) {
+async function pbkdf2(password, saltHex, iterations = PBKDF2_ITERATIONS) {
   const salt = new Uint8Array(saltHex.match(/../g).map(h => parseInt(h, 16)));
   const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 }, key, 256);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, key, 256);
   return hex(bits);
 }
 function safeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
   let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return r === 0;
+}
+function passwordProblem(value, minimum = PASSWORD_MIN_LENGTH) {
+  if (typeof value !== 'string') return '密碼格式無效';
+  const length = Array.from(value).length;
+  if (length < minimum || length > PASSWORD_MAX_LENGTH) {
+    return '密碼需為 ' + minimum + '–' + PASSWORD_MAX_LENGTH + ' 個字元';
+  }
+  return null;
+}
+function reservedUsername(username, env) {
+  const reserved = String(env && env.ADMIN_USERNAME || '').trim().toLowerCase();
+  return Boolean(reserved) && String(username || '').trim().toLowerCase() === reserved;
+}
+async function readSmallJsonObject(request, maxBytes = AUTH_JSON_MAX_BYTES) {
+  const contentType = String(request.headers.get('Content-Type') || '').toLowerCase();
+  if (!contentType.startsWith('application/json')) {
+    return { error: 'Content-Type 必須是 application/json', status: 415 };
+  }
+  const declaredLength = Number(request.headers.get('Content-Length') || 0);
+  if (declaredLength > maxBytes) return { error: '請求內容過大', status: 413 };
+  const raw = await request.text();
+  if (enc.encode(raw).byteLength > maxBytes) return { error: '請求內容過大', status: 413 };
+  let body;
+  try { body = JSON.parse(raw); } catch (error) { return { error: 'JSON 格式無效', status: 400 }; }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: '提交格式無效', status: 400 };
+  }
+  return { body };
+}
+function remainingCodeTtl(expiresAt) {
+  const remainingMs = Number(expiresAt) - Date.now();
+  return remainingMs > 0 ? Math.max(1, Math.ceil(remainingMs / 1000)) : 0;
 }
 function normalizedCorsOrigin(request, env) {
   const origin = request && request.headers && request.headers.get('Origin');
@@ -153,6 +190,11 @@ const FEEDBACK_STATUSES = new Set([
   'resolved', 'dismissed', 'duplicate',
 ]);
 const FEEDBACK_PRIORITIES = new Set(['p0', 'p1', 'p2', 'p3']);
+const AUTH_MUTATION_PATHS = new Set([
+  '/api/signup', '/api/verify', '/api/login', '/api/google', '/api/google/complete',
+  '/api/logout', '/api/forgot', '/api/reset', '/api/account/profile',
+  '/api/users/update', '/api/users/setpw',
+]);
 
 async function sha256Hex(value) {
   return hex(await crypto.subtle.digest('SHA-256', enc.encode(String(value || ''))));
@@ -4477,14 +4519,21 @@ export {
 
 export default {
   async fetch(request, env, ctx) {
-    const J = (responseEnv, data, status = 200, extraHeaders = {}) =>
-      baseJsonResponse(responseEnv, data, status, extraHeaders, request);
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '');
+    const J = (responseEnv, data, status = 200, extraHeaders = {}) =>
+      baseJsonResponse(responseEnv, data, status, {
+        ...(AUTH_MUTATION_PATHS.has(path) ? { 'Cache-Control': 'no-store' } : {}),
+        ...extraHeaders,
+      }, request);
     if (request.method === 'OPTIONS') {
       const origin = normalizedCorsOrigin(request, env);
       if (!origin) return new Response(null, { status: 403, headers: { 'Vary': 'Origin' } });
       return new Response(null, { status: 204, headers: corsHeaders(env, request) });
+    }
+    if (request.method === 'POST' && AUTH_MUTATION_PATHS.has(path) &&
+        request.headers.get('Origin') && normalizedCorsOrigin(request, env) === null) {
+      return J(env, { error: '不允許的來源' }, 403, { 'Cache-Control': 'no-store' });
     }
 
     try {
@@ -4518,7 +4567,7 @@ export default {
             .catch(error => console.error('google_signing_key_warmup_failed', error)));
         }
         return J(env, {
-          ok: true, version: 'v9.3-account-center',
+          ok: true, version: 'v9.4-auth-safety',
           kv: kvOk,
           feedback: feedbackOk,
           ledger: ledger.ready,
@@ -4569,46 +4618,59 @@ export default {
       /* ════ 註冊：用戶名 + 密碼 + 郵箱 ════ */
       if (path === '/api/signup' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'signup', 8, 3600)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
-        const b = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const b = parsed.body;
         const username = String(b.username || '').trim();
         const email = String(b.email || '').trim().toLowerCase();
-        const password = b.password || '';
+        const password = b.password;
         if (!isUsername(username)) return J(env, { error: '用戶名 2–24 位，僅限中英文、數字、_-（不能是郵箱）' }, 400);
         if (!isEmail(email)) return J(env, { error: '請填寫有效郵箱' }, 400);
-        if (password.length < 6) return J(env, { error: '密碼至少 6 位' }, 400);
-        if (username === env.ADMIN_USERNAME) return J(env, { error: '該用戶名不可用' }, 400);
+        const passwordError = passwordProblem(password);
+        if (passwordError) return J(env, { error: passwordError }, 400);
+        if (reservedUsername(username, env)) return J(env, { error: '該用戶名不可用' }, 400);
         if (b.terms !== true) return J(env, { error: '必須同意服務條款才能註冊' }, 400);
+        if (!env.RESEND_API_KEY) return J(env, { error: '郵箱驗證服務暫時不可用，請稍後再試' }, 503, { 'Retry-After': '30' });
         const newsletter = b.newsletter === true;
         if (await usernameOwner(env, username)) return J(env, { error: '用戶名已存在' }, 409);
         if (await env.YC_KV.get('email:' + email)) return J(env, { error: '該郵箱已被註冊' }, 409);
         const salt = randomHex(16);
         const hash = await pbkdf2(password, salt);
-        if (env.RESEND_API_KEY) {
-          const code = verificationCode();
-          await env.YC_KV.put('pending:' + email, JSON.stringify({ u: username, email, salt, hash, code, tries: 0, newsletter }), { expirationTtl: 900 });
-          if (!await sendCode(env, email, code)) { await env.YC_KV.delete('pending:' + email); return J(env, { error: '驗證郵件發送失敗，請稍後再試' }, 502); }
-          return J(env, { ok: true, needCode: true, message: '驗證碼已發送至 ' + email });
-        }
-        await createUser(env, { u: username, email, salt, hash, provider: 'password', role: 'guest', disabled: false, newsletter, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: null });
-        const token = await newSession(env, username, 'guest');
-        await afterResponse(ctx, sendWelcome(env, email, username));
-        return J(env, { ok: true, token, role: 'guest', username });
+        const code = verificationCode();
+        const expiresAt = Date.now() + 900000;
+        await env.YC_KV.put('pending:' + email, JSON.stringify({
+          u: username, email, salt, hash, passwordIterations: PBKDF2_ITERATIONS,
+          code, tries: 0, expiresAt, newsletter,
+        }), { expirationTtl: 900 });
+        if (!await sendCode(env, email, code)) { await env.YC_KV.delete('pending:' + email); return J(env, { error: '驗證郵件發送失敗，請稍後再試' }, 502); }
+        return J(env, { ok: true, needCode: true, message: '驗證碼已發送至 ' + email }, 200, { 'Cache-Control': 'no-store' });
       }
 
       /* ════ 郵箱驗證碼確認 ════ */
       if (path === '/api/verify' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'verify', 12, 900)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
-        const b = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const b = parsed.body;
         const email = String(b.email || '').trim().toLowerCase();
         const pkey = 'pending:' + email;
         const raw = await env.YC_KV.get(pkey);
         if (!raw) return J(env, { error: '驗證已過期，請重新註冊' }, 410);
         const p = JSON.parse(raw);
+        const expiresAt = Number(p.expiresAt || 0);
+        if (!expiresAt || remainingCodeTtl(expiresAt) === 0) {
+          await env.YC_KV.delete(pkey);
+          return J(env, { error: '驗證已過期，請重新註冊' }, 410);
+        }
         p.tries = (p.tries || 0) + 1;
         if (p.tries > 5) { await env.YC_KV.delete(pkey); return J(env, { error: '嘗試次數過多，請重新註冊' }, 429); }
-        if (String(b.code || '').trim() !== p.code) { await env.YC_KV.put(pkey, JSON.stringify(p), { expirationTtl: 900 }); return J(env, { error: '驗證碼錯誤' }, 400); }
-        if (await env.YC_KV.get('user:' + p.u)) { await env.YC_KV.delete(pkey); return J(env, { error: '用戶名剛被佔用，請重新註冊' }, 409); }
-        await createUser(env, { u: p.u, email: p.email, salt: p.salt, hash: p.hash, provider: 'password', role: 'guest', disabled: false, newsletter: p.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: null });
+        if (String(b.code || '').trim() !== p.code) {
+          await env.YC_KV.put(pkey, JSON.stringify(p), { expirationTtl: remainingCodeTtl(expiresAt) });
+          return J(env, { error: '驗證碼錯誤' }, 400);
+        }
+        if (reservedUsername(p.u, env) || await usernameOwner(env, p.u)) { await env.YC_KV.delete(pkey); return J(env, { error: '用戶名剛被佔用，請重新註冊' }, 409); }
+        if (await env.YC_KV.get('email:' + p.email)) { await env.YC_KV.delete(pkey); return J(env, { error: '郵箱剛被佔用，請重新註冊' }, 409); }
+        await createUser(env, { u: p.u, email: p.email, salt: p.salt, hash: p.hash, passwordIterations: Number(p.passwordIterations) || PBKDF2_ITERATIONS, provider: 'password', role: 'guest', disabled: false, newsletter: p.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: null });
         await env.YC_KV.delete(pkey);
         const token = await newSession(env, p.u, 'guest');
         await afterResponse(ctx, sendWelcome(env, p.email, p.u));
@@ -4618,9 +4680,14 @@ export default {
       /* ════ 登入：用戶名或郵箱 + 密碼 ════ */
       if (path === '/api/login' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'login', 30, 900)) return J(env, { error: '登入嘗試過多，請稍後再試' }, 429);
-        const b = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const b = parsed.body;
         let username = String(b.username || '').trim();
-        const password = b.password || '';
+        const password = b.password;
+        if (typeof password !== 'string' || Array.from(password).length > PASSWORD_MAX_LENGTH) {
+          return J(env, { error: '帳號或密碼錯誤' }, 401, { 'Cache-Control': 'no-store' });
+        }
         if (username === env.ADMIN_USERNAME) {
           if (!safeEqual(password, env.ADMIN_PASSWORD)) return J(env, { error: '帳號或密碼錯誤' }, 401);
           const token = await newSession(env, username, 'admin');
@@ -4636,8 +4703,15 @@ export default {
         const u = JSON.parse(raw);
         if (u.disabled) return J(env, { error: '此帳號已被停用' }, 403);
         if (!u.hash) return J(env, { error: '此帳號未設置密碼，請用 Google 登入' }, 400);
-        const hash = await pbkdf2(password, u.salt);
+        const iterations = Number(u.passwordIterations) || LEGACY_PBKDF2_ITERATIONS;
+        const hash = await pbkdf2(password, u.salt, iterations);
         if (!safeEqual(hash, u.hash)) return J(env, { error: '帳號或密碼錯誤' }, 401);
+        if (iterations < PBKDF2_ITERATIONS) {
+          u.salt = randomHex(16);
+          u.hash = await pbkdf2(password, u.salt, PBKDF2_ITERATIONS);
+          u.passwordIterations = PBKDF2_ITERATIONS;
+          u.passwordUpgradedAt = new Date().toISOString();
+        }
         u.lastLogin = new Date().toISOString();
         await env.YC_KV.put('user:' + username, JSON.stringify(u));
         const token = await newSession(env, username, 'guest');
@@ -4648,7 +4722,9 @@ export default {
       if (path === '/api/google' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'google', 30, 900)) return J(env, { error: '登入嘗試過多，請稍後再試' }, 429);
         if (!env.GOOGLE_CLIENT_ID) return J(env, { error: '未配置 Google 登入' }, 501);
-        const b = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const b = parsed.body;
         const credential = b.credential;
         if (!credential) return J(env, { error: '缺少憑證' }, 400);
         let t;
@@ -4709,21 +4785,24 @@ export default {
 
       if (path === '/api/google/complete' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'google-complete', 12, 900)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
-        const b = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const b = parsed.body;
         const skey = 'gsetup:' + String(b.setupToken || '');
         const raw = await env.YC_KV.get(skey);
         if (!raw) return J(env, { error: '設置已過期，請重新用 Google 登入' }, 410);
         const g = JSON.parse(raw);
         const username = String(b.username || '').trim();
-        const password = b.password || '';
+        const password = b.password;
         if (!isUsername(username)) return J(env, { error: '用戶名 2–24 位，僅限中英文、數字、_-' }, 400);
-        if (password.length < 6) return J(env, { error: '密碼至少 6 位' }, 400);
+        const passwordError = passwordProblem(password);
+        if (passwordError) return J(env, { error: passwordError }, 400);
         if (b.terms !== true) return J(env, { error: '必須同意服務條款才能註冊' }, 400);
-        if (username === env.ADMIN_USERNAME || await env.YC_KV.get('user:' + username)) return J(env, { error: '用戶名已存在，換一個' }, 409);
+        if (reservedUsername(username, env) || await usernameOwner(env, username)) return J(env, { error: '用戶名已存在，換一個' }, 409);
         if (await env.YC_KV.get('email:' + g.email)) return J(env, { error: '該郵箱已被註冊' }, 409);
         const salt = randomHex(16);
         const hash = await pbkdf2(password, salt);
-        await createUser(env, { u: username, email: g.email, name: g.name, googleSub: g.googleSub || null, salt, hash, provider: 'google', role: 'guest', disabled: false, newsletter: b.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: new Date().toISOString() });
+        await createUser(env, { u: username, email: g.email, name: g.name, googleSub: g.googleSub || null, salt, hash, passwordIterations: PBKDF2_ITERATIONS, provider: 'google', role: 'guest', disabled: false, newsletter: b.newsletter === true, terms: true, termsAt: new Date().toISOString(), created: new Date().toISOString(), lastLogin: new Date().toISOString() });
         await env.YC_KV.delete(skey);
         const token = await newSession(env, username, 'guest');
         await afterResponse(ctx, sendWelcome(env, g.email, username));
@@ -5303,7 +5382,9 @@ export default {
 
       if (path === '/api/users/update' && request.method === 'POST') {
         const deny = needAdmin(); if (deny) return deny;
-        const { username, action, newPassword } = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const { username, action, newPassword } = parsed.body;
         const key = 'user:' + username;
         const raw = await env.YC_KV.get(key);
         if (!raw) return J(env, { error: '用戶不存在' }, 404);
@@ -5350,8 +5431,8 @@ export default {
           if (u.email) await env.YC_KV.delete('email:' + u.email);
           return J(env, { ok: true, message: '已刪除 ' + username });
         }
-        if (action === 'resetpw' && (!newPassword || newPassword.length < 6)) {
-          return J(env, { error: '新密碼至少 6 位' }, 400);
+        if (action === 'resetpw' && passwordProblem(newPassword)) {
+          return J(env, { error: passwordProblem(newPassword) }, 400);
         }
         if ((action === 'disable' || action === 'resetpw') &&
             !await revokeUserSessions(env, username)) {
@@ -5360,7 +5441,7 @@ export default {
         if (action === 'disable') u.disabled = true;
         else if (action === 'enable') u.disabled = false;
         else if (action === 'resetpw') {
-          u.salt = randomHex(16); u.hash = await pbkdf2(newPassword, u.salt);
+          u.salt = randomHex(16); u.hash = await pbkdf2(newPassword, u.salt); u.passwordIterations = PBKDF2_ITERATIONS;
         } else return J(env, { error: '未知操作' }, 400);
         await env.YC_KV.put(key, JSON.stringify(u));
         return J(env, { ok: true, message: '已更新 ' + username });
@@ -5481,31 +5562,42 @@ export default {
       /* ════ 找回密碼：郵箱驗證碼 → 重設 ════ */
       if (path === '/api/forgot' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'forgot', 6, 3600)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
-        const b = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const b = parsed.body;
         const email = String(b.email || '').trim().toLowerCase();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return J(env, { error: '郵箱格式不正確' }, 400);
         // 用 email 索引直查（避免枚舉：無論是否存在都返回成功文案）
         const uname = await env.YC_KV.get('email:' + email);
-        if (uname && await env.YC_KV.get('user:' + uname)) {
+        if (env.RESEND_API_KEY && uname && await env.YC_KV.get('user:' + uname)) {
           const code = verificationCode();
-          await env.YC_KV.put('reset:' + email, JSON.stringify({ code, u: uname, tries: 0, ts: Date.now() }), { expirationTtl: 900 });
-          await sendResetCode(env, email, code);
+          const expiresAt = Date.now() + 900000;
+          await env.YC_KV.put('reset:' + email, JSON.stringify({ code, u: uname, tries: 0, ts: Date.now(), expiresAt }), { expirationTtl: 900 });
+          if (!await sendResetCode(env, email, code)) await env.YC_KV.delete('reset:' + email);
         }
-        return J(env, { ok: true, message: '若該郵箱已註冊，重設驗證碼已發送（15 分鐘內有效，請查收郵件含垃圾箱）。' });
+        return J(env, { ok: true, message: '若該郵箱已註冊，重設驗證碼已發送（15 分鐘內有效，請查收郵件含垃圾箱）。' }, 200, { 'Cache-Control': 'no-store' });
       }
       if (path === '/api/reset' && request.method === 'POST') {
         if (!await authRateAllowed(request, env, 'reset', 12, 900)) return J(env, { error: '請求過於頻繁，請稍後再試' }, 429);
-        const b = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const b = parsed.body;
         const email = String(b.email || '').trim().toLowerCase();
         const code = String(b.code || '').trim();
-        const password = String(b.password || '');
-        if (password.length < 6) return J(env, { error: '密碼至少 6 位' }, 400);
+        const password = b.password;
+        const passwordError = passwordProblem(password);
+        if (passwordError) return J(env, { error: passwordError }, 400);
         const recRaw = await env.YC_KV.get('reset:' + email);
         if (!recRaw) return J(env, { error: '驗證碼不存在或已過期，請重新獲取' }, 400);
         const rec = JSON.parse(recRaw);
+        const expiresAt = Number(rec.expiresAt || 0);
+        if (!expiresAt || remainingCodeTtl(expiresAt) === 0) {
+          await env.YC_KV.delete('reset:' + email);
+          return J(env, { error: '驗證碼不存在或已過期，請重新獲取' }, 400);
+        }
         if (rec.tries >= 5) { await env.YC_KV.delete('reset:' + email); return J(env, { error: '錯誤次數過多，請重新獲取驗證碼' }, 400); }
         if (rec.code !== code) {
-          rec.tries++; await env.YC_KV.put('reset:' + email, JSON.stringify(rec), { expirationTtl: 900 });
+          rec.tries++; await env.YC_KV.put('reset:' + email, JSON.stringify(rec), { expirationTtl: remainingCodeTtl(expiresAt) });
           return J(env, { error: '驗證碼不正確（剩餘 ' + (5 - rec.tries) + ' 次）' }, 400);
         }
         const uRaw = await env.YC_KV.get('user:' + rec.u);
@@ -5514,7 +5606,7 @@ export default {
         if (!await revokeUserSessions(env, rec.u)) {
           return J(env, { error: '會話撤銷暫時失敗，密碼未重設，請重試' }, 503);
         }
-        u.salt = randomHex(16); u.hash = await pbkdf2(password, u.salt);
+        u.salt = randomHex(16); u.hash = await pbkdf2(password, u.salt); u.passwordIterations = PBKDF2_ITERATIONS;
         await env.YC_KV.put('user:' + rec.u, JSON.stringify(u));
         await env.YC_KV.delete('reset:' + email);
         return J(env, { ok: true, username: rec.u, message: '密碼已重設，請用新密碼登入。' });
@@ -5523,17 +5615,20 @@ export default {
       /* ════ 管理員重設任意用戶密碼 ════ */
       if (path === '/api/users/setpw' && request.method === 'POST') {
         const deny = needAdmin(); if (deny) return deny;
-        const b = await request.json();
+        const parsed = await readSmallJsonObject(request);
+        if (parsed.error) return J(env, { error: parsed.error }, parsed.status, { 'Cache-Control': 'no-store' });
+        const b = parsed.body;
         const username = String(b.username || '').trim();
-        const password = String(b.password || '');
-        if (!username || password.length < 6) return J(env, { error: '需 username 且密碼至少 6 位' }, 400);
+        const password = b.password;
+        const passwordError = passwordProblem(password);
+        if (!username || passwordError) return J(env, { error: !username ? '需 username' : passwordError }, 400);
         const uRaw = await env.YC_KV.get('user:' + username);
         if (!uRaw) return J(env, { error: '用戶不存在' }, 404);
         const u = JSON.parse(uRaw);
         if (!await revokeUserSessions(env, username)) {
           return J(env, { error: '會話撤銷暫時失敗，密碼未更新，請重試' }, 503);
         }
-        u.salt = randomHex(16); u.hash = await pbkdf2(password, u.salt);
+        u.salt = randomHex(16); u.hash = await pbkdf2(password, u.salt); u.passwordIterations = PBKDF2_ITERATIONS;
         await env.YC_KV.put('user:' + username, JSON.stringify(u));
         return J(env, { ok: true, username });
       }

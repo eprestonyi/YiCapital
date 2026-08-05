@@ -154,6 +154,118 @@ test('email and password resolve the mapped email to the ordinary account', asyn
   const session = JSON.parse(kv.values.get('sess:' + body.token));
   assert.equal(session.role, 'guest');
   assert.equal(session.u, 'tingxunyi');
+  const upgraded = JSON.parse(kv.values.get('user:tingxunyi'));
+  assert.equal(upgraded.passwordIterations, 600000);
+  assert.notEqual(upgraded.salt, salt);
+  assert.notEqual(upgraded.hash, hash);
+});
+
+test('auth POST rejects hostile origins and malformed or oversized JSON before account mutation', async () => {
+  const kv = kvStore();
+  const env = { YC_KV: kv, ALLOWED_ORIGIN: 'https://www.yicapital.co' };
+  const hostile = await worker.fetch(new Request('https://portal.test/api/forgot', {
+    method: 'POST',
+    headers: { Origin: 'https://attacker.example', 'Content-Type': 'text/plain' },
+    body: '{"email":"victim@example.com"}',
+  }), env);
+  assert.equal(hostile.status, 403);
+
+  const wrongType = await worker.fetch(new Request('https://portal.test/api/login', {
+    method: 'POST',
+    headers: { Origin: 'https://www.yicapital.co', 'Content-Type': 'text/plain' },
+    body: '{"username":"member","password":"member-password"}',
+  }), env);
+  assert.equal(wrongType.status, 415);
+
+  const oversized = await worker.fetch(new Request('https://portal.test/api/login', {
+    method: 'POST',
+    headers: { Origin: 'https://www.yicapital.co', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'member', password: 'x'.repeat(17000) }),
+  }), env);
+  assert.equal(oversized.status, 413);
+  assert.equal([...kv.values.keys()].some(key => key.startsWith('user:')), false);
+});
+
+test('email registration fails closed when verification delivery is unavailable', async () => {
+  const kv = kvStore();
+  const response = await worker.fetch(new Request('https://portal.test/api/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.55' },
+    body: JSON.stringify({
+      username: 'new_member',
+      email: 'new-member@example.com',
+      password: 'a sufficiently long password',
+      terms: true,
+    }),
+  }), { YC_KV: kv, ADMIN_USERNAME: 'site-admin' });
+  assert.equal(response.status, 503);
+  assert.equal(kv.values.has('user:new_member'), false);
+  assert.equal(kv.values.has('email:new-member@example.com'), false);
+});
+
+test('verification codes keep an absolute expiry and recheck case-insensitive identity ownership', async () => {
+  const expiredKv = kvStore({
+    'pending:expired@example.com': JSON.stringify({
+      u: 'expired_user', email: 'expired@example.com', code: '123456', tries: 0,
+      salt: '00112233445566778899aabbccddeeff', hash: 'hash', expiresAt: Date.now() - 1,
+    }),
+  });
+  const expired = await worker.fetch(new Request('https://portal.test/api/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.56' },
+    body: JSON.stringify({ email: 'expired@example.com', code: '123456' }),
+  }), { YC_KV: expiredKv, ADMIN_USERNAME: 'site-admin' });
+  assert.equal(expired.status, 410);
+  assert.equal(expiredKv.values.has('pending:expired@example.com'), false);
+
+  const collisionKv = kvStore({
+    'user:TakenID': JSON.stringify({ u: 'TakenID', email: 'owner@example.com' }),
+    'pending:new@example.com': JSON.stringify({
+      u: 'takenid', email: 'new@example.com', code: '654321', tries: 0,
+      salt: '00112233445566778899aabbccddeeff', hash: 'hash',
+      passwordIterations: 600000, expiresAt: Date.now() + 600000,
+    }),
+  });
+  const collision = await worker.fetch(new Request('https://portal.test/api/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.57' },
+    body: JSON.stringify({ email: 'new@example.com', code: '654321' }),
+  }), { YC_KV: collisionKv, ADMIN_USERNAME: 'site-admin' });
+  assert.equal(collision.status, 409);
+  assert.equal(collisionKv.values.has('user:takenid'), false);
+});
+
+test('server roles gate account profile and administrator APIs independently of browser state', async () => {
+  const now = Date.now();
+  const adminToken = 'c'.repeat(64);
+  const memberToken = 'd'.repeat(64);
+  const kv = kvStore({
+    ['sess:' + adminToken]: JSON.stringify({
+      u: 'site-admin', role: 'admin', issuedAt: now, lastSeenAt: now,
+      expiresAt: now + 86400000, absoluteExpiresAt: now + 172800000,
+    }),
+    ['sess:' + memberToken]: JSON.stringify({
+      u: 'member', role: 'guest', issuedAt: now, lastSeenAt: now,
+      expiresAt: now + 86400000, absoluteExpiresAt: now + 172800000,
+    }),
+    'user:member': JSON.stringify({ u: 'member', email: 'member@example.com', disabled: false }),
+  });
+  const env = { YC_KV: kv, ADMIN_USERNAME: 'site-admin' };
+
+  const adminProfile = await worker.fetch(new Request('https://portal.test/api/account/profile', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + adminToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ displayName: 'not allowed' }),
+  }), env);
+  assert.equal(adminProfile.status, 403);
+
+  const memberUsers = await worker.fetch(new Request('https://portal.test/api/users', {
+    headers: { Authorization: 'Bearer ' + memberToken },
+  }), env);
+  assert.equal(memberUsers.status, 403);
+
+  const anonymousUsers = await worker.fetch(new Request('https://portal.test/api/users'), env);
+  assert.equal(anonymousUsers.status, 401);
 });
 
 test('member profile returns connected identities and persists display, avatar and newsletter preferences', async () => {

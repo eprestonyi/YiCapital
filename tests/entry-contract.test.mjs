@@ -43,7 +43,9 @@ test('anonymous Guest never receives an authentication token', async () => {
   const gate = await read('assets/yc-gate.js');
   assert.match(entry, /localStorage\.setItem\('yc-guest', '1'\)/);
   assert.match(entry, /\['yc-token', 'yc-role', 'yc-user'\]/);
-  assert.match(gate, /if \(localStorage\.getItem\('yc-token'\)\) return/);
+  assert.match(gate, /candidate = \/\^\[a-f0-9\]\{64\}\$\/i\.test\(token\) && Boolean\(user\)/);
+  assert.match(gate, /addEventListener\('yc:session-valid', unlock\)/);
+  assert.doesNotMatch(gate, /if \(localStorage\.getItem\('yc-token'\)\) return/);
   assert.doesNotMatch(entry, /\/api\/guest/);
 });
 
@@ -96,9 +98,14 @@ test('member registration is progressive and Google sign-up exposes optional Ins
   const entry = await read('assets/yc-entry.js');
   assert.match(entry, /let signupStep = 1/);
   assert.match(entry, /signupStep === 1 && !setupToken/);
-  assert.match(entry, /id="yc-entry-google-newsletter" type="checkbox" checked/);
+  assert.match(entry, /id="yc-entry-google-newsletter" type="checkbox"/);
+  assert.doesNotMatch(entry, /id="yc-entry-google-newsletter" type="checkbox" checked/);
   assert.match(entry, /newsletter: googleNewsletter \? googleNewsletter\.checked : false/);
-  assert.match(entry, /googleConsent\.style\.display = providersVisible && GCID/);
+  assert.match(entry, /googleConsent\.style\.display = providersVisible && GCID && authMode === 'signup'/);
+  assert.match(entry, /autoCreate: authMode === 'signup'/);
+  assert.match(entry, /minlength="15" maxlength="128"/);
+  assert.doesNotMatch(entry, /id="yc-entry-newsletter" type="checkbox" checked/);
+  assert.doesNotMatch(entry, /id="yc-entry-terms" type="checkbox" checked/);
   assert.match(entry, /error\.code !== 'google_keys_unavailable'/);
   assert.match(entry, /googleRetrying/);
   assert.doesNotMatch(entry, /id="yc-entry-password-2"/);
@@ -154,11 +161,52 @@ test('account center is trilingual, keeps avatars in-bounds and restores the adm
   assert.doesNotMatch(session, /\.yc-menu-identity b,\.yc-menu-identity span/);
   assert.match(session, /\.yc-account-menu\{[^}]*box-sizing:border-box/);
   assert.match(session, /\.yc-account-menu\{position:fixed;top:74px;left:max\(14px,env\(safe-area-inset-left\)\);right:max\(14px,env\(safe-area-inset-right\)\);width:auto/);
-  assert.match(session, /if \(role !== 'admin'\) return ''/);
+  assert.match(session, /if \(!profileLoaded \|\| profile\.role !== 'admin'\) return ''/);
   assert.match(session, /href="\/admin"/);
-  assert.match(session, /adminLink\('yc-menu-admin'\)/);
-  assert.match(session, /adminLink\('yc-side-admin'\)/);
+  assert.match(session, /data-admin-menu-slot/);
+  assert.match(session, /data-admin-side-slot/);
   assert.match(session, /esc\(L\.adminOpen\)/);
+});
+
+test('Guest uses an explicit localized trigger and never renders a synthetic member avatar', async () => {
+  const session = await read('assets/yc-session.js');
+  assert.match(session, /class="yc-guest-button"/);
+  assert.match(session, /esc\(L\.guestRole\)/);
+  assert.match(session, /const trigger = isGuest[\s\S]{0,500}: '<button class="yc-ava-button yc-account-pending"/);
+  const guestIdentity = session.slice(session.indexOf('if (isGuest) {'), session.indexOf('if (!profileLoaded) {'));
+  assert.match(guestIdentity, /L\.guest/);
+  assert.doesNotMatch(guestIdentity, /avatarMarkup|initials\(/);
+});
+
+test('account state clears disabled sessions and synchronizes identity changes across tabs', async () => {
+  const session = await read('assets/yc-session.js');
+  assert.match(session, /response\.status !== 401 && response\.status !== 403/);
+  assert.match(session, /error\.status === 401 \|\| error\.status === 403/);
+  assert.match(session, /addEventListener\('storage'/);
+  assert.match(session, /nextToken\.toLowerCase\(\) !== token\.toLowerCase\(\)/);
+  assert.match(session, /addEventListener\('pageshow'/);
+  assert.match(session, /visibilitychange/);
+});
+
+test('managed research content is escaped and links are restricted to the same origin', async () => {
+  const [reports, posts] = await Promise.all([read('assets/reports.js'), read('assets/posts.js')]);
+  assert.match(reports, /url\.origin === location\.origin/);
+  assert.match(reports, /_RE\(_RF\(r\.title/);
+  assert.match(posts, /url\.origin===location\.origin/);
+  assert.match(posts, /_PE\(_PF\(p\.excerpt/);
+});
+
+test('auth mutations fail closed on origin, body, verification and password boundaries', async () => {
+  const worker = await read('worker/worker.js');
+  assert.match(worker, /AUTH_MUTATION_PATHS/);
+  assert.match(worker, /normalizedCorsOrigin\(request, env\) === null/);
+  assert.match(worker, /AUTH_JSON_MAX_BYTES = 16 \* 1024/);
+  assert.match(worker, /PASSWORD_MIN_LENGTH = 15/);
+  assert.match(worker, /PASSWORD_MAX_LENGTH = 128/);
+  assert.match(worker, /PBKDF2_ITERATIONS = 600000/);
+  assert.match(worker, /if \(!env\.RESEND_API_KEY\) return J\(env, \{ error: '郵箱驗證服務暫時不可用/);
+  assert.match(worker, /remainingCodeTtl\(expiresAt\)/);
+  assert.match(worker, /reservedUsername\(username, env\)/);
 });
 
 test('all member surfaces load the current account-center release', async () => {
@@ -168,7 +216,7 @@ test('all member surfaces load the current account-center release', async () => 
     'cn/index.html', 'cn/about.html', 'cn/insights.html', 'cn/forum.html', 'cn/portfolios.html',
     'en/index.html', 'en/about.html', 'en/insights.html', 'en/forum.html', 'en/portfolios.html',
   ];
-  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.2/);
+  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.3/);
 });
 
 test('Google verification uses persistent signing-key resilience', async () => {
