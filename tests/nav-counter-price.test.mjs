@@ -7,6 +7,9 @@ import test from 'node:test';
 import {
   freezeLedgerPriceTape,
   loadFrozenLedgerPriceTape,
+  loadMaterializedLedgerProjection,
+  loadPublicPortfolioAttempt,
+  loadPublicPortfolioSnapshot,
   materializeLedgerKv,
   persistLedgerValuation,
 } from '../worker/ledger-store.js';
@@ -83,11 +86,41 @@ async function ledgerEnvironment() {
   const migration = (await Promise.all([
     '../migrations/0002_portfolio_ledger.sql',
     '../migrations/0003_frozen_price_tapes.sql',
+    '../migrations/0005_public_portfolio_snapshots.sql',
   ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   return {
     FEEDBACK_DB: new D1Database(migration),
     YC_KV: new MemoryKv(),
   };
+}
+
+async function materializedProjection(env, portfolio) {
+  const stored = await loadMaterializedLedgerProjection(env, portfolio);
+  assert.ok(stored, `${portfolio} materialized D1 projection`);
+  return stored.projection;
+}
+
+async function publicSnapshot(env, portfolio) {
+  const stored = await loadPublicPortfolioSnapshot(env, portfolio);
+  assert.ok(stored, `${portfolio} public D1 snapshot`);
+  return stored.snapshot;
+}
+
+function portfolioHotKvWrites(env, offset = 0) {
+  return env.YC_KV.puts.slice(offset).filter(({ key }) =>
+    /^(?:ledger|live|lastpx|navstatus|navcache):/.test(key));
+}
+
+async function persistNavPrefix(env, portfolio, revision, rows) {
+  for (const row of rows) {
+    await persistLedgerValuation(env, portfolio, {
+      ...row,
+      source: 'test:raw-close-history',
+      sourceRef: 'test:raw-close-history',
+      valuation: { priceBasis: 'raw_close', adjusted: false },
+      warnings: [],
+    }, [], revision);
+  }
 }
 
 async function freezeTape(env, portfolio, revision, {
@@ -204,6 +237,16 @@ async function assertSameDayCounterRefresh({
     },
   });
 
+  await persistNavPrefix(env, portfolio, 2, [
+    { date: '2026-07-25', cash: 900, marketValue: 76, totalAssets: 976,
+      liability: 0, netValue: 976, units: 1000, unitNav: 0.976 },
+    { date: '2026-07-26', cash: 900, marketValue: 77, totalAssets: 977,
+      liability: 0, netValue: 977, units: 1000, unitNav: 0.977 },
+    { date: '2026-07-27', cash: 900, marketValue: 78, totalAssets: 978,
+      liability: 0, netValue: 978, units: 1000, unitNav: 0.978 },
+    { date: '2026-07-28', cash: 900, marketValue: 79, totalAssets: 979,
+      liability: 0, netValue: 979, units: 1000, unitNav: 0.979 },
+  ]);
   await persistLedgerValuation(env, portfolio, {
     date: '2026-07-29', cash: 900, marketValue: 80, totalAssets: 980,
     liability: 0, netValue: 980, units: 1000, unitNav: 0.98,
@@ -217,17 +260,22 @@ async function assertSameDayCounterRefresh({
     prices: [{ ticker, date: '2026-07-29', close: 8 }],
   });
   await materializeLedgerKv(env, portfolio, { expectedLedgerRevision: 2 });
-  const materializedLedgerRaw = env.YC_KV.values.get(`ledger:${portfolio}`);
+  const materializedLedger = await materializedProjection(env, portfolio);
   const stressScenario = {
-    model: 'noncentral-t', fixture: portfolio, nDays: 2,
-    p50: 1, p5: 0.99, p1: 0.98, probHalf: 0,
-    pathP5: [1, 0.99], pathP50: [1, 1], pathP95: [1, 1.01],
+    fixture: portfolio, model: 'noncentral-t', nDays: 2,
+    p1: 0.98, p5: 0.99, p50: 1,
+    pathP5: [1, 0.99], pathP50: [1, 1], pathP95: [1, 1.01], probHalf: 0,
   };
   const fullStress = {
-    model: 'noncentral-t', fixture: portfolio,
-    crash: stressScenario, bear: stressScenario, grind: stressScenario,
+    bear: stressScenario, crash: stressScenario, fixture: portfolio,
+    grind: stressScenario, model: 'noncentral-t',
   };
-  const initialHistory = [{ date: '2026-07-29', ret: 0 }];
+  const initialHistory = [
+    ['2026-07-26', 0.977 / 0.976 - 1],
+    ['2026-07-27', 0.978 / 0.977 - 1],
+    ['2026-07-28', 0.979 / 0.978 - 1],
+    ['2026-07-29', 0.98 / 0.979 - 1],
+  ].map(([date, ret]) => ({ date, ret: Number(ret.toFixed(10)) }));
   const initialHistorySha256 = sha256(JSON.stringify(
     initialHistory.map(row => [row.date, row.ret]),
   ));
@@ -243,7 +291,7 @@ async function assertSameDayCounterRefresh({
     risk_snapshot: {
       status: 'current', portfolio_id: portfolio, ledger_revision: 2,
       input_as_of: '2026-07-29', history_through: '2026-07-29',
-      observation_count: 1,
+      observation_count: initialHistory.length,
       history_sha256: initialHistorySha256,
       current_history_sha256: initialHistorySha256,
       output_sha256: sha256(JSON.stringify(fullStress)),
@@ -252,6 +300,7 @@ async function assertSameDayCounterRefresh({
       adjusted: false, calculated_at: '2026-07-29T22:00:00.000Z',
     },
   }));
+  const hotKvWriteOffset = env.YC_KV.puts.length;
 
   let counterClose = 10;
   let officialEodClose = null;
@@ -308,8 +357,8 @@ async function assertSameDayCounterRefresh({
   assert.equal(first.marketValue, 100);
   assert.equal(first.netValue, 1000);
   assert.equal(first.upToDate, undefined);
-  assert.equal(env.YC_KV.values.get(`ledger:${portfolio}`), materializedLedgerRaw);
-  const firstCache = JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`));
+  assert.deepEqual(await materializedProjection(env, portfolio), materializedLedger);
+  const firstCache = await publicSnapshot(env, portfolio);
   assert.deepEqual(firstCache.stress, fullStress);
   assert.equal(firstCache.risk_snapshot.status, 'stale');
   assert.equal(firstCache.risk_snapshot.input_as_of, '2026-07-29');
@@ -331,16 +380,17 @@ async function assertSameDayCounterRefresh({
   assert.equal(intradayPriceValuation.adjusted, false);
 
   counterClose = 12;
+  nowValue = Date.parse('2026-07-30T06:01:00.000Z');
   const second = await updatePortfolioNav(env, portfolio, { adapter, now });
   assert.equal(second.appended, '2026-07-30');
-  const secondCache = JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`));
+  const secondCache = await publicSnapshot(env, portfolio);
   assert.equal(secondCache.risk_snapshot.status, 'stale');
   assert.equal(secondCache.risk_snapshot.input_as_of, '2026-07-29');
   assert.equal(second.marketValue, 120);
   assert.equal(second.netValue, 1020);
   assert.equal(second.upToDate, undefined);
-  assert.equal(env.YC_KV.values.get(`ledger:${portfolio}`), materializedLedgerRaw);
-  assert.deepEqual(JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`)).stress, fullStress);
+  assert.deepEqual(await materializedProjection(env, portfolio), materializedLedger);
+  assert.deepEqual(secondCache.stress, fullStress);
 
   officialEodClose = 13;
   nowValue = Date.parse('2026-07-30T10:00:00.000Z');
@@ -350,13 +400,15 @@ async function assertSameDayCounterRefresh({
   assert.equal(officialClose.netValue, 1030);
   assert.equal(officialClose.pricing_fallback, 'latest_eod_snapshot');
   assert.equal(officialClose.priceBasis, 'raw_close');
-  assert.equal(env.YC_KV.values.get(`ledger:${portfolio}`), materializedLedgerRaw);
-  assert.deepEqual(JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`)).stress, fullStress);
+  assert.deepEqual(await materializedProjection(env, portfolio), materializedLedger);
+  assert.deepEqual((await publicSnapshot(env, portfolio)).stress, fullStress);
 
   const navRows = database.prepare(`
     SELECT nav_date, cash_minor, market_value_minor, total_assets_minor,
       net_value_minor, unit_nav_micros
-    FROM ledger_nav_snapshots WHERE portfolio_id = ? ORDER BY nav_date
+    FROM ledger_nav_snapshots
+    WHERE portfolio_id = ? AND nav_date >= '2026-07-29'
+    ORDER BY nav_date
   `).all(portfolio).map(row => ({ ...row }));
   assert.deepEqual(navRows, [
     {
@@ -391,9 +443,9 @@ async function assertSameDayCounterRefresh({
   assert.equal(officialPriceValuation.priceBasis, 'raw_close');
   assert.equal(officialPriceValuation.adjusted, false);
   assert.equal(officialPriceValuation.quoteDate, '2026-07-30');
-  const publishedLive = JSON.parse(env.YC_KV.values.get(`live:${portfolio}`));
-  assert.equal(publishedLive.holdings[0].priceBasis, 'raw_close');
-  assert.equal(publishedLive.holdings[0].adjusted, false);
+  const published = await publicSnapshot(env, portfolio);
+  assert.equal(published.holdings[0].priceBasis, 'raw_close');
+  assert.equal(published.holdings[0].adjusted, false);
 
   sessionDate = '2026-07-31';
   counterClose = 14;
@@ -403,7 +455,7 @@ async function assertSameDayCounterRefresh({
   assert.equal(nextSession.appended, '2026-07-31');
   assert.equal(nextSession.marketValue, 140);
   assert.equal(nextSession.netValue, 1040);
-  const nextCache = JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`));
+  const nextCache = await publicSnapshot(env, portfolio);
   assert.deepEqual(nextCache.navRows.at(-1), {
     date: '2026-07-31', nav: 1.04, ret: 0.0097087379,
     unitNav: 1.04, units: 1000, marketValue: 140, cash: 900,
@@ -411,8 +463,8 @@ async function assertSameDayCounterRefresh({
     mv: 1040, divPerUnit: 0,
   });
 
-  // Losing the mutable live key must not prevent the cached intraday row from
-  // being replaced by the verified official raw close for the same session.
+  // The authoritative D1 public row must not depend on a legacy mutable live key
+  // when the intraday row is replaced by the verified official raw close.
   env.YC_KV.values.delete(`live:${portfolio}`);
   officialEodClose = 15;
   nowValue = Date.parse('2026-07-31T10:00:00.000Z');
@@ -420,6 +472,7 @@ async function assertSameDayCounterRefresh({
   assert.equal(nextOfficialClose.appended, '2026-07-31');
   assert.equal(nextOfficialClose.priceBasis, 'raw_close');
   assert.equal(nextOfficialClose.netValue, 1050);
+  assert.deepEqual(portfolioHotKvWrites(env, hotKvWriteOffset), []);
 }
 
 test('A/HK counter quotes overwrite only the current market-date NAV on every realtime refresh', async () => {
@@ -455,6 +508,16 @@ test('same-day Confirm uses current D1 facts, inherits the parent tape, and mate
       gross_amount: '100.00', tax_amount: '0', fee_amount: '0', net_cash: '-100.00',
     },
   });
+  await persistNavPrefix(env, 'a', 2, [
+    { date: '2026-07-25', cash: 900, marketValue: 76, totalAssets: 976,
+      liability: 0, netValue: 976, units: 1000, unitNav: 0.976 },
+    { date: '2026-07-26', cash: 900, marketValue: 77, totalAssets: 977,
+      liability: 0, netValue: 977, units: 1000, unitNav: 0.977 },
+    { date: '2026-07-27', cash: 900, marketValue: 78, totalAssets: 978,
+      liability: 0, netValue: 978, units: 1000, unitNav: 0.978 },
+    { date: '2026-07-28', cash: 900, marketValue: 79, totalAssets: 979,
+      liability: 0, netValue: 979, units: 1000, unitNav: 0.979 },
+  ]);
   await persistLedgerValuation(env, 'a', {
     date: '2026-07-29', cash: 900, marketValue: 80, totalAssets: 980,
     liability: 0, netValue: 980, units: 1000, unitNav: 0.98,
@@ -493,6 +556,7 @@ test('same-day Confirm uses current D1 facts, inherits the parent tape, and mate
       };
     },
   };
+  const hotKvWriteOffset = env.YC_KV.puts.length;
   const status = await updatePortfolioNav(env, 'a', {
     adapter,
     ledgerRevision: 3,
@@ -507,12 +571,13 @@ test('same-day Confirm uses current D1 facts, inherits the parent tape, and mate
   assert.equal(childTape.parentPriceTapeId, parentTape.priceTapeId);
   assert.equal(childTape.inheritedThrough, parentTape.tapeThrough);
   assert.equal(childTape.priceTapeHash === parentTape.priceTapeHash, false);
-  const currentLedger = JSON.parse(env.YC_KV.values.get('ledger:a'));
+  const currentLedger = await materializedProjection(env, 'a');
   assert.equal(currentLedger.ledgerRevision, 3);
   assert.equal(currentLedger.positions[0].q, 20);
   assert.equal(currentLedger.cash, 800);
   assert.equal(currentLedger.navRows.at(-1).date, '2026-07-30');
   assert.equal(currentLedger.navRows.at(-1).ledgerRevision, 3);
+  assert.deepEqual(portfolioHotKvWrites(env, hotKvWriteOffset), []);
 });
 
 test('same-day cash-only capital Confirm materializes from a verified current session', async () => {
@@ -525,6 +590,16 @@ test('same-day cash-only capital Confirm materializes from a verified current se
     eventType: 'CAPITAL', date: '2026-07-29', sequence: 1,
     payload: { shareholder: 'LP1', subscription: '1000.00', redemption: '0', unit_price: '1.00' },
   });
+  await persistNavPrefix(env, 'a', 1, [
+    { date: '2026-07-25', cash: 1000, marketValue: 0, totalAssets: 1000,
+      liability: 0, netValue: 1000, units: 1000, unitNav: 1 },
+    { date: '2026-07-26', cash: 1000, marketValue: 0, totalAssets: 1000,
+      liability: 0, netValue: 1000, units: 1000, unitNav: 1 },
+    { date: '2026-07-27', cash: 1000, marketValue: 0, totalAssets: 1000,
+      liability: 0, netValue: 1000, units: 1000, unitNav: 1 },
+    { date: '2026-07-28', cash: 1000, marketValue: 0, totalAssets: 1000,
+      liability: 0, netValue: 1000, units: 1000, unitNav: 1 },
+  ]);
   await persistLedgerValuation(env, 'a', {
     date: '2026-07-29', cash: 1000, marketValue: 0, totalAssets: 1000,
     liability: 0, netValue: 1000, units: 1000, unitNav: 1,
@@ -547,6 +622,7 @@ test('same-day cash-only capital Confirm materializes from a verified current se
       return officialCalendar(request, ['20260730']);
     },
   };
+  const hotKvWriteOffset = env.YC_KV.puts.length;
   const status = await updatePortfolioNav(env, 'a', {
     adapter,
     ledgerRevision: 2,
@@ -558,13 +634,14 @@ test('same-day cash-only capital Confirm materializes from a verified current se
   assert.equal(status.netValue, 1100);
   const childTape = await loadFrozenLedgerPriceTape(env, 'a', 2);
   assert.equal(childTape.parentPriceTapeId, parentTape.priceTapeId);
-  const currentLedger = JSON.parse(env.YC_KV.values.get('ledger:a'));
+  const currentLedger = await materializedProjection(env, 'a');
   assert.equal(currentLedger.ledgerRevision, 2);
   assert.equal(currentLedger.positions.length, 0);
   assert.equal(currentLedger.cash, 1100);
   assert.equal(currentLedger.units, 1100);
   assert.equal(currentLedger.navRows.at(-1).valuation.priceBasis, 'cash_only');
   assert.equal(currentLedger.navRows.at(-1).valuation.sessionVerified, true);
+  assert.deepEqual(portfolioHotKvWrites(env, hotKvWriteOffset), []);
 });
 
 test('ordinary live NAV fails closed instead of using lastPx or ledger book value', async () => {
@@ -695,7 +772,16 @@ test('ordinary live NAV fails closed instead of using lastPx or ledger book valu
   assert.equal(env.YC_KV.values.get('live:a'), liveRaw);
   assert.equal(env.YC_KV.values.get('navcache:a'), navcacheRaw);
   assert.equal(env.YC_KV.values.get('lastpx:a'), lastPxRaw);
-  assert.deepEqual(env.YC_KV.puts.map(write => write.key), ['navstatus:a']);
+  const bootstrappedProjection = await materializedProjection(env, 'a');
+  assert.equal(bootstrappedProjection.ledgerRevision, 3);
+  assert.deepEqual(bootstrappedProjection.positions.map(row => row.t), [
+    '600919.SS', '000001.SZ',
+  ]);
+  const attempt = await loadPublicPortfolioAttempt(env, 'a');
+  assert.equal(attempt.ledgerRevision, 3);
+  assert.equal(attempt.status.failure_code, 'active_holding_quote_unavailable');
+  assert.equal(await loadPublicPortfolioSnapshot(env, 'a'), null);
+  assert.deepEqual(portfolioHotKvWrites(env), []);
 });
 
 test('ordinary live NAV fails closed when active holding quote dates are mixed', async () => {
@@ -992,6 +1078,16 @@ test('live market value sums exact fractional quantity-price products before rou
       },
     });
   }
+  await persistNavPrefix(env, 'us', 3, [
+    { date: '2026-07-25', cash: 0.98, marketValue: 0.01, totalAssets: 0.99,
+      liability: 0, netValue: 0.99, units: 1, unitNav: 0.99 },
+    { date: '2026-07-26', cash: 0.98, marketValue: 0.01, totalAssets: 0.99,
+      liability: 0, netValue: 0.99, units: 1, unitNav: 0.99 },
+    { date: '2026-07-27', cash: 0.98, marketValue: 0.01, totalAssets: 0.99,
+      liability: 0, netValue: 0.99, units: 1, unitNav: 0.99 },
+    { date: '2026-07-28', cash: 0.98, marketValue: 0.01, totalAssets: 0.99,
+      liability: 0, netValue: 0.99, units: 1, unitNav: 0.99 },
+  ]);
   await persistLedgerValuation(env, 'us', {
     date: '2026-07-29', cash: 0.98, marketValue: 0.01, totalAssets: 0.99,
     liability: 0, netValue: 0.99, units: 1, unitNav: 0.99,
@@ -1007,6 +1103,7 @@ test('live market value sums exact fractional quantity-price products before rou
     })),
   });
   await materializeLedgerKv(env, 'us', { expectedLedgerRevision: 3 });
+  const hotKvWriteOffset = env.YC_KV.puts.length;
 
   const adapter = {
     async query(dataset, request) {
@@ -1064,7 +1161,7 @@ test('live market value sums exact fractional quantity-price products before rou
     units_micros: 1_000_000,
     unit_nav_micros: 992_000,
   });
-  const publicNav = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  const publicNav = await publicSnapshot(env, 'us');
   assert.deepEqual(publicNav.navRows.at(-1), {
     date: '2026-07-30', nav: 0.992, ret: 0.002020202,
     unitNav: 0.992, units: 1, marketValue: 0.01, cash: 0.98,
@@ -1075,16 +1172,15 @@ test('live market value sums exact fractional quantity-price products before rou
     date: '2026-07-30', unitNav: 0.992, marketValue: 0.01,
     totalAssets: 0.99, netValue: 0.99, cash: 0.98, liability: 0, units: 1,
   });
-  const live = JSON.parse(env.YC_KV.values.get('live:us'));
-  assert.deepEqual(live.holdings.map(row => row.marketValue), [0.01, 0.01]);
-  assert.deepEqual(live.holdings.map(row => row.weight), [50, 50]);
-  assert.equal(live.holdings[0].quoteSource, 'yahoo:query2-chart');
-  assert.equal(live.holdings[0].priceBasis, 'raw_counter');
+  assert.deepEqual(publicNav.holdings.map(row => row.marketValue), [0.01, 0.01]);
+  assert.deepEqual(publicNav.holdings.map(row => row.weight), [50, 50]);
+  assert.equal(publicNav.holdings[0].quoteSource, 'yahoo:query2-chart');
+  assert.equal(publicNav.holdings[0].priceBasis, 'raw_counter');
 
   yahooPrice = 2;
   const refreshed = await updatePortfolioNav(env, 'us', {
     adapter,
-    now: () => Date.parse('2026-07-30T19:00:00.000Z'),
+    now: () => Date.parse('2026-07-30T19:01:00.000Z'),
     fetch: yahooFetch,
   });
   assert.equal(refreshed.appended, '2026-07-30');
@@ -1102,7 +1198,7 @@ test('live market value sums exact fractional quantity-price products before rou
     unit_nav_micros: 1_004_000,
     source: 'yahoo:query2-chart',
   });
-  const refreshedPublicNav = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  const refreshedPublicNav = await publicSnapshot(env, 'us');
   assert.deepEqual(refreshedPublicNav.navRows.at(-1), {
     date: '2026-07-30', nav: 1.004, ret: 0.0141414141,
     unitNav: 1.004, units: 1, marketValue: 0.02, cash: 0.98,
@@ -1110,34 +1206,46 @@ test('live market value sums exact fractional quantity-price products before rou
     mv: 1, divPerUnit: 0,
   });
 
-  const priorKv = Object.fromEntries(
-    ['ledger:us', 'live:us', 'lastpx:us', 'navstatus:us', 'navcache:us']
-      .map(key => [key, env.YC_KV.values.get(key)]),
-  );
-  const originalPut = env.YC_KV.put.bind(env.YC_KV);
+  const priorPublicRow = { ...database.prepare(`
+    SELECT * FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+  `).get() };
+  const originalPrepare = env.FEEDBACK_DB.prepare.bind(env.FEEDBACK_DB);
   let revisionAdvanced = false;
-  env.YC_KV.put = async (key, value) => {
-    await originalPut(key, value);
-    if (key === 'navcache:us' && !revisionAdvanced) {
-      revisionAdvanced = true;
-      database.prepare(`
-        UPDATE ledger_portfolios SET ledger_revision = 4 WHERE portfolio_id = 'us'
-      `).run();
-    }
+  env.FEEDBACK_DB.prepare = sql => {
+    const statement = originalPrepare(sql);
+    if (!/INSERT INTO ledger_public_snapshots/.test(sql)) return statement;
+    return {
+      bind(...values) {
+        const bound = statement.bind(...values);
+        return {
+          async run() {
+            if (!revisionAdvanced) {
+              revisionAdvanced = true;
+              database.prepare(`
+                UPDATE ledger_portfolios SET ledger_revision = 4 WHERE portfolio_id = 'us'
+              `).run();
+            }
+            return bound.run();
+          },
+        };
+      },
+    };
   };
   yahooPrice = 3;
   await assert.rejects(
     updatePortfolioNav(env, 'us', {
       adapter,
-      now: () => Date.parse('2026-07-30T19:00:00.000Z'),
+      now: () => Date.parse('2026-07-30T19:02:00.000Z'),
       fetch: yahooFetch,
     }),
     error => error && error.details && error.details.code === 'LEDGER_REVISION_CHANGED',
   );
   assert.equal(revisionAdvanced, true);
-  for (const [key, value] of Object.entries(priorKv)) {
-    assert.equal(env.YC_KV.values.get(key), value, key);
-  }
+  assert.deepEqual({ ...database.prepare(`
+    SELECT * FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+  `).get() }, priorPublicRow);
+  assert.equal((await materializedProjection(env, 'us')).ledgerRevision, 3);
+  assert.deepEqual(portfolioHotKvWrites(env, hotKvWriteOffset), []);
 });
 
 test('A 2025-01-06 NAV uses raw counter closes and rejects the old adjusted-price result', async () => {

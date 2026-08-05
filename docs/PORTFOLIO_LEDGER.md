@@ -8,10 +8,12 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 1. 從 `CONFIRMED` 事件及後台派生結果生成與舊版相同的 11-sheet 可視工作簿。
 2. 對人工允許的 `BUY`、`SELL`、`CAPITAL` 做三方差異預覽，再寫入 `PENDING`。
 
-公開網站仍只讀 `navcache:{us|hk|a}`，`/api/nav/*`、`/api/benchmark` 和
-`/api/entry-market` 的回應合同不變。後台確認事件後，由 D1 outbox 重建
-`ledger:{us|hk|a}`；盘中一分钟 Cron 只用当下未复权 counter 覆盖当日点，收盘任务
-再冻结 raw close 并刷新 KV 公開快照。因此数据库切换不要求修改
+公開網站只讀 D1 的 `ledger_public_snapshots` 原子快照，`/api/nav/*` 和
+`/api/entry-market` 的數據合同不變；`/api/benchmark` 仍讀低頻 KV benchmark。
+舊 `navcache:{us|hk|a}` 只在 D1 缺表、讀故障或首次 backfill 前作經完整合同驗證的
+災備回退。後台確認事件後，由 D1 outbox 重建
+`ledger_materialized_projections`；盘中一分钟 Cron 只用当下未复权 counter 覆盖当日点，
+收盘任务再冻结 raw close 并刷新 D1 公開快照。因此数据库切换不要求修改
 首页、组合页或基金页的 HTML/CSS。
 
 ## 事件与状态
@@ -133,24 +135,31 @@ BUY、SELL 或 CAPITAL；这三类只能由后台人工或签名 Excel 进入 Pe
 
 重复 webhook/job 不会重复入账。自动化只负责发现和规范化，不自动 Confirm。
 
-## 数据库与 KV 的一致性
+## D1 派生投影与原子发布
 
-D1 和 KV 不能组成跨存储事务。确认 batch 会在 D1 同时写入 `ledger_outbox`：
+确认 batch 会在 D1 同时写入 `ledger_outbox`：
 
 - `RECALC_NAV`
 - `REBUILD_KV`
 - `REBUILD_EXCEL`
 
 Confirm 后请求路径会立即触发 outbox：先从最早受影响日期冻结当前 revision 的未复权
-raw-close 价格带并重放现金、持仓、负债、份额及 NAV，完成后才 materialize KV 和
-Excel。不能在价格带之前先发布 KV。Cron 和后台 outbox 按指数退避重试。D1
-事件已经提交但重算或 KV 暂时失败时，公开页继续返回上一份成功快照，不返回半成品。
+raw-close 价格带并重放现金、持仓、负债、份额及 NAV，完成后才 materialize D1 read
+projection、原子公開快照和 Excel。不能在价格带之前先发布公開快照。Cron 和后台
+outbox 按指数退避重试。D1 事件已经提交但重算暂时失败时，公开页继续返回上一份
+成功快照并明确标记 pending/fallback，不返回半成品。
+
+`ledger_public_snapshots` 每个市场只有一行完整 last-known-good payload，发布使用
+`ledger_revision` guarded UPSERT；`ledger_public_attempts` 单独记录最新失败/成功尝试，
+不会为状态变化重写大 JSON；`ledger_materialized_projections` 取代旧 `ledger:*` KV。
+三者均保存 SHA-256 并在读取时校验。KV 每日写入配额耗尽不得阻断 D1 outbox 或公开
+发布，盘中 minute/intraday 行情也不写共享 KV。
 
 历史日期事件或行情会从对应日期起自动重建全部 NAV；修改或撤销旧事件时从新旧日期
 中较早者开始。非交易日可按 as-of 沿用上一个已冻结 raw close；任一实际交易日缺少
 raw close 时必须 fail closed，不得用复权价、Book Value、参考价或成本代替。重建完成前普通
-刷新不得发布新的 KV 或 Excel 快照；若 D1 revision
-在重算或 KV 写入期间变化，整批结果作废，outbox 按最新 revision 重新排队。
+刷新不得发布新的 D1 public 或 Excel 快照；若 D1 revision
+在重算或 guarded D1 写入期间变化，整批结果作废，outbox 按最新 revision 重新排队。
 每个 ledger revision 都有独立、带 hash 的 immutable raw-close price tape；新 revision
 必须逐行继承上一 revision 的重叠历史，只能补更早的新事件区间或向未来追加 EOD。
 当日 verified counter 可以每分钟覆盖当日 NAV，但不能改写 tape 内任何历史日期。

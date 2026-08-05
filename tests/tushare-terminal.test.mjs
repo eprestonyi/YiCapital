@@ -336,6 +336,28 @@ test('KV cache is keyed without the token and preserves the freshness envelope',
   assert.ok(cache.puts[0].options.expirationTtl >= 60);
 });
 
+test('minute and intraday quotes bypass shared KV writes', async () => {
+  const cache = new MockKV();
+  const fetchImpl = createFetchMock();
+  const adapter = createTushareAdapter(
+    { TUSHARE_TOKEN: TOKEN },
+    { fetchImpl, cache, now: fixedNow },
+  );
+
+  const first = await adapter.query('rt_hk_k', {
+    params: { ts_code: '00700.HK' },
+  });
+  const second = await adapter.query('rt_hk_k', {
+    params: { ts_code: '00700.HK' },
+  });
+
+  assert.equal(first.cache_status, 'bypass');
+  assert.equal(second.cache_status, 'bypass');
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.deepEqual(cache.gets, []);
+  assert.deepEqual(cache.puts, []);
+});
+
 test('timeout aborts the upstream request and returns a typed failure', async () => {
   const fetchImpl = (_url, init) => new Promise((_resolve, reject) => {
     init.signal.addEventListener('abort', () => {
