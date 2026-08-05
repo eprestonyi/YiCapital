@@ -40,6 +40,15 @@ async function checkPortal() {
     if (Number(health.ledger_outbox_pending) !== 0) {
       throw new Error(`portfolio D1 ledger outbox has ${health.ledger_outbox_pending} pending item(s)`);
     }
+    if (health.ledger_storage_ready !== true) {
+      throw new Error('portfolio D1 public snapshot storage is not ready');
+    }
+    for (const market of ['us', 'hk', 'a']) {
+      const storage = health.ledger_storage_portfolios?.[market];
+      if (storage?.projectionCurrent !== true || storage?.publicCurrent !== true) {
+        throw new Error(`${market} D1 public snapshot storage is not current`);
+      }
+    }
     if (health.raw_nav_ready !== true) throw new Error('raw NAV publication is not ready');
     for (const market of ['us', 'hk', 'a']) {
       if (health.raw_nav_portfolios?.[market]?.ready !== true) {
