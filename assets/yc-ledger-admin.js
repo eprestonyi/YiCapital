@@ -779,7 +779,62 @@
     return targetXml.slice(0, insertion) + templateNode[0] + targetXml.slice(insertion);
   }
 
-  function preserveTemplateWorkbookLayout(templateBuffer, generatedBuffer, visibleSheetCount) {
+  function cellStyleCount(stylesXml) {
+    const match = String(stylesXml || '').match(/<cellXfs\b[^>]*\bcount="(\d+)"/);
+    return match ? Number(match[1]) : 0;
+  }
+
+  const LOCKED_TEMPLATE_STYLES_SHA256 =
+    '069f6e5cda9839dc4d15a1fc07ee1967c7cf911c98faa71a77f9ca96580b9c5b';
+
+  function canonicalStyleManifest(workbook) {
+    const manifest = Object.create(null);
+    workbook.SheetNames.forEach((name, index) => {
+      const styles = Object.create(null);
+      const sheet = workbook.Sheets[name] || {};
+      Object.keys(sheet).forEach(address => {
+        if (address.startsWith('!')) return;
+        const styleId = sheet[address] && sheet[address].__yiCanonicalStyleId;
+        styles[address] = Number.isInteger(styleId) ? styleId : 0;
+      });
+      manifest[`xl/worksheets/sheet${index + 1}.xml`] = styles;
+    });
+    return manifest;
+  }
+
+  function remapGeneratedCellStyles(sheetXml, canonicalStyles, templateStyleCount, part) {
+    const expected = canonicalStyles || {};
+    const seen = new Set();
+    let cellCount = 0;
+    const remapped = sheetXml.replace(/<c\b[^>]*>/g, openingTag => {
+      const address = openingTag.match(/\br="([^"]+)"/);
+      if (!address) throw new Error(`${part} 出現無座標單元格，已停止導出。`);
+      cellCount += 1;
+      const reference = address[1];
+      const hasCanonicalStyle = Object.prototype.hasOwnProperty.call(expected, reference);
+      if (!hasCanonicalStyle) {
+        throw new Error(`${part} 的 ${reference} 缺少鎖定樣式，已停止導出。`);
+      }
+      const templateStyleId = Number(expected[reference]);
+      if (!Number.isInteger(templateStyleId) || templateStyleId < 0 ||
+          templateStyleId >= templateStyleCount) {
+        throw new Error(`${part} 的 ${reference} 出現未鎖定樣式 ${templateStyleId}，已停止導出。`);
+      }
+      seen.add(reference);
+      const withoutStyle = openingTag.replace(/\s+s="\d+"/, '');
+      const selfClosing = /\/>$/.test(withoutStyle);
+      const tagBody = withoutStyle.replace(/\/?>$/, '');
+      return `${tagBody} s="${templateStyleId}"${selfClosing ? '/>' : '>'}`;
+    });
+    if (!cellCount) throw new Error(`${part} 沒有可驗證單元格，已停止導出。`);
+    const missing = Object.keys(expected).filter(reference => !seen.has(reference));
+    if (missing.length) {
+      throw new Error(`${part} 缺少 ${missing[0]} 等鎖定樣式單元格，已停止導出。`);
+    }
+    return remapped;
+  }
+
+  async function preserveTemplateWorkbookLayout(templateBuffer, generatedBuffer, visibleSheetCount, styleManifest) {
     if (!XLSX.CFB || typeof XLSX.CFB.read !== 'function' ||
         typeof XLSX.CFB.write !== 'function' || typeof XLSX.CFB.find !== 'function') {
       throw new Error('表格庫缺少模板版式保真能力，已停止導出。');
@@ -797,6 +852,19 @@
       entry.content = encoder.encode(xml);
       entry.size = entry.content.length;
     };
+
+    const templateStyles = readXml(templateZip, 'xl/styles.xml');
+    const generatedStyles = readXml(generatedZip, 'xl/styles.xml');
+    const templateStyleCount = cellStyleCount(templateStyles.xml);
+    const generatedStyleCount = cellStyleCount(generatedStyles.xml);
+    const templateStylesHash = await sha256Buffer(templateStyles.entry.content);
+    if (templateStyleCount !== CANONICAL_CELL_STYLES.length || generatedStyleCount < 1 ||
+        templateStylesHash !== LOCKED_TEMPLATE_STYLES_SHA256) {
+      throw new Error('模板樣式表與鎖定格式不一致，已停止導出。');
+    }
+    if (!styleManifest || typeof styleManifest !== 'object') {
+      throw new Error('工作簿缺少鎖定樣式清單，已停止導出。');
+    }
 
     const templateWorkbook = readXml(templateZip, 'xl/workbook.xml');
     const generatedWorkbook = readXml(generatedZip, 'xl/workbook.xml');
@@ -824,7 +892,9 @@
       const part = `xl/worksheets/sheet${index}.xml`;
       const templateSheet = readXml(templateZip, part);
       const generatedSheet = readXml(generatedZip, part);
-      let sheetXml = generatedSheet.xml;
+      let sheetXml = remapGeneratedCellStyles(
+        generatedSheet.xml, styleManifest[part], templateStyleCount, part,
+      );
       [
         ['sheetPr', ['dimension']],
         ['sheetViews', ['sheetFormatPr', 'cols', 'sheetData']],
@@ -840,6 +910,15 @@
       });
       writeXml(generatedSheet.entry, sheetXml);
     }
+    const syncPart = `xl/worksheets/sheet${visibleSheetCount + 1}.xml`;
+    const syncSheet = readXml(generatedZip, syncPart);
+    writeXml(syncSheet.entry, remapGeneratedCellStyles(
+      syncSheet.xml, styleManifest[syncPart], templateStyleCount, syncPart,
+    ));
+    // Cell style ids now refer to the original template table exactly. Only
+    // style/layout metadata is transplanted; generated values, formulas and
+    // reverse-sync payloads remain unchanged.
+    writeXml(generatedStyles.entry, templateStyles.xml);
     return XLSX.CFB.write(generatedZip, {
       type: 'array', fileType: 'zip', compression: true,
     });
@@ -1117,6 +1196,7 @@
   function applyCanonicalStyle(cell, styleId) {
     const style = CANONICAL_CELL_STYLES[styleId] || CANONICAL_CELL_STYLES[0];
     cell.s = styleClone(style);
+    cell.__yiCanonicalStyleId = styleId;
     if (style.numFmt) cell.z = style.numFmt;
     return cell;
   }
@@ -1373,11 +1453,13 @@
         exportId: first(result, ['exportId', 'export_id'], ''), syncToken: first(result, ['syncToken', 'sync_token'], ''),
         layoutHash: first(result, ['layoutHash', 'layout_hash'], ''),
       });
+      const styleManifest = canonicalStyleManifest(workbook);
       const generatedWorkbook = XLSX.write(workbook, {
         type: 'array', bookType: 'xlsx', compression: true, cellStyles: true,
       });
-      const preservedWorkbook = preserveTemplateWorkbookLayout(
+      const preservedWorkbook = await preserveTemplateWorkbookLayout(
         templateBuffer, generatedWorkbook, requiredOrder.length,
+        styleManifest,
       );
       downloadWorkbookBytes(preservedWorkbook, config.file);
       const revision = asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.ledgerRevision), state.ledgerRevision);
@@ -2174,6 +2256,9 @@
       buildProjectionSheet,
       setSyncSheet,
       normalizeConfirmed,
+      canonicalStyleManifest,
+      remapGeneratedCellStyles,
+      preserveTemplateWorkbookLayout,
     });
   }
 

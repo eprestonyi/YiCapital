@@ -292,6 +292,7 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
     read('assets/yc-ledger-admin.js'),
   ]);
   assert.match(page, /xlsx-js-style@1\.2\.0\/dist\/xlsx\.min\.js/);
+  assert.match(page, /yc-ledger-admin\.js\?v=20260805b/);
   assert.match(ledgerAdmin, /\['trade_no', 'tradeNo', 'sequence_no', 'sequence'\]/);
   assert.match(ledgerAdmin, /Hidden:\s*2/);
   assert.match(ledgerAdmin, /'2F5B7C'/);
@@ -304,5 +305,8 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
   assert.match(ledgerAdmin, /'pageMargins'/);
   assert.match(ledgerAdmin, /'bookViews'/);
   assert.match(ledgerAdmin, /'calcPr'/);
+  assert.match(ledgerAdmin, /function remapGeneratedCellStyles\(/);
+  assert.match(ledgerAdmin, /templateStyleCount !== CANONICAL_CELL_STYLES\.length/);
+  assert.match(ledgerAdmin, /writeXml\(generatedStyles\.entry, templateStyles\.xml\)/);
   assert.match(ledgerAdmin, /XLSX\.write\(workbook/);
 });
