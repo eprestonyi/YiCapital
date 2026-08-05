@@ -49,7 +49,7 @@ test('health exposes the feedback store without leaking configuration', async ()
   );
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.version, 'v9.4-auth-safety');
+  assert.equal(body.version, 'v9.4-auth-bridge');
   assert.equal(body.admin_google, false);
   assert.equal(body.feedback, true);
   assert.equal(body.ledger, true);
@@ -94,7 +94,7 @@ test('live monitor and public release marker fail closed on the current auth con
     read('scripts/live-health.mjs'),
     read('assets/portal-config.js'),
   ]);
-  assert.match(monitor, /health\.version !== 'v9\.4-auth-safety'/);
+  assert.match(monitor, /health\.version !== 'v9\.4-auth-bridge'/);
   assert.match(monitor, /health\.auth_sessions !== true/);
   assert.match(monitor, /health\.auth_rate_limit !== true/);
   assert.match(monitor, /health\.ledger !== true/);

@@ -96,7 +96,10 @@ import {
 const enc = new TextEncoder();
 const PASSWORD_MIN_LENGTH = 15;
 const PASSWORD_MAX_LENGTH = 128;
-const PBKDF2_ITERATIONS = 600000;
+// Compatibility bridge: keep writes at the legacy cost while retaining
+// iteration-aware reads. The full v9.4 release raises this to 600000 only
+// after this deployment is recorded as the safe rollback target.
+const PBKDF2_ITERATIONS = 100000;
 const LEGACY_PBKDF2_ITERATIONS = 100000;
 const AUTH_JSON_MAX_BYTES = 16 * 1024;
 
@@ -4567,7 +4570,7 @@ export default {
             .catch(error => console.error('google_signing_key_warmup_failed', error)));
         }
         return J(env, {
-          ok: true, version: 'v9.4-auth-safety',
+          ok: true, version: 'v9.4-auth-bridge',
           kv: kvOk,
           feedback: feedbackOk,
           ledger: ledger.ready,

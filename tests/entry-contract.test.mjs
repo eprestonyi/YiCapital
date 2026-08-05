@@ -320,7 +320,7 @@ test('auth mutations fail closed on origin, body, verification and password boun
   assert.match(worker, /AUTH_JSON_MAX_BYTES = 16 \* 1024/);
   assert.match(worker, /PASSWORD_MIN_LENGTH = 15/);
   assert.match(worker, /PASSWORD_MAX_LENGTH = 128/);
-  assert.match(worker, /PBKDF2_ITERATIONS = 600000/);
+  assert.match(worker, /PBKDF2_ITERATIONS = 100000/);
   assert.match(worker, /if \(!env\.RESEND_API_KEY\) return J\(env, \{ error: '郵箱驗證服務暫時不可用/);
   assert.match(worker, /remainingCodeTtl\(expiresAt\)/);
   assert.match(worker, /reservedUsername\(username, env\)/);

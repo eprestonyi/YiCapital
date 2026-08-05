@@ -72,7 +72,7 @@ function kvStore(initial = {}) {
   };
 }
 
-async function passwordHash(password, saltHex) {
+async function passwordHash(password, saltHex, iterations = 100000) {
   const salt = new Uint8Array(saltHex.match(/../g).map(value => Number.parseInt(value, 16)));
   const key = await crypto.subtle.importKey(
     'raw',
@@ -82,7 +82,7 @@ async function passwordHash(password, saltHex) {
     ['deriveBits'],
   );
   const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 },
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
     key,
     256,
   );
@@ -154,10 +154,31 @@ test('email and password resolve the mapped email to the ordinary account', asyn
   const session = JSON.parse(kv.values.get('sess:' + body.token));
   assert.equal(session.role, 'guest');
   assert.equal(session.u, 'tingxunyi');
-  const upgraded = JSON.parse(kv.values.get('user:tingxunyi'));
-  assert.equal(upgraded.passwordIterations, 600000);
-  assert.notEqual(upgraded.salt, salt);
-  assert.notEqual(upgraded.hash, hash);
+  const stored = JSON.parse(kv.values.get('user:tingxunyi'));
+  assert.equal(stored.passwordIterations, undefined);
+  assert.equal(stored.salt, salt);
+  assert.equal(stored.hash, hash);
+});
+
+test('compatibility bridge verifies a 600k password without downgrading it', async () => {
+  const salt = '102132435465768798a9babbdcddedef';
+  const hash = await passwordHash('future-member-password', salt, 600000);
+  const kv = kvStore({
+    'user:future-member': JSON.stringify({
+      u: 'future-member', email: 'future@example.com', salt, hash,
+      passwordIterations: 600000, provider: 'password', role: 'guest', disabled: false,
+    }),
+  });
+  const response = await worker.fetch(new Request('https://portal.test/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.19' },
+    body: JSON.stringify({ username: 'future-member', password: 'future-member-password' }),
+  }), { YC_KV: kv, ADMIN_USERNAME: 'site-admin' });
+  assert.equal(response.status, 200);
+  const stored = JSON.parse(kv.values.get('user:future-member'));
+  assert.equal(stored.passwordIterations, 600000);
+  assert.equal(stored.salt, salt);
+  assert.equal(stored.hash, hash);
 });
 
 test('password login does not reveal disabled or Google-only account state', async () => {
