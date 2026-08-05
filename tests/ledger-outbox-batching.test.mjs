@@ -10,6 +10,8 @@ import {
   freezeLedgerPriceTape,
   handleLedgerAdminRequest,
   ledgerHealth,
+  loadMaterializedLedgerProjection,
+  loadPublicPortfolioSnapshot,
   materializeLedgerKv,
   persistLedgerValuation,
   persistLedgerValuationBatch,
@@ -81,11 +83,22 @@ async function setup() {
   const sql = (await Promise.all([
     '../migrations/0002_portfolio_ledger.sql',
     '../migrations/0003_frozen_price_tapes.sql',
+    '../migrations/0005_public_portfolio_snapshots.sql',
   ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   return {
     FEEDBACK_DB: new D1Database(sql),
     YC_KV: new MemoryKv(),
   };
+}
+
+async function materializedProjection(env, portfolio = 'us') {
+  const stored = await loadMaterializedLedgerProjection(env, portfolio);
+  return stored && stored.projection;
+}
+
+async function publicNavSnapshot(env, portfolio = 'us') {
+  const stored = await loadPublicPortfolioSnapshot(env, portfolio);
+  return stored && stored.snapshot;
 }
 
 function seedEvents(env, revision = 2) {
@@ -168,10 +181,13 @@ function officialCalendar(request, openDates) {
   return { data };
 }
 
-function historicalAdapter() {
+function historicalAdapter({ includeLatest = false } = {}) {
   const calls = [];
-  const dates = ['20260720', '20260721', '20260722', '20260723', '20260724'];
-  const prices = [10, 10, 11, 11.5, 12];
+  const dates = [
+    '20260720', '20260721', '20260722', '20260723', '20260724',
+    ...(includeLatest ? ['20260727'] : []),
+  ];
+  const prices = [10, 10, 11, 11.5, 12, ...(includeLatest ? [13] : [])];
   return {
     calls,
     async query(dataset, request) {
@@ -189,9 +205,12 @@ function historicalAdapter() {
   };
 }
 
-async function seedFrozenTape(env) {
-  const dates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24'];
-  const prices = [10, 10, 11, 11.5, 12];
+async function seedFrozenTape(env, { includeLatest = false } = {}) {
+  const dates = [
+    '2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24',
+    ...(includeLatest ? ['2026-07-27'] : []),
+  ];
+  const prices = [10, 10, 11, 11.5, 12, ...(includeLatest ? [13] : [])];
   return freezeLedgerPriceTape(env, 'us', {
     tapeFrom: dates[0],
     tapeThrough: dates.at(-1),
@@ -525,9 +544,10 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   insertOutbox(env, { id: 'kv-2', revision: 2, kind: 'REBUILD_KV' });
   insertOutbox(env, { id: 'nav-2', revision: 2, kind: 'RECALC_NAV' });
   insertOutbox(env, { id: 'xlsx-2', revision: 2, kind: 'REBUILD_EXCEL' });
-  const adapter = historicalAdapter();
+  const adapter = historicalAdapter({ includeLatest: true });
+  const replayNow = () => Date.parse('2026-07-27T22:00:00.000Z');
   const refreshPortfolio = (runtimeEnv, portfolio, options) =>
-    updatePortfolioNav(runtimeEnv, portfolio, { ...options, adapter, now });
+    updatePortfolioNav(runtimeEnv, portfolio, { ...options, adapter, now: replayNow });
   const drain = () => drainLedgerOutbox(env, {
     portfolio: 'us',
     refreshPortfolio,
@@ -555,12 +575,12 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   }, {
     phase: 'replay',
     cursor: '2026-07-22',
-    targetThrough: '2026-07-24',
+    targetThrough: '2026-07-27',
     lastNavDate: '2026-07-21',
   });
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-2').attempts, 0);
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'xlsx-2').status, 'PENDING');
-  assert.equal(env.YC_KV.values.has('navcache:us'), false);
+  assert.equal(await publicNavSnapshot(env), null);
 
   const second = await drain();
   assert.equal(second.ok, true, JSON.stringify(second));
@@ -586,11 +606,11 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.equal(finalReplay.results[0].complete, false);
   assert.equal(finalReplay.results[0].nextPhase, 'materialize');
   assert.equal(finalReplay.results[0].nextCursor, null);
-  assert.equal(navRows(env).length, 5);
+  assert.equal(navRows(env).length, 6);
   assert.equal(adapter.calls.length, 3);
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-2').status, 'PENDING');
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'xlsx-2').status, 'PENDING');
-  assert.equal(env.YC_KV.values.has('navcache:us'), false);
+  assert.equal(await publicNavSnapshot(env), null);
 
   const callsBeforeMaterialize = adapter.calls.length;
   const materialized = await drain();
@@ -598,13 +618,13 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   assert.equal(materialized.results[0].nextPhase, 'publish');
   assert.equal(materialized.results[0].complete, false);
   assert.equal(adapter.calls.length, callsBeforeMaterialize);
-  assert.equal(JSON.parse(env.YC_KV.values.get('ledger:us')).navRows.length, 5);
-  assert.equal(env.YC_KV.values.has('navcache:us'), false);
+  const materializedLedger = await materializedProjection(env);
+  assert.equal(materializedLedger.navRows.length, 6);
+  assert.equal(await publicNavSnapshot(env), null);
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'nav-2').status, 'PENDING');
   assert.equal(outboxRows(env).find(row => row.outbox_id === 'xlsx-2').status, 'PENDING');
 
-  const materializedLedgerRaw = env.YC_KV.values.get('ledger:us');
-  const materializedLedger = JSON.parse(materializedLedgerRaw);
+  const materializedLedgerBeforePublish = structuredClone(materializedLedger);
   const sentinelScenario = {
     model: 'noncentral-t', sentinel: 'same-revision-prefix', nDays: 2,
     p50: 0, p5: -0.01, p1: -0.02, probHalf: 0,
@@ -631,20 +651,20 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   ]);
   assert.equal(adapter.calls.length, callsBeforeMaterialize);
   assert.ok(outboxRows(env).every(row => row.status === 'DONE'));
-  assert.equal(env.YC_KV.values.get('ledger:us'), materializedLedgerRaw);
-  const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
-  assert.equal(cache.stress, null);
-  assert.equal(cache.risk_snapshot.status, 'unavailable');
+  assert.deepEqual(await materializedProjection(env), materializedLedgerBeforePublish);
+  const cache = await publicNavSnapshot(env);
+  assert.equal(cache.stress.model, 'noncentral-t');
+  assert.equal(cache.risk_snapshot.status, 'current');
   assert.equal(cache.risk_snapshot.model_version, 'yc-risk-js-v2');
-  assert.equal(cache.risk_snapshot.output_sha256, null);
-  assert.equal(cache.navRows.length, 5);
-  assert.equal(cache.as_of, '2026-07-24');
+  assert.equal(cache.risk_snapshot.output_sha256.length, 64);
+  assert.equal(cache.navRows.length, 6);
+  assert.equal(cache.as_of, '2026-07-27');
   assert.deepEqual(cache.base, {
-    date: '2026-07-24',
-    unitNav: 1.02,
-    marketValue: 120,
-    totalAssets: 1020,
-    netValue: 1020,
+    date: '2026-07-27',
+    unitNav: 1.03,
+    marketValue: 130,
+    totalAssets: 1030,
+    netValue: 1030,
     cash: 900,
     liability: 0,
     units: 1000,
@@ -660,21 +680,20 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   })), [{
     ticker: 'AAA',
     quantity: 10,
-    price: 12,
-    marketValue: 120,
-    date: '2026-07-24',
+    price: 13,
+    marketValue: 130,
+    date: '2026-07-27',
     priceBasis: 'raw_close',
     adjusted: false,
   }]);
   const publicResponse = await worker.fetch(
     new Request('https://portal.test/api/nav/us'), env,
   );
-  // Five NAV observations yield only four returns, below the public chart
-  // contract's five-return minimum. The accounting cache exists, but the
-  // public route must not advertise it as a renderable snapshot yet.
-  assert.equal(publicResponse.status, 503);
+  assert.equal(publicResponse.status, 200);
   const publicSnapshot = await publicResponse.json();
-  assert.equal(publicSnapshot.pending, true);
+  assert.equal(publicSnapshot.ok, true);
+  assert.equal(publicSnapshot.pending, false);
+  assert.equal(publicSnapshot.fallback, false);
 
   const beforeIdempotent = navRows(env);
   const callsBeforeIdempotent = adapter.calls.length;
@@ -689,6 +708,45 @@ test('historical NAV outbox resumes in bounded replay, materialize, and publish 
   });
   assert.deepEqual(navRows(env), beforeIdempotent);
   assert.equal(adapter.calls.length, callsBeforeIdempotent);
+});
+
+test('KV put quota exhaustion does not block D1 outbox materialization or publication', async () => {
+  const env = await setup();
+  seedEvents(env);
+  insertOutbox(env, { id: 'kv-quota-2', revision: 2, kind: 'REBUILD_KV' });
+  insertOutbox(env, { id: 'nav-quota-2', revision: 2, kind: 'RECALC_NAV' });
+  insertOutbox(env, { id: 'xlsx-quota-2', revision: 2, kind: 'REBUILD_EXCEL' });
+  let rejectedPuts = 0;
+  env.YC_KV.put = async () => {
+    rejectedPuts += 1;
+    const error = new Error('KV PUT failed: daily write quota exceeded');
+    error.code = 'KV_WRITE_LIMIT';
+    throw error;
+  };
+  await assert.rejects(env.YC_KV.put('quota-probe', 'unavailable'), /quota exceeded/);
+
+  const adapter = historicalAdapter({ includeLatest: true });
+  const replayNow = () => Date.parse('2026-07-27T22:00:00.000Z');
+  let drained = null;
+  for (let index = 0; index < 8; index += 1) {
+    drained = await drainLedgerOutbox(env, {
+      portfolio: 'us',
+      navBatchSize: 5,
+      refreshPortfolio: (runtimeEnv, portfolio, options) =>
+        updatePortfolioNav(runtimeEnv, portfolio, { ...options, adapter, now: replayNow }),
+    });
+    if (!drained.pending) break;
+  }
+
+  assert.equal(drained.ok, true, JSON.stringify(drained));
+  assert.equal(drained.pending, false, JSON.stringify(drained));
+  assert.ok(outboxRows(env).every(row => row.status === 'DONE'));
+  assert.equal((await materializedProjection(env)).navRows.length, 6);
+  const snapshot = await publicNavSnapshot(env);
+  assert.equal(snapshot.ledgerRevision, 2);
+  assert.equal(snapshot.navRows.length, 6);
+  assert.equal(snapshot.as_of, '2026-07-27');
+  assert.ok(rejectedPuts >= 1);
 });
 
 test('historical publish rebuilds stress instead of promoting lineage-less output', async () => {
@@ -759,7 +817,7 @@ test('historical publish rebuilds stress instead of promoting lineage-less outpu
   });
   assert.equal(status.complete, true, JSON.stringify(status));
   assert.equal(status.phase, 'publish');
-  const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  const cache = await publicNavSnapshot(env);
   assert.equal(cache.history.length, 5);
   assert.equal(cache.stress.model, 'noncentral-t');
   assert.equal(cache.stress.crash.sentinel, undefined);
@@ -848,12 +906,16 @@ test('materialize coverage restarts replay from the earliest missing trading ses
 test('current-revision NAV publishes without rewrite only when its raw tape is already frozen', async () => {
   const env = await setup();
   seedEvents(env);
-  const dates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24'];
+  const dates = [
+    '2026-07-20', '2026-07-21', '2026-07-22',
+    '2026-07-23', '2026-07-24', '2026-07-27',
+  ];
+  const marketValues = [0, 100, 110, 115, 120, 130];
   await persistLedgerValuationBatch(env, 'us', {
     replaceFrom: dates[0],
     replaceThrough: dates.at(-1),
     navRows: dates.map((date, index) => {
-      const marketValue = index === 0 ? 0 : [100, 110, 115, 120][index - 1];
+      const marketValue = marketValues[index];
       return {
         date,
         cash: index === 0 ? 1000 : 900,
@@ -869,13 +931,13 @@ test('current-revision NAV publishes without rewrite only when its raw tape is a
     priceRows: dates.slice(1).map((date, index) => ({
       ticker: 'AAA',
       date,
-      price: [10, 11, 11.5, 12][index],
+      price: [10, 11, 11.5, 12, 13][index],
       sourceRef: 'us_daily',
     })),
   }, 2);
-  await seedFrozenTape(env);
+  await seedFrozenTape(env, { includeLatest: true });
   const ledger = await materializeLedgerKv(env, 'us', { expectedLedgerRevision: 2 });
-  assert.equal(ledger.navRows.length, 5);
+  assert.equal(ledger.navRows.length, 6);
   assert.ok(ledger.navRows.every(row => row.ledgerRevision === 2));
   env.YC_KV.values.set('navcache:us', JSON.stringify({
     cacheVersion: 2,
@@ -917,51 +979,66 @@ test('current-revision NAV publishes without rewrite only when its raw tape is a
   assert.deepEqual(adapter.calls, []);
   assert.equal(navHash(env), beforeHash);
   assert.ok(outboxRows(env).every(row => row.status === 'DONE'));
-  const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  const cache = await publicNavSnapshot(env);
   assert.equal(cache.cacheVersion, 3);
   assert.equal(cache.ledgerRevision, 2);
-  assert.equal(cache.navRows.length, 5);
-  assert.equal(cache.as_of, '2026-07-24');
-  assert.equal(cache.stress, null);
+  assert.equal(cache.navRows.length, 6);
+  assert.equal(cache.as_of, '2026-07-27');
+  assert.equal(cache.stress.model, 'noncentral-t');
 
-  const priorPublishedValues = Object.fromEntries(
-    ['live:us', 'navstatus:us', 'navcache:us'].map(key => [key, env.YC_KV.values.get(key)]),
-  );
-  const originalPut = env.YC_KV.put.bind(env.YC_KV);
+  const priorPublishedSnapshot = structuredClone(cache);
+  const originalPrepare = env.FEEDBACK_DB.prepare.bind(env.FEEDBACK_DB);
   let revisionAdvanced = false;
-  env.YC_KV.put = async (key, value) => {
-    await originalPut(key, value);
-    if (key === 'navcache:us' && !revisionAdvanced) {
-      revisionAdvanced = true;
-      env.FEEDBACK_DB.database.prepare(`
-        UPDATE ledger_portfolios SET ledger_revision = 3 WHERE portfolio_id = 'us'
-      `).run();
-    }
+  env.FEEDBACK_DB.prepare = sql => {
+    const statement = originalPrepare(sql);
+    if (!/INSERT INTO ledger_public_snapshots/.test(sql)) return statement;
+    return {
+      bind(...values) {
+        const bound = statement.bind(...values);
+        return {
+          async run() {
+            const write = await bound.run();
+            if (!revisionAdvanced) {
+              revisionAdvanced = true;
+              env.FEEDBACK_DB.database.prepare(`
+                UPDATE ledger_portfolios SET ledger_revision = 3 WHERE portfolio_id = 'us'
+              `).run();
+            }
+            return write;
+          },
+        };
+      },
+    };
   };
-  await assert.rejects(
-    updatePortfolioNav(env, 'us', {
-      adapter,
-      now: recoveryNow,
-      ledgerRevision: 2,
-      affectedFrom: '2026-07-20',
-      phase: 'publish',
-      targetThrough: '2026-07-24',
-      lastNavDate: '2026-07-24',
-      previousUnitNav: 1.02,
-    }),
-    error => error && error.details && error.details.code === 'LEDGER_REVISION_CHANGED',
-  );
-  env.YC_KV.put = originalPut;
-  assert.equal(revisionAdvanced, true);
-  for (const [key, value] of Object.entries(priorPublishedValues)) {
-    assert.equal(env.YC_KV.values.get(key), value);
+  try {
+    await assert.rejects(
+      updatePortfolioNav(env, 'us', {
+        adapter,
+        now: recoveryNow,
+        ledgerRevision: 2,
+        affectedFrom: '2026-07-20',
+        phase: 'publish',
+        targetThrough: '2026-07-27',
+        lastNavDate: '2026-07-27',
+        previousUnitNav: 1.03,
+      }),
+      error => error && error.details && error.details.code === 'LEDGER_REVISION_CHANGED',
+    );
+  } finally {
+    env.FEEDBACK_DB.prepare = originalPrepare;
   }
+  assert.equal(revisionAdvanced, true);
+  assert.deepEqual(await publicNavSnapshot(env), priorPublishedSnapshot);
   const staleResponse = await worker.fetch(
     new Request('https://portal.test/api/nav/us'),
     env,
   );
-  assert.equal(staleResponse.status, 503);
-  assert.equal((await staleResponse.json()).pending, true);
+  assert.equal(staleResponse.status, 200);
+  const staleSnapshot = await staleResponse.json();
+  assert.equal(staleSnapshot.pending, true);
+  assert.equal(staleSnapshot.fallback, true);
+  assert.equal(staleSnapshot.servedRevision, 2);
+  assert.equal(staleSnapshot.targetRevision, 3);
 });
 
 test('admin rebuild probes and appends a newer official EOD session', async () => {
@@ -1072,7 +1149,7 @@ test('admin rebuild probes and appends a newer official EOD session', async () =
     tape_through: '2026-07-27', price_basis: 'raw_close', adjusted: 0,
   });
   assert.equal(navRows(env).at(-1).nav_date, '2026-07-27');
-  const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  const cache = await publicNavSnapshot(env);
   assert.equal(cache.as_of, '2026-07-27');
   assert.equal(cache.holdings[0].price, 13);
 });
@@ -1190,11 +1267,12 @@ test('historical publish preserves a verified same-day counter after the EOD tap
   assert.equal(drained.ok, true, JSON.stringify(drained));
   assert.equal(drained.pending, false, JSON.stringify(drained));
   assert.equal(navRows(env).at(-1).nav_date, '2026-07-27');
-  const status = JSON.parse(env.YC_KV.values.get('navstatus:us'));
+  const publicStore = await loadPublicPortfolioSnapshot(env, 'us');
+  const status = publicStore.status;
   assert.equal(status.counterPreserved, true);
   assert.equal(status.historicalThrough, '2026-07-24');
   assert.equal(status.as_of, '2026-07-27');
-  const cache = JSON.parse(env.YC_KV.values.get('navcache:us'));
+  const cache = publicStore.snapshot;
   assert.equal(cache.as_of, '2026-07-27');
   assert.equal(cache.holdings[0].price, 13);
   assert.equal(cache.holdings[0].priceBasis, 'raw_counter');

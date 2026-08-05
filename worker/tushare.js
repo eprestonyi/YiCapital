@@ -861,7 +861,13 @@ export function createTushareAdapter(env, options = {}) {
     const key = makeCacheKey(apiName, params, fields);
     const retrievedAt = nowIso(now);
     const currentMs = new Date(retrievedAt).getTime();
-    const cached = await readKv(cache, key);
+    // Minute/intraday quotes are consumed once inside a valuation run. Writing
+    // every symbol to KV each minute exhausts the account-wide daily allowance
+    // without improving valuation consistency, so only longer-lived datasets
+    // use the shared cache.
+    const cacheEligible = !['intraday_snapshot', 'live_minute_bar']
+      .includes(config.freshness_class);
+    const cached = cacheEligible ? await readKv(cache, key) : null;
     if (cached && cached.schema_version === 1 &&
         cached.endpoint === apiName &&
         Number(cached.expires_at_ms) > currentMs &&
@@ -985,11 +991,8 @@ export function createTushareAdapter(env, options = {}) {
       warnings,
       expires_at_ms: new Date(fetchedAt).getTime() + config.ttl_seconds * 1000,
     };
-    const cachedSuccessfully = await writeKv(
-      cache,
-      key,
-      cacheRecord,
-      config.ttl_seconds,
+    const cachedSuccessfully = cacheEligible && await writeKv(
+      cache, key, cacheRecord, config.ttl_seconds,
     );
     return {
       ok: true,

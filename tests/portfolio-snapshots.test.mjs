@@ -9,10 +9,14 @@ import {
   freezeLedgerPriceTape,
   handleLedgerAdminRequest,
   ledgerHealth,
+  loadMaterializedLedgerProjection,
+  loadPublicPortfolioSnapshot,
   persistLedgerValuation,
+  persistPublicPortfolioSnapshot,
 } from '../worker/ledger-store.js';
 import worker, {
   benchmarkSnapshotIsTushare,
+  bootstrapPortfolioStorageFromLegacyKv,
   portfolioDataset,
   persistPortfolioCache,
   portfolioRealtimeDataset,
@@ -41,6 +45,12 @@ class MockKV {
   async put(key, value) {
     this.puts.push({ key, value });
     this.values.set(key, value);
+  }
+}
+
+class QuotaKV extends MockKV {
+  async put() {
+    throw new Error('simulated KV write quota exceeded');
   }
 }
 
@@ -85,6 +95,53 @@ function renderablePortfolioCache({
   };
 }
 
+test('validated same-revision legacy read snapshots bootstrap into D1 without changing facts', async () => {
+  const db = await ledgerDatabase();
+  db.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const cache = {
+    ...renderablePortfolioCache({ revision: 1 }),
+    base: {
+      cash: -100, marketValue: 1100, totalAssets: 1000,
+      liability: 0, netValue: 1000, units: 1000, unitNav: 1,
+    },
+    holdings: [{
+      t: 'AAA.US', q: 10, price: 110, marketValue: 1100,
+      adjusted: false, priceBasis: 'raw_close',
+    }],
+    risk_snapshot: {
+      adjusted: false,
+      price_basis: 'fund_return_series_from_raw_close_nav',
+    },
+  };
+  const ledger = {
+    market: 'us', portfolio: 'us', ledgerRevision: 1,
+    source: 'd1-confirmed-event-ledger', savedBy: 'ledger-outbox',
+    valuationReady: true, navRecalculationRequired: [],
+    sourceHoldings: [{ adjusted: false, priceBasis: 'raw_close' }],
+    savedAt: '2026-07-30T20:00:00.000Z',
+  };
+  const status = {
+    pf: 'us', ledgerRevision: 1, complete: true, fallback: false,
+    ranAt: '2026-07-30T20:00:00.000Z',
+  };
+  const env = {
+    FEEDBACK_DB: db,
+    YC_KV: new MockKV({
+      'ledger:us': JSON.stringify(ledger),
+      'navcache:us': JSON.stringify(cache),
+      'navstatus:us': JSON.stringify(status),
+    }),
+  };
+
+  const result = await bootstrapPortfolioStorageFromLegacyKv(env, 'us');
+  assert.equal(result.ok, true);
+  assert.equal(result.ledgerRevision, 1);
+  assert.deepEqual((await loadMaterializedLedgerProjection(env, 'us')).projection, ledger);
+  assert.deepEqual((await loadPublicPortfolioSnapshot(env, 'us')).snapshot, cache);
+});
+
 class D1Statement {
   constructor(database, sql, values = []) {
     this.database = database;
@@ -124,11 +181,14 @@ class D1Database {
   }
 }
 
-async function ledgerDatabase() {
-  const sql = await Promise.all([
+async function ledgerDatabase({ publicSnapshots = true } = {}) {
+  const files = [
     '0002_portfolio_ledger.sql',
     '0003_frozen_price_tapes.sql',
-  ].map(file => readFile(path.join(ROOT, 'migrations', file), 'utf8')));
+    ...(publicSnapshots ? ['0005_public_portfolio_snapshots.sql'] : []),
+  ];
+  const sql = await Promise.all(files
+    .map(file => readFile(path.join(ROOT, 'migrations', file), 'utf8')));
   return new D1Database(sql.join('\n'));
 }
 
@@ -495,13 +555,6 @@ test('ordinary NAV refresh serves the immutable same-revision snapshot while der
   database.database.prepare(`
     UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
   `).run();
-  database.database.prepare(`
-    INSERT INTO ledger_outbox (
-      outbox_id, portfolio_id, ledger_revision, kind, payload_json,
-      status, attempts, available_at, created_at
-    ) VALUES ('nav-1', 'us', 1, 'RECALC_NAV', '{"affectedFrom":"2026-07-20"}',
-      'PENDING', 0, 0, 1)
-  `).run();
   const kv = new MockKV({
     'ledger:us': JSON.stringify({
       market: 'us', portfolio: 'us', currency: 'USD', positions: [],
@@ -509,14 +562,27 @@ test('ordinary NAV refresh serves the immutable same-revision snapshot while der
       lastUnitNav: 1, baseNetValue: 1000, ledgerRevision: 1,
       navRecalculationRequired: [],
     }),
-    'navcache:us': JSON.stringify(renderablePortfolioCache({
-      revision: 1, snapshotId: 'portfolio-last-success',
-    })),
   });
+  const env = { YC_KV: kv, FEEDBACK_DB: database };
+  await persistPublicPortfolioSnapshot(
+    env,
+    'us',
+    1,
+    renderablePortfolioCache({
+      revision: 1, snapshotId: 'portfolio-last-success',
+    }),
+    { ledgerRevision: 1, ranAt: '2026-07-29T22:00:00.000Z' },
+  );
+  database.database.prepare(`
+    INSERT INTO ledger_outbox (
+      outbox_id, portfolio_id, ledger_revision, kind, payload_json,
+      status, attempts, available_at, created_at
+    ) VALUES ('nav-1', 'us', 1, 'RECALC_NAV', '{"affectedFrom":"2026-07-20"}',
+      'PENDING', 0, 0, 1)
+  `).run();
   const adapter = adapterWith(async () => {
     throw new Error('ordinary price refresh must not run while outbox is pending');
   });
-  const env = { YC_KV: kv, FEEDBACK_DB: database };
 
   const status = await updatePortfolioNav(env, 'us', { adapter, now });
   assert.equal(status.skip, 'ledger-derived-work-pending');
@@ -538,10 +604,25 @@ test('ordinary NAV refresh serves the immutable same-revision snapshot while der
   assert.equal(body.freshness.fallback, 'last_successful_snapshot');
   assert.equal(body.servedRevision, 1);
   assert.equal(body.targetRevision, 1);
+  assert.equal(body.storage_backend, 'd1');
 });
 
 test('public NAV atomically serves an older complete snapshot only while its new revision is pending', async () => {
   const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const kv = new MockKV();
+  const env = { YC_KV: kv, FEEDBACK_DB: database };
+  await persistPublicPortfolioSnapshot(
+    env,
+    'us',
+    1,
+    renderablePortfolioCache({
+      revision: 1, snapshotId: 'portfolio-revision-1',
+    }),
+    { ledgerRevision: 1, ranAt: '2026-07-29T22:00:00.000Z' },
+  );
   database.database.prepare(`
     UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
   `).run();
@@ -552,12 +633,6 @@ test('public NAV atomically serves an older complete snapshot only while its new
     ) VALUES ('nav-2', 'us', 2, 'RECALC_NAV', '{"affectedFrom":"2026-07-30"}',
       'PENDING', 0, 0, 1)
   `).run();
-  const kv = new MockKV({
-    'navcache:us': JSON.stringify(renderablePortfolioCache({
-      revision: 1, snapshotId: 'portfolio-revision-1',
-    })),
-  });
-  const env = { YC_KV: kv, FEEDBACK_DB: database };
 
   const pendingResponse = await worker.fetch(
     new Request('https://portal.test/api/nav/us'), env,
@@ -569,6 +644,7 @@ test('public NAV atomically serves an older complete snapshot only while its new
   assert.equal(pending.freshness.stale, true);
   assert.equal(pending.servedRevision, 1);
   assert.equal(pending.targetRevision, 2);
+  assert.equal(pending.storage_backend, 'd1');
 
   database.database.prepare(`
     UPDATE ledger_outbox SET status = 'DONE' WHERE outbox_id = 'nav-2'
@@ -585,9 +661,15 @@ test('public NAV atomically serves an older complete snapshot only while its new
   assert.equal(propagating.freshness.stale, true);
   assert.equal(propagating.freshness.reason, 'ledger_revision_snapshot_propagating');
 
-  await kv.put('navcache:us', JSON.stringify(renderablePortfolioCache({
-    revision: 2, snapshotId: 'portfolio-revision-2',
-  })));
+  await persistPublicPortfolioSnapshot(
+    env,
+    'us',
+    2,
+    renderablePortfolioCache({
+      revision: 2, snapshotId: 'portfolio-revision-2',
+    }),
+    { ledgerRevision: 2, ranAt: '2026-07-30T22:00:00.000Z' },
+  );
   const currentResponse = await worker.fetch(
     new Request('https://portal.test/api/nav/us'), env,
   );
@@ -635,14 +717,26 @@ test('public NAV rejects an incomplete or wrong-portfolio fallback cache', async
 });
 
 test('public cache release barrier preserves the last renderable snapshot', async () => {
-  const previous = JSON.stringify(renderablePortfolioCache({
+  const previous = renderablePortfolioCache({
     revision: 1, snapshotId: 'last-renderable',
-  }));
-  const kv = new MockKV({ 'navcache:us': previous });
+  });
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const kv = new MockKV();
+  const env = { YC_KV: kv, FEEDBACK_DB: database };
+  await persistPublicPortfolioSnapshot(
+    env,
+    'us',
+    1,
+    previous,
+    { ledgerRevision: 1, ranAt: '2026-07-22T22:00:00.000Z' },
+  );
   const dates = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23'];
   await assert.rejects(
     persistPortfolioCache(
-      { YC_KV: kv },
+      env,
       'us',
       {
         portfolio: 'us', currency: 'USD', ledgerRevision: 1,
@@ -665,9 +759,83 @@ test('public cache release barrier preserves the last renderable snapshot', asyn
     ),
     error => error && error.code === 'PORTFOLIO_PUBLIC_CACHE_NOT_RENDERABLE',
   );
-  assert.equal(kv.values.get('navcache:us'), previous);
+  const stored = await loadPublicPortfolioSnapshot(env, 'us');
+  assert.deepEqual(stored.snapshot, previous);
   assert.equal(kv.values.has('live:us'), false);
   assert.equal(kv.values.has('navstatus:us'), false);
+  assert.equal(kv.values.has('navcache:us'), false);
+});
+
+test('D1 publication succeeds when every KV write is rejected by quota', async () => {
+  const database = await ledgerDatabase();
+  database.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const env = { YC_KV: new QuotaKV(), FEEDBACK_DB: database };
+  const dates = ['2026-07-25', '2026-07-26', '2026-07-27', '2026-07-28', '2026-07-29'];
+  const stress = renderablePortfolioCache({ revision: 1 }).stress;
+
+  const published = await persistPortfolioCache(
+    env,
+    'us',
+    {
+      portfolio: 'us', currency: 'USD', ledgerRevision: 1,
+      history: dates.map((date, index) => ({ date, ret: index ? 0.001 : 0 })),
+      navRows: dates.map((date, index) => ({
+        date, nav: 1 + index * 0.001, unitNav: 1 + index * 0.001,
+      })),
+      sourceHoldings: [], cash: 1000, liability: 0, units: 1000,
+      baseMarketValue: 0, baseTotalAssets: 1000, baseNetValue: 1000,
+      lastDate: dates.at(-1), lastUnitNav: 1.004,
+      savedAt: '2026-07-29T22:00:00.000Z',
+    },
+    {
+      rows: [], holdings: [], ledgerRevision: 1,
+      sourceMeta: {
+        source: 'portfolio-ledger', source_endpoint: 'portfolio-ledger',
+        as_of: dates.at(-1), fetched_at: '2026-07-29T22:00:00.000Z',
+        freshness_class: 'eod',
+      },
+    },
+    { ledgerRevision: 1, ranAt: '2026-07-29T22:00:00.000Z' },
+    { stress },
+  );
+
+  const stored = await loadPublicPortfolioSnapshot(env, 'us');
+  assert.equal(stored.snapshotId, published.snapshot_id);
+  assert.equal(stored.ledgerRevision, 1);
+  assert.equal(stored.snapshot.historyComplete, true);
+  assert.equal(stored.snapshot.navRows.length, dates.length);
+  assert.equal(stored.snapshot.stress.model, 'noncentral-t');
+});
+
+test('verified KV fallback remains usable when the D1 public table is missing or D1 reads fail', async () => {
+  const fallback = renderablePortfolioCache({
+    revision: 0, snapshotId: 'verified-kv-fallback',
+  });
+  const unavailableDb = {
+    prepare() { throw new Error('simulated D1 read outage'); },
+  };
+  const databases = [
+    await ledgerDatabase({ publicSnapshots: false }),
+    unavailableDb,
+  ];
+
+  for (const database of databases) {
+    const response = await worker.fetch(
+      new Request('https://portal.test/api/nav/us'),
+      {
+        YC_KV: new MockKV({ 'navcache:us': JSON.stringify(fallback) }),
+        FEEDBACK_DB: database,
+      },
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.snapshot_id, 'verified-kv-fallback');
+    assert.equal(body.portfolio, 'us');
+    assert.equal(body.storage_backend, 'kv-fallback');
+  }
 });
 
 test('public NAV still fails closed when pending work has no last successful snapshot', async () => {
@@ -1651,6 +1819,11 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
   assert.equal(status.phase, 'publish');
   assert.equal(status.rebuiltFrom, '2026-07-20');
   assert.equal(status.appended, '2026-07-30');
+  const publicSnapshot = await loadPublicPortfolioSnapshot(env, 'us');
+  assert.equal(publicSnapshot.ledgerRevision, 2);
+  assert.equal(publicSnapshot.snapshot.navRows.at(-1).date, '2026-07-30');
+  assert.equal(publicSnapshot.snapshot.navRows.at(-1).nav, 1.02);
+  assert.equal(kv.values.has('navcache:us'), false);
   const rows = database.database.prepare(`
     SELECT nav_date, cash_minor, market_value_minor, units_micros, unit_nav_micros,
       ledger_revision FROM ledger_nav_snapshots WHERE portfolio_id = 'us' ORDER BY nav_date
@@ -1664,7 +1837,7 @@ test('dirty historical NAV rows are rebuilt from confirmed events and market-day
       units_micros: 1_000_000_000, unit_nav_micros: 1_020_000, ledger_revision: 2 },
   ]);
   assert.equal(rows.some(row => row.nav_date === '2026-07-31'), false);
-  const rebuiltLedger = JSON.parse(kv.values.get('ledger:us'));
+  const rebuiltLedger = (await loadMaterializedLedgerProjection(env, 'us')).projection;
   assert.deepEqual(rebuiltLedger.navRecalculationRequired, []);
   assert.deepEqual({
     price: rebuiltLedger.positions[0].p,
@@ -1807,9 +1980,10 @@ test('cash-only portfolio uses a market proxy quote to persist daily NAV', async
     };
   });
   const database = await ledgerDatabase();
+  const env = { YC_KV: kv, FEEDBACK_DB: database };
 
   const status = await updatePortfolioNav(
-    { YC_KV: kv, FEEDBACK_DB: database },
+    env,
     'us',
     { adapter, now },
   );
@@ -1833,10 +2007,11 @@ test('cash-only portfolio uses a market proxy quote to persist daily NAV', async
     unit_nav_micros: 1_000_000,
     ledger_revision: 0,
   });
-  const live = JSON.parse(kv.values.get('live:us'));
-  assert.deepEqual(live.rows, []);
-  const cache = JSON.parse(kv.values.get('navcache:us'));
-  assert.equal(cache.navRows.at(-1).nav, 1);
+  const publicSnapshot = await loadPublicPortfolioSnapshot(env, 'us');
+  assert.equal(publicSnapshot.ledgerRevision, 0);
+  assert.equal(publicSnapshot.snapshot.navRows.at(-1).nav, 1);
+  assert.equal(kv.values.has('live:us'), false);
+  assert.equal(kv.values.has('navcache:us'), false);
 });
 
 test('an unchanged EOD fallback marks the served NAV as the last successful snapshot', async () => {

@@ -12,13 +12,19 @@ import {
   freezeLedgerPriceTape,
   handleLedgerAdminRequest,
   ledgerHealth,
+  loadMaterializedLedgerProjection,
+  loadPublicPortfolioAttempt,
+  loadPublicPortfolioSnapshot,
   loadLedgerReplayInput,
   loadFrozenLedgerPriceTape,
   loadPriorFrozenLedgerPriceTape,
   materializeLedgerKv,
   persistLedgerValuation,
   persistLedgerValuationBatch,
+  persistMaterializedLedgerProjection,
+  persistPublicPortfolioSnapshot,
   portfolioDerivationState,
+  updatePublicPortfolioStatus,
 } from './ledger-store.js';
 import { replayPortfolioLedger } from './portfolio-ledger.js';
 import {
@@ -79,8 +85,8 @@ import {
      user:{用戶名} / email:{郵箱}→用戶名 /
      sess:{token}（v9.1 僅作一個版本的舊會話遷移與緊急回退副本）/
      pending:{郵箱}(驗證碼,15分鐘) / gsetup:{token}(Google待設置,15分鐘) /
-     ledger:{us|hk|a} / live:{us|hk|a} / navcache:{us|hk|a} /
-     navstatus:{us|hk|a} / bmset:{us|hk|a} / bmstatus:{us|hk|a}
+     bmset:{us|hk|a} / bmstatus:{us|hk|a}; ledger/live/navcache/navstatus
+     僅為遷移與災備只讀副本，組合投影/公開快照/狀態均以 D1 為準
    綁定與密鑰：KV=YC_KV；D1=FEEDBACK_DB；Secrets: ADMIN_USERNAME, ADMIN_PASSWORD,
      GH_TOKEN, TUSHARE_TOKEN, FEEDBACK_RATE_SALT, GOOGLE_CLIENT_ID,
      （可選）RESEND_API_KEY；Text: GH_OWNER, GH_REPO,
@@ -1732,6 +1738,70 @@ function makePortfolioCache(led, live, status, options = {}) {
     status: status || null, cacheVersion: 3,
   };
 }
+
+function portfolioSnapshotDbAvailable(env) {
+  return Boolean(env && (env.LEDGER_DB || env.FEEDBACK_DB));
+}
+
+async function readMaterializedLedgerStore(env, pf) {
+  if (portfolioSnapshotDbAvailable(env)) {
+    try {
+      const stored = await loadMaterializedLedgerProjection(env, pf);
+      if (stored && stored.projection) {
+        return { ledger: stored.projection, backend: 'd1' };
+      }
+    } catch (error) {
+      console.error('ledger_projection_d1_read_failed', pf,
+        String(error && (error.code || error.message) || 'unknown'));
+    }
+  }
+  const raw = await env.YC_KV.get('ledger:' + pf);
+  let ledger = null;
+  try { ledger = raw ? JSON.parse(raw) : null; } catch {}
+  return { ledger, backend: 'kv-fallback', raw };
+}
+
+async function readPortfolioPublicStore(env, pf) {
+  if (portfolioSnapshotDbAvailable(env)) {
+    try {
+      const stored = await loadPublicPortfolioSnapshot(env, pf);
+      if (stored && portfolioFallbackCacheRenderable(stored.snapshot, pf)) {
+        return {
+          cache: stored.snapshot,
+          status: stored.status,
+          backend: 'd1',
+          ledgerRevision: stored.ledgerRevision,
+          statusLedgerRevision: stored.statusLedgerRevision,
+        };
+      }
+    } catch (error) {
+      console.error('portfolio_public_d1_read_failed', pf,
+        String(error && (error.code || error.message) || 'unknown'));
+    }
+  }
+  const [cacheRaw, statusRaw] = await Promise.all([
+    env.YC_KV.get('navcache:' + pf),
+    env.YC_KV.get('navstatus:' + pf),
+  ]);
+  let cache = null;
+  let status = null;
+  try { cache = cacheRaw ? JSON.parse(cacheRaw) : null; } catch {}
+  try { status = statusRaw ? JSON.parse(statusRaw) : null; } catch {}
+  if (portfolioSnapshotDbAvailable(env)) {
+    try {
+      const attempt = await loadPublicPortfolioAttempt(env, pf);
+      const kvStatusAt = Date.parse(String(status && status.ranAt || ''));
+      if (attempt && (!Number.isFinite(kvStatusAt) || attempt.statusAt > kvStatusAt)) {
+        status = attempt.status;
+      }
+    } catch (error) {
+      console.error('portfolio_attempt_d1_read_failed', pf,
+        String(error && (error.code || error.message) || 'unknown'));
+    }
+  }
+  return { cache, status, backend: 'kv-fallback' };
+}
+
 export async function persistPortfolioCache(env, pf, led, live, status, options = {}) {
   const cache = makePortfolioCache({ ...led, portfolio: pf }, live, status, options);
   const currentHistorySha256 = await portfolioHistorySha256(cache.history);
@@ -1801,14 +1871,22 @@ export async function persistPortfolioCache(env, pf, led, live, status, options 
   cache.stress_history_sha256 = stressHistorySha256;
 
   if (!portfolioFallbackCacheRenderable(cache, pf)) {
-    const existingRaw = await env.YC_KV.get('navcache:' + pf);
-    let existing = null;
-    try { existing = existingRaw ? JSON.parse(existingRaw) : null; } catch {}
+    const existing = (await readPortfolioPublicStore(env, pf)).cache;
     if (portfolioFallbackCacheRenderable(existing, pf)) {
       const error = new Error('portfolio_public_cache_not_renderable');
       error.code = 'PORTFOLIO_PUBLIC_CACHE_NOT_RENDERABLE';
       throw error;
     }
+  }
+  if (portfolioSnapshotDbAvailable(env)) {
+    await persistPublicPortfolioSnapshot(
+      env,
+      pf,
+      Number(cache.ledgerRevision),
+      cache,
+      status,
+    );
+    return cache;
   }
   // navcache is the public release barrier. A failed live/status write leaves
   // the old public snapshot untouched; a failed final put can never expose a
@@ -1822,6 +1900,11 @@ export async function persistPortfolioCache(env, pf, led, live, status, options 
 }
 
 async function restorePortfolioCacheWrites(env, pf, previous, published) {
+  // A D1 public row is one atomic last-known-good snapshot. If the ledger
+  // revision advances immediately after publication, retaining that row is the
+  // correct fallback while the newer revision is pending; no multi-key rollback
+  // is necessary or safe.
+  if (portfolioSnapshotDbAvailable(env)) return;
   const entries = [
     ['live:' + pf, previous.live, JSON.stringify(published.live)],
     ['navstatus:' + pf, previous.status, JSON.stringify(published.status)],
@@ -1839,6 +1922,19 @@ async function restorePortfolioCacheWrites(env, pf, previous, published) {
 }
 
 async function writePortfolioAttempt(env, pf, status) {
+  if (portfolioSnapshotDbAvailable(env)) {
+    await updatePublicPortfolioStatus(
+      env,
+      pf,
+      status,
+      Number.isInteger(Number(status && status.ledgerRevision))
+        ? Number(status.ledgerRevision) : null,
+    ).catch(error => {
+      console.error('portfolio_attempt_d1_write_failed', pf,
+        String(error && (error.code || error.message) || 'unknown'));
+    });
+    return status;
+  }
   await env.YC_KV.put('navstatus:' + pf, JSON.stringify(status));
   return status;
 }
@@ -2626,11 +2722,14 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       historicalThrough: publishedThrough,
       fallback: false,
     };
-    const [previousLive, previousStatus, previousCache] = await Promise.all([
+    const [previousLive, previousStore] = await Promise.all([
       env.YC_KV.get('live:' + pf),
-      env.YC_KV.get('navstatus:' + pf),
-      env.YC_KV.get('navcache:' + pf),
+      readPortfolioPublicStore(env, pf),
     ]);
+    const previousStatus = previousStore.status
+      ? JSON.stringify(previousStore.status) : null;
+    const previousCache = previousStore.cache
+      ? JSON.stringify(previousStore.cache) : null;
     await assertLedgerRevision(env, pf, ledgerRevision);
     // Historical stress is intentionally expensive. Reuse it only when the
     // prior same-revision public history is an exact prefix of the freshly
@@ -3258,13 +3357,15 @@ function portfolioFallbackCacheRenderable(cache, portfolio) {
 
 function publicPortfolioSnapshot(cache, latestStatus, derivationState) {
   const latestFailed = latestStatus && latestStatus.fallback === true;
+  const derivationUnavailable = derivationState && derivationState.unavailable === true;
   const derivedWorkPending = derivationState && derivationState.derivedWorkPending === true;
   const servedRevision = portfolioCacheRevision(cache);
   const targetRevision = derivationState && Number.isInteger(derivationState.ledgerRevision)
     ? derivationState.ledgerRevision : servedRevision;
   const revisionSyncPending = Number.isInteger(servedRevision) &&
     Number.isInteger(targetRevision) && servedRevision < targetRevision;
-  const lastSuccessfulFallback = latestFailed || derivedWorkPending || revisionSyncPending;
+  const lastSuccessfulFallback = latestFailed || derivationUnavailable ||
+    derivedWorkPending || revisionSyncPending;
   const source = cache.source || cache.source_endpoint || 'persisted-snapshot';
   const asOf = cache.as_of || cache.asOf || cache.marketDate || cache.end || null;
   const fetchedAt = cache.fetched_at || cache.updatedAt || null;
@@ -3284,10 +3385,12 @@ function publicPortfolioSnapshot(cache, latestStatus, derivationState) {
       last_attempt_at: latestStatus && latestStatus.ranAt || null,
       reason: latestFailed
         ? latestStatus.reason || 'latest_market_data_request_failed'
-        : derivedWorkPending ? 'ledger_derived_work_pending'
+        : derivationUnavailable ? 'ledger_derivation_state_unavailable'
+          : derivedWorkPending ? 'ledger_derived_work_pending'
           : revisionSyncPending ? 'ledger_revision_snapshot_propagating' : null,
     },
-    pending: derivedWorkPending || revisionSyncPending,
+    pending: derivationUnavailable || derivedWorkPending || revisionSyncPending,
+    derivation_state_unavailable: derivationUnavailable,
     derived_work_pending: derivedWorkPending,
     revision_sync_pending: revisionSyncPending,
     pending_count: derivedWorkPending ? Number(derivationState.pendingCount || 0) : 0,
@@ -3303,7 +3406,7 @@ async function publicPortfolioDerivationState(env, portfolio) {
   try {
     return await portfolioDerivationState(env, portfolio);
   } catch {
-    return null;
+    return { unavailable: true };
   }
 }
 
@@ -3316,16 +3419,18 @@ function portfolioCacheMatchesRevision(cache, ledgerRevision) {
 }
 
 function portfolioCacheServable(cache, derivationState, portfolio) {
+  if (!portfolioFallbackCacheRenderable(cache, portfolio)) return false;
   if (derivationState === undefined) return true;
+  if (derivationState && derivationState.unavailable === true) return true;
   if (!derivationState || !Number.isInteger(derivationState.ledgerRevision)) return false;
   const cacheRevision = portfolioCacheRevision(cache);
   if (portfolioCacheMatchesRevision(cache, derivationState.ledgerRevision) &&
       derivationState.derivedWorkPending !== true) {
-    return portfolioFallbackCacheRenderable(cache, portfolio);
+    return true;
   }
   const fallbackRevision = Number.isInteger(cacheRevision) &&
     cacheRevision <= derivationState.ledgerRevision;
-  return fallbackRevision && portfolioFallbackCacheRenderable(cache, portfolio);
+  return fallbackRevision;
 }
 
 function materializedPublishLedgerUsable(ledger, portfolio, ledgerRevision) {
@@ -3340,6 +3445,81 @@ function materializedPublishLedgerUsable(ledger, portfolio, ledgerRevision) {
   return (Array.isArray(ledger.sourceHoldings) ? ledger.sourceHoldings : [])
     .every(row => row && row.adjusted === false &&
       ['raw_close', 'raw_counter'].includes(String(row.priceBasis || '').toLowerCase()));
+}
+
+function portfolioCacheAccountingConsistent(cache) {
+  const base = cache && cache.base;
+  if (!base || typeof base !== 'object') return false;
+  const cash = Number(base.cash);
+  const marketValue = Number(base.marketValue);
+  const totalAssets = Number(base.totalAssets);
+  const liability = Number(base.liability);
+  const netValue = Number(base.netValue);
+  const units = Number(base.units);
+  const unitNav = Number(base.unitNav);
+  if (![cash, marketValue, totalAssets, liability, netValue, units, unitNav]
+    .every(Number.isFinite)) return false;
+  if (Math.abs(cash + marketValue - totalAssets) > 0.05) return false;
+  if (Math.abs(totalAssets - liability - netValue) > 0.05) return false;
+  return units <= 0 || Math.abs(netValue / units - unitNav) <= 0.000005;
+}
+
+function portfolioCacheRawValuation(cache) {
+  const holdings = Array.isArray(cache && cache.holdings) ? cache.holdings : [];
+  const holdingsRaw = holdings.every(row => row && row.adjusted === false &&
+    ['raw_close', 'raw_counter'].includes(String(
+      row.priceBasis || row.price_basis || '',
+    ).toLowerCase()));
+  const risk = cache && cache.risk_snapshot;
+  return holdingsRaw && risk && risk.adjusted === false &&
+    String(risk.price_basis || '').toLowerCase().includes('raw_close_nav');
+}
+
+export async function bootstrapPortfolioStorageFromLegacyKv(env, requestedPortfolio) {
+  const pf = String(requestedPortfolio || '').trim().toLowerCase();
+  if (!/^(us|hk|a)$/.test(pf)) throw new Error('portfolio_not_supported');
+  if (!portfolioSnapshotDbAvailable(env)) throw new Error('ledger_db_unavailable');
+  const derivation = await portfolioDerivationState(env, pf);
+  if (derivation.derivedWorkPending) throw new Error('ledger_derived_work_pending');
+  const [ledgerRaw, cacheRaw, statusRaw] = await Promise.all([
+    env.YC_KV.get('ledger:' + pf),
+    env.YC_KV.get('navcache:' + pf),
+    env.YC_KV.get('navstatus:' + pf),
+  ]);
+  let ledger;
+  let cache;
+  let status;
+  try {
+    ledger = ledgerRaw ? JSON.parse(ledgerRaw) : null;
+    cache = cacheRaw ? JSON.parse(cacheRaw) : null;
+    status = statusRaw ? JSON.parse(statusRaw) : cache && cache.status || null;
+  } catch {
+    throw new Error('legacy_portfolio_snapshot_invalid_json');
+  }
+  const ledgerRevision = derivation.ledgerRevision;
+  if (!materializedPublishLedgerUsable(ledger, pf, ledgerRevision)) {
+    throw new Error('legacy_ledger_projection_not_current_raw');
+  }
+  if (!portfolioFallbackCacheRenderable(cache, pf) ||
+      Number(cache.ledgerRevision) !== ledgerRevision ||
+      !portfolioCacheAccountingConsistent(cache) ||
+      !portfolioCacheRawValuation(cache)) {
+    throw new Error('legacy_public_snapshot_not_current_raw_renderable');
+  }
+  await assertLedgerRevision(env, pf, ledgerRevision);
+  await persistMaterializedLedgerProjection(env, pf, ledgerRevision, ledger);
+  await persistPublicPortfolioSnapshot(env, pf, ledgerRevision, cache, status);
+  await assertLedgerRevision(env, pf, ledgerRevision);
+  const stored = await loadPublicPortfolioSnapshot(env, pf);
+  return {
+    ok: true,
+    portfolio: pf,
+    ledgerRevision,
+    projectionBackend: 'd1',
+    publicBackend: 'd1',
+    snapshot_id: stored && stored.snapshotId || cache.snapshot_id,
+    as_of: stored && stored.asOf || cache.as_of || null,
+  };
 }
 
 async function reusableHistoricalPublishStress(cacheRaw, ledger, portfolio, ledgerRevision) {
@@ -3452,14 +3632,16 @@ async function updatePortfolioNav(env, pf, options = {}) {
   const affectedFrom = String(options.affectedFrom || '').slice(0, 10);
   const continuationRequested = Boolean(options.phase) || isoDatePattern.test(affectedFrom);
   const publishContinuation = String(options.phase || '').toLowerCase() === 'publish';
-  const [ledRaw, publicCacheRaw] = await Promise.all([
-    env.YC_KV.get('ledger:' + pf),
+  const [ledgerStore, publicStore] = await Promise.all([
+    readMaterializedLedgerStore(env, pf),
     continuationRequested && !publishContinuation
-      ? Promise.resolve(null)
-      : env.YC_KV.get('navcache:' + pf),
+      ? Promise.resolve({ cache: null, status: null, backend: 'not-read' })
+      : readPortfolioPublicStore(env, pf),
   ]);
-  const cachedLedger = ledRaw ? JSON.parse(ledRaw) : null;
-  const cachedPublic = publicCacheRaw ? JSON.parse(publicCacheRaw) : null;
+  const cachedLedger = ledgerStore.ledger;
+  const cachedPublic = publicStore.cache;
+  const publicCacheRaw = cachedPublic ? JSON.stringify(cachedPublic) : null;
+  const priorStatusRaw = publicStore.status ? JSON.stringify(publicStore.status) : null;
   let led = cachedLedger;
   if (continuationRequested && (env.LEDGER_DB || env.FEEDBACK_DB)) {
     if (publishContinuation && materializedPublishLedgerUsable(
@@ -3487,22 +3669,14 @@ async function updatePortfolioNav(env, pf, options = {}) {
   }
   if (!led) {
     st.skip = 'no-ledger';
+    if (portfolioSnapshotDbAvailable(env)) return writePortfolioAttempt(env, pf, st);
     await Promise.all([
       env.YC_KV.put('navstatus:' + pf, JSON.stringify(st)),
       env.YC_KV.put('navcache:' + pf, JSON.stringify({
-        ok: true,
-        enabled: false,
-        portfolio: pf,
-        history: [],
-        rows: [],
-        holdings: [],
-        status: st,
-        source: 'portfolio-ledger',
-        as_of: null,
-        fetched_at: null,
+        ok: true, enabled: false, portfolio: pf, history: [], rows: [], holdings: [],
+        status: st, source: 'portfolio-ledger', as_of: null, fetched_at: null,
         freshness_class: 'eod',
-        freshness: { class: 'eod', stale: true, fallback: null },
-        cacheVersion: 3,
+        freshness: { class: 'eod', stale: true, fallback: null }, cacheVersion: 3,
       })),
     ]);
     return st;
@@ -3538,14 +3712,39 @@ async function updatePortfolioNav(env, pf, options = {}) {
         fallback: true,
       });
     }
+    if (ledgerStore.backend === 'kv-fallback') {
+      await persistMaterializedLedgerProjection(
+        env,
+        pf,
+        derivation.ledgerRevision,
+        led,
+      ).catch(error => {
+        console.error('ledger_projection_bootstrap_failed', pf,
+          String(error && (error.code || error.message) || 'unknown'));
+      });
+    }
   }
-  const liveRaw = await env.YC_KV.get('live:' + pf);
-  let live = liveRaw ? JSON.parse(liveRaw) : { rows: [] };
-  const [lastPxRaw, priorStatusRaw] = await Promise.all([
-    env.YC_KV.get('lastpx:' + pf),
-    env.YC_KV.get('navstatus:' + pf),
-  ]);
-  const lastPx = lastPxRaw ? JSON.parse(lastPxRaw) : {};
+  let liveRaw = null;
+  let live;
+  if (publicStore.backend === 'd1' && cachedPublic) {
+    live = {
+      rows: [],
+      holdings: Array.isArray(cachedPublic.holdings) ? cachedPublic.holdings : [],
+      ledgerRevision: cachedPublic.ledgerRevision,
+      marketDate: cachedPublic.marketDate || cachedPublic.as_of || null,
+      updatedAt: cachedPublic.updatedAt || cachedPublic.fetched_at || null,
+      sourceMeta: {
+        source: cachedPublic.source || 'portfolio-ledger',
+        source_endpoint: cachedPublic.source_endpoint || 'd1-public-snapshot',
+        as_of: cachedPublic.as_of || cachedPublic.marketDate || null,
+        fetched_at: cachedPublic.fetched_at || cachedPublic.updatedAt || null,
+        freshness_class: cachedPublic.freshness_class || 'eod',
+      },
+    };
+  } else {
+    liveRaw = await env.YC_KV.get('live:' + pf);
+    try { live = liveRaw ? JSON.parse(liveRaw) : { rows: [] }; } catch { live = { rows: [] }; }
+  }
   const adapter = options.adapter || createTushareAdapter(env, options);
   const ledgerRevision = Number(options.ledgerRevision ?? led.ledgerRevision);
   let cachedPublicUsable = false;
@@ -3905,7 +4104,6 @@ async function updatePortfolioNav(env, pf, options = {}) {
   for (const item of fetched) {
     const p = item.p;
     const q = item.q;
-    lastPx[p.t] = q;
     if (q.date && q.date < marketDate) stale.push(p.t);
     const mv = Number(p.q) * Number(q.close);
     exactMarketValues.push(mv);
@@ -4064,10 +4262,7 @@ async function updatePortfolioNav(env, pf, options = {}) {
     });
     live.rows = [];
     live.ledgerRevision = ledgerRevision;
-    await Promise.all([
-      env.YC_KV.put('lastpx:' + pf, JSON.stringify(lastPx)),
-      persistPortfolioCache(env, pf, freshLedger, live, st),
-    ]);
+    await persistPortfolioCache(env, pf, freshLedger, live, st);
     return st;
   }
   // Ordinary counter refreshes change no event fact or ledger revision. The
@@ -4125,11 +4320,14 @@ async function updatePortfolioNav(env, pf, options = {}) {
     }
     : {};
   await assertLedgerRevision(env, pf, ledgerRevision);
-  const publishedLastPx = JSON.stringify(lastPx);
-  const [, publishedCache] = await Promise.all([
-    env.YC_KV.put('lastpx:' + pf, publishedLastPx),
-    persistPortfolioCache(env, pf, realtimeLedger, live, st, cacheOptions),
-  ]);
+  const publishedCache = await persistPortfolioCache(
+    env,
+    pf,
+    realtimeLedger,
+    live,
+    st,
+    cacheOptions,
+  );
   try {
     await assertLedgerRevision(env, pf, ledgerRevision);
   } catch (error) {
@@ -4142,14 +4340,6 @@ async function updatePortfolioNav(env, pf, options = {}) {
       status: st,
       cache: publishedCache,
     }).catch(() => {});
-    const currentLastPx = await env.YC_KV.get('lastpx:' + pf).catch(() => null);
-    if (currentLastPx === publishedLastPx) {
-      if (lastPxRaw == null && typeof env.YC_KV.delete === 'function') {
-        await env.YC_KV.delete('lastpx:' + pf).catch(() => {});
-      } else if (lastPxRaw != null) {
-        await env.YC_KV.put('lastpx:' + pf, lastPxRaw).catch(() => {});
-      }
-    }
     throw error;
   }
   return st;
@@ -4159,9 +4349,7 @@ async function refreshMarketCaches(env, portfolios, benchmarkSets, trigger, by) 
   const ranAt = new Date().toISOString();
   const nav = await Promise.all(portfolios.map(pf => updatePortfolioNav(env, pf)));
   const benchmarks = await prewarmBenchmark(env, benchmarkSets);
-  const result = { ok: true, trigger, by: by || 'system', ranAt, nav, benchmarks };
-  await env.YC_KV.put('refresh:last:' + trigger, JSON.stringify(result));
-  return result;
+  return { ok: true, trigger, by: by || 'system', ranAt, nav, benchmarks };
 }
 
 async function streamToText(stream) {
@@ -4282,6 +4470,8 @@ export default {
           ledger_outbox_pending: ledger.outboxPending,
           raw_nav_ready: ledger.rawNavReady,
           raw_nav_portfolios: ledger.rawNavPortfolios,
+          ledger_storage_ready: ledger.storageReady,
+          ledger_storage_portfolios: ledger.storagePortfolios,
           auth_sessions: authSessions,
           auth_rate_limit: authRateLimit,
           feedback_rate_limit: !!env.FEEDBACK_RATE_SALT,
@@ -4529,16 +4719,16 @@ export default {
         };
         const markets = {};
         await Promise.all(Object.entries(specs).map(async ([market, spec]) => {
-          const [navRaw, benchmarkRaw, derivationState] = await Promise.all([
-            env.YC_KV.get('navcache:' + market),
+          const [publicStore, benchmarkRaw, derivationState] = await Promise.all([
+            readPortfolioPublicStore(env, market),
             env.YC_KV.get('bmset:' + market),
             publicPortfolioDerivationState(env, market),
           ]);
-          if (!navRaw || !benchmarkRaw) {
+          if (!publicStore.cache || !benchmarkRaw) {
             markets[market] = null;
             return;
           }
-          const nav = JSON.parse(navRaw);
+          const nav = publicStore.cache;
           const benchmark = JSON.parse(benchmarkRaw);
           const benchmarkRows = benchmark.data && benchmark.data[spec.benchmark];
           if (!nav.ok || !nav.enabled || !Array.isArray(nav.navRows)
@@ -4553,7 +4743,14 @@ export default {
             markets[market] = null;
             return;
           }
-          const publicNav = publicPortfolioSnapshot(nav, nav.status || null, derivationState);
+          const publicNav = {
+            ...publicPortfolioSnapshot(
+              nav,
+              publicStore.status || nav.status || null,
+              derivationState,
+            ),
+            storage_backend: publicStore.backend,
+          };
           const navReview = !!(
             nav.status && Array.isArray(nav.status.stale) && nav.status.stale.length
             || nav.status && Array.isArray(nav.status.missing) && nav.status.missing.length
@@ -4589,7 +4786,7 @@ export default {
           ok: Object.values(markets).some(Boolean),
           fetchedAt: new Date().toISOString(),
           markets,
-        }, 200, { 'Cache-Control': 'public, max-age=120, stale-while-revalidate=300' });
+        }, 200, { 'Cache-Control': 'public, max-age=15, stale-while-revalidate=45' });
       }
 
       /* ════ 會話 ════ */
@@ -4840,7 +5037,38 @@ export default {
         });
       }
 
-      /* ════ D1 事件賬本：Pending → 修改/扣稅 → Confirm → KV 快照 ════ */
+      /* One-time, revision-guarded migration of the already validated legacy
+         read projections. It copies no accounting fact and never reads Excel. */
+      if (path === '/api/admin/ledger/bootstrap-public-storage' &&
+          request.method === 'POST') {
+        const deny = needAdmin(); if (deny) return deny;
+        const body = await request.json().catch(() => ({}));
+        const requested = String(body.portfolio || 'all').toLowerCase();
+        if (!/^(all|us|hk|a)$/.test(requested)) {
+          return J(env, { error: 'portfolio 只支持 all/us/hk/a' }, 400);
+        }
+        const portfolios = requested === 'all' ? ['us', 'hk', 'a'] : [requested];
+        const results = [];
+        for (const portfolio of portfolios) {
+          try {
+            results.push(await bootstrapPortfolioStorageFromLegacyKv(env, portfolio));
+          } catch (error) {
+            results.push({
+              ok: false,
+              portfolio,
+              error: String(error && (error.code || error.message) || 'bootstrap_failed'),
+            });
+          }
+        }
+        return J(env, {
+          ok: results.every(item => item.ok === true),
+          results,
+        }, results.every(item => item.ok === true) ? 200 : 409, {
+          'Cache-Control': 'no-store',
+        });
+      }
+
+      /* ════ D1 事件賬本：Pending → 修改/扣稅 → Confirm → D1 快照 ════ */
       if (path.startsWith('/api/admin/ledger')) {
         const deny = needAdmin(); if (deny) return deny;
         return handleLedgerAdminRequest(request, env, {
@@ -5001,7 +5229,6 @@ export default {
               nav: await Promise.all(portfolios.map(pf => updatePortfolioNav(env, pf))), benchmarks: [],
             }
           : await refreshMarketCaches(env, portfolios, portfolios, 'manual', sess.u);
-        if (b.benchmarks === false) await env.YC_KV.put('refresh:last:manual', JSON.stringify(result));
         return J(env, result);
       }
 
@@ -5268,16 +5495,19 @@ export default {
       if (path.startsWith('/api/nav/') && request.method === 'GET') {
         const pf = path.split('/')[3];
         if (!/^(us|hk|a)$/.test(pf)) return J(env, { error: 'not found' }, 404);
-        const [cached, statusRaw, derivationState] = await Promise.all([
-          env.YC_KV.get('navcache:' + pf),
-          env.YC_KV.get('navstatus:' + pf),
+        const [publicStore, derivationState] = await Promise.all([
+          readPortfolioPublicStore(env, pf),
           publicPortfolioDerivationState(env, pf),
         ]);
-        if (cached) {
-          const status = statusRaw ? JSON.parse(statusRaw) : null;
-          const cache = JSON.parse(cached);
+        if (publicStore.cache) {
+          const cache = publicStore.cache;
           if (portfolioCacheServable(cache, derivationState, pf)) {
-            return J(env, publicPortfolioSnapshot(cache, status, derivationState));
+            return J(env, {
+              ...publicPortfolioSnapshot(cache, publicStore.status, derivationState),
+              storage_backend: publicStore.backend,
+            }, 200, {
+              'Cache-Control': 'public, max-age=15, stale-while-revalidate=45',
+            });
           }
         }
         return J(env, {
@@ -5361,20 +5591,13 @@ export default {
         const realtimePortfolios = ['us', 'hk', 'a']
           .filter(portfolio => portfolioRealtimeWindowOpen(nowValue, portfolio));
         if (!realtimePortfolios.length) return;
-        const nav = await Promise.all(realtimePortfolios.map(portfolio =>
+        await Promise.all(realtimePortfolios.map(portfolio =>
           updatePortfolioNav(env, portfolio).catch(error => ({
             pf: portfolio,
             complete: false,
             fallback: true,
             reason: String(error && (error.code || error.message) || 'realtime_refresh_failed'),
           }))));
-        await env.YC_KV.put('refresh:last:cron:realtime', JSON.stringify({
-          ok: nav.every(item => item && item.complete === true && item.fallback !== true),
-          trigger: 'cron:realtime',
-          ranAt: new Date(nowValue).toISOString(),
-          portfolios: realtimePortfolios,
-          nav,
-        }));
       })());
     } else if (cron === '*/2 * * * *') {
       ctx.waitUntil((async () => {

@@ -21,7 +21,7 @@ function testEnv(overrides = {}) {
         const result = query.includes('FROM ledger_outbox')
           ? { pending: 0 }
           : { count: query.includes("'ledger_portfolios'")
-            ? 14
+            ? 17
             : query.includes("'auth_account_revocations'")
               ? 3
               : query.includes("name = 'auth_rate_limits'")

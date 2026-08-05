@@ -29,9 +29,12 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
      npx wrangler d1 migrations apply FEEDBACK_DB --remote
    這會依次套用 migrations/0001_user_feedback.sql、
    migrations/0002_portfolio_ledger.sql、migrations/0003_frozen_price_tapes.sql 與
-   migrations/0004_auth_sessions.sql。
+   migrations/0004_auth_sessions.sql、migrations/0005_public_portfolio_snapshots.sql。
    0003 為每個 ledger revision 建立 immutable、未復權 raw-close price tape，
-   是 NAV 發布門禁；0004 必須先於 v9.1 Worker 部署完成。不要把登入 token、
+   是 NAV 發布門禁；0004 必須先於 v9.1 Worker 部署完成；0005 把賬本物化投影、
+   最後完整公開快照及最新刷新狀態放入 D1，以單行 guarded UPSERT 取代分鐘級
+   KV 多鍵發布。0005 是 additive migration，必須先套用再部署讀取它的 Worker。
+   不要把登入 token、
    用戶意見、投資組合事件或稅務資料存入公開 GitHub 文件。
 
    v9.1 以 D1 作為登入會話真源：30 天閒置滑動續期、180 天絕對上限；KV 的
@@ -93,8 +96,10 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
      修改/扣稅/Confirm。Excel 可新建的仍只限 BUY / SELL / CAPITAL；已由後台簽名
      導出的其他既有事件可反向 UPDATE，但也只會重新進 Pending
    → Confirm 後應自動完成最早受影響日起的全歷史 Cash / Position / Liability /
-     Units / NAV 重算，然後重建 KV 與 Excel；outbox 最終應回到 0
-   → 首頁、組合頁和完整 US/HK/A 檔案頁仍讀取原有 KV 合同
+     Units / NAV 重算，然後重建 D1 物化投影、公開快照與 Excel；outbox 最終應回到 0
+   → /api/health 的 ledger_storage_ready 應為 true，三市場 projectionRevision 應等於
+     ledgerRevision；新 revision 尚在重算時可暫時保留上一份完整 publicRevision
+   → 首頁、組合頁和完整 US/HK/A 檔案頁讀取同一份 D1 公開快照；舊 KV 只作遷移/災備回退
    → Guest Sign up 註冊一個測試號 → 後台「帳號管理」應能看到並可停用/重置/刪除
    → 任一公開頁右下角提交一條測試意見 → admin-feedback 應顯示該條記錄，
      可更新狀態、優先級、處理備註及關聯 Issue / PR / 修復版本
@@ -102,7 +107,8 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
 修改管理員密碼：回到 ④ 改 ADMIN_PASSWORD 這個 Secret 即可，即刻生效。
 
 附：v9 D1 事件賬本、自動淨值與基準行情
-  · D1 的 ledger_events 是唯一真源；公开 GET 只读 KV，不在访客请求时读 Excel。
+  · D1 的 ledger_events 是唯一真源；公开 GET 只读 D1 原子公开快照，不在访客请求时
+    读 Excel。迁移期仅在 D1 缺表、读故障或尚未 backfill 时读取经过完整合同校验的旧 KV。
   · POST /api/ledger 与 POST /api/publish 永久返回 410；不存在可重新开启的
     Excel/KV 快照回退开关。
   · 人工只可新增 BUY、SELL、CAPITAL；股息、公司行动、负债及基金行动必须由
@@ -113,7 +119,7 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
   · 公司行动只记录原股变成哪些新 ticker 及绝对数量；不按价格分配、搬移或创造
     成本。所有成本/收入/税费只来自各自的 Cash Amount；公司行动 Cash 独立进入现金链。
   · Confirm 立即由 outbox 先冻结当前 revision 的未复权 raw-close price tape，再全历史
-    重算现金、持仓、负债、份额与 NAV，完成后才重建 KV / Excel；每日 Cron 再以
+    重算现金、持仓、负债、份额与 NAV，完成后才重建 D1 物化投影 / 公开快照 / Excel；每日 Cron 再以
     实际收盘行情更新。盘中一分钟 Cron 只在各市场正常交易时段用已核验 counter
     覆盖当日点；已冻结历史不可改写。Excel 四张 derived statements 只展示后台计算结果，不是
     operational seed，也不要求每日手工上传。
@@ -123,11 +129,12 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
     持久化成功快照，token 永不下發瀏覽器）
   · GET /api/entry-market：登入入口專用的三市場全歷史精簡快照，只含對齊後
     的組合/基準指數點與資料質量狀態，不包含持倉
-  · 行情、基準、Sharpe、回撤、VaR、壓測及持倉資料全部寫入 KV；
-    首頁、portfolios 與 fund-us 直接展示同一份快照。
+  · NAV、Sharpe、回撤、VaR、壓測及持倉以一個 D1 public snapshot 原子發布；
+    benchmark 仍是低頻 KV 快照。盤中 Tushare minute/intraday 報價不寫共享 KV，
+    避免耗盡賬戶每日寫入配額；首頁、portfolios 與 fund-us 直接展示同一份快照。
 
 ⑦ 配置每日任務（Worker → Settings → Triggers → Cron Triggers）
-     * * * * *     各市场正常交易时段每分钟更新当日未复权 counter NAV；同时续跑 outbox
+     * * * * *     各市场正常交易时段每分钟更新当日未复权 counter NAV（D1 原子发布，无分钟级组合 KV 写）；同时续跑 outbox
      30 21 * * *   US 收盤後更新 US + US 三大指數
      0 9 * * *     北京 17:00 更新 HK/A 即時收盤快照
      30 10 * * *   北京 18:30 以官方 EOD 對賬 HK/A + 三隻港股 ETF/滬深300
@@ -145,6 +152,10 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
    不要再通过 admin-publish 或 GitHub 工作簿更新投资组合；Excel 只从数据库导出，
    上传可为 BUY / SELL / CAPITAL 新建事实，也可修改带签名元数据的既有事件；两者
    都必须经过 Preview → Pending → Confirm，四张 derived statements 永不反写。
+   0005 首次上线后保留旧 navcache/ledger KV 原值，不删除；由后台实时刷新或完整重算
+   验证当前 ledger revision 后自动 backfill 三市场 D1 projection/public snapshot。确认
+   /api/health 的 ledger_storage_ready=true、三个 public snapshot SHA 校验通过、公开接口
+   均显示 storage_backend=d1 后，旧 KV 才只是只读灾备。
 
 ════════ 可選登入方式（v6 新增）════════
 

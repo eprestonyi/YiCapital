@@ -6,8 +6,13 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   freezeLedgerPriceTape,
   handleLedgerAdminRequest,
+  loadMaterializedLedgerProjection,
+  loadPublicPortfolioAttempt,
+  loadPublicPortfolioSnapshot,
   materializeLedgerKv,
   persistLedgerValuation,
+  persistPublicPortfolioSnapshot,
+  updatePublicPortfolioStatus,
 } from '../worker/ledger-store.js';
 
 class D1Statement {
@@ -78,10 +83,186 @@ async function setup() {
   const sql = (await Promise.all([
     '../migrations/0002_portfolio_ledger.sql',
     '../migrations/0003_frozen_price_tapes.sql',
+    '../migrations/0005_public_portfolio_snapshots.sql',
   ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   const env = { FEEDBACK_DB: new D1Database(sql), YC_KV: new MemoryKv() };
   return { env };
 }
+
+function publicSnapshot({
+  revision = 1,
+  snapshotId = 'portfolio-us-v1',
+  asOf = '2026-08-05',
+  updatedAt = '2026-08-05T10:00:00.000Z',
+} = {}) {
+  return {
+    ok: true,
+    enabled: true,
+    portfolio: 'us',
+    ledgerRevision: revision,
+    snapshot_id: snapshotId,
+    cacheVersion: 3,
+    as_of: asOf,
+    updatedAt,
+    historyComplete: true,
+    history: [],
+    navRows: [],
+    curve: [],
+    holdings: [],
+  };
+}
+
+test('D1 public snapshot helpers publish one atomic row and update only newer status', async () => {
+  const { env } = await setup();
+  const database = env.FEEDBACK_DB.database;
+  database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const snapshot = publicSnapshot();
+  const publishedStatus = {
+    pf: 'us', ledgerRevision: 1, complete: true, fallback: false,
+    ranAt: '2026-08-05T10:00:00.000Z',
+  };
+
+  await persistPublicPortfolioSnapshot(env, 'us', 1, snapshot, publishedStatus);
+  const publishedRow = database.prepare(`
+    SELECT ledger_revision, snapshot_id, snapshot_json, snapshot_sha256,
+      status_json, generated_at, status_at
+    FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+  `).get();
+  assert.equal(publishedRow.ledger_revision, 1);
+  assert.equal(publishedRow.snapshot_id, snapshot.snapshot_id);
+  assert.match(publishedRow.snapshot_sha256, /^[a-f0-9]{64}$/);
+
+  const loaded = await loadPublicPortfolioSnapshot(env, 'us');
+  assert.equal(loaded.ledgerRevision, 1);
+  assert.equal(loaded.snapshotId, snapshot.snapshot_id);
+  assert.deepEqual(loaded.snapshot, snapshot);
+  assert.deepEqual(loaded.status, publishedStatus);
+
+  const newerStatus = {
+    pf: 'us', ledgerRevision: 1, fallback: true,
+    reason: 'quote_temporarily_unavailable',
+    ranAt: '2026-08-05T10:05:00.000Z',
+  };
+  assert.equal(await updatePublicPortfolioStatus(env, 'us', newerStatus), true);
+  const statusUpdatedRow = database.prepare(`
+    SELECT ledger_revision, snapshot_id, snapshot_json, snapshot_sha256,
+      status_json, generated_at, status_at
+    FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+  `).get();
+  assert.deepEqual(statusUpdatedRow, publishedRow);
+  const newerAttempt = await loadPublicPortfolioAttempt(env, 'us');
+  assert.equal(newerAttempt.ledgerRevision, 1);
+  assert.deepEqual(newerAttempt.status, newerStatus);
+
+  const olderStatus = {
+    pf: 'us', ledgerRevision: 1, fallback: false,
+    ranAt: '2026-08-05T10:01:00.000Z',
+  };
+  assert.equal(await updatePublicPortfolioStatus(env, 'us', olderStatus), true);
+  assert.deepEqual(
+    await loadPublicPortfolioAttempt(env, 'us'),
+    newerAttempt,
+  );
+});
+
+test('D1 public snapshot load fails closed when the stored SHA is corrupted', async () => {
+  const { env } = await setup();
+  const database = env.FEEDBACK_DB.database;
+  database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  await persistPublicPortfolioSnapshot(
+    env,
+    'us',
+    1,
+    publicSnapshot(),
+    { pf: 'us', ledgerRevision: 1, ranAt: '2026-08-05T10:00:00.000Z' },
+  );
+  database.prepare(`
+    UPDATE ledger_public_snapshots SET snapshot_sha256 = ? WHERE portfolio_id = 'us'
+  `).run('0'.repeat(64));
+
+  await assert.rejects(
+    loadPublicPortfolioSnapshot(env, 'us'),
+    error => error && error.status === 503 && /校驗失敗/.test(error.message),
+  );
+});
+
+test('an older same-revision public snapshot is a no-op and cannot replace the newer row', async () => {
+  const { env } = await setup();
+  const database = env.FEEDBACK_DB.database;
+  database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const newer = publicSnapshot({
+    snapshotId: 'portfolio-us-newer',
+    updatedAt: '2026-08-05T10:05:00.000Z',
+  });
+  await persistPublicPortfolioSnapshot(env, 'us', 1, newer, {
+    pf: 'us', ledgerRevision: 1, complete: true, fallback: false,
+    ranAt: '2026-08-05T10:05:00.000Z',
+  });
+  const before = database.prepare(`
+    SELECT * FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+  `).get();
+
+  const older = publicSnapshot({
+    snapshotId: 'portfolio-us-older',
+    updatedAt: '2026-08-05T10:00:00.000Z',
+  });
+  await persistPublicPortfolioSnapshot(env, 'us', 1, older, {
+    pf: 'us', ledgerRevision: 1, complete: true, fallback: false,
+    ranAt: '2026-08-05T10:00:00.000Z',
+  });
+
+  const after = database.prepare(`
+    SELECT * FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+  `).get();
+  assert.deepEqual(after, before);
+  assert.equal((await loadPublicPortfolioSnapshot(env, 'us')).snapshotId, newer.snapshot_id);
+});
+
+test('public snapshot revision mismatch is rejected without partially changing the release row', async () => {
+  const { env } = await setup();
+  const database = env.FEEDBACK_DB.database;
+  database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  await persistPublicPortfolioSnapshot(env, 'us', 1, publicSnapshot(), {
+    pf: 'us', ledgerRevision: 1, complete: true, fallback: false,
+    ranAt: '2026-08-05T10:00:00.000Z',
+  });
+  const before = database.prepare(`
+    SELECT * FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+  `).get();
+
+  await assert.rejects(
+    persistPublicPortfolioSnapshot(
+      env,
+      'us',
+      2,
+      publicSnapshot({
+        revision: 2,
+        snapshotId: 'portfolio-us-wrong-revision',
+        updatedAt: '2026-08-05T10:10:00.000Z',
+      }),
+      {
+        pf: 'us', ledgerRevision: 2, complete: true, fallback: false,
+        ranAt: '2026-08-05T10:10:00.000Z',
+      },
+    ),
+    error => error && error.status === 409 &&
+      error.details && error.details.code === 'LEDGER_REVISION_CHANGED',
+  );
+  assert.deepEqual(
+    database.prepare(`
+      SELECT * FROM ledger_public_snapshots WHERE portfolio_id = 'us'
+    `).get(),
+    before,
+  );
+});
 
 async function api(env, path, { method = 'GET', body } = {}) {
   const response = await handleLedgerAdminRequest(new Request('https://ledger.test' + path, {
@@ -377,7 +558,10 @@ test('D1 ledger keeps Pending mutable, Confirm immutable, and Excel updates as s
   const finalBuy = finalList.body.events.find(item => item.eventType === 'BUY');
   assert.equal(finalBuy.event.net_cash_minor, -12000);
   assert.equal(finalList.body.projection.cash.minor, 88000);
-  assert.ok(JSON.parse(await env.YC_KV.get('ledger:us')).ledgerRevision === 3);
+  assert.equal(
+    (await loadMaterializedLedgerProjection(env, 'us')).ledgerRevision,
+    3,
+  );
 });
 
 test('automation source idempotency rejects the same source key with changed content', async () => {
@@ -1064,7 +1248,7 @@ test('admin derived rebuild defers an ordered outbox drain when refresh is avail
   assert.ok(rows.every(row => row.last_error === null && row.processed_at != null));
 });
 
-test('KV materialization recovers the latest revision when revision changes during publication', async () => {
+test('D1 materialization recovers the latest revision when revision changes during publication', async () => {
   const { env } = await setup();
   await createAndConfirm(env, {
     type: 'CAPITAL', date: '2026-02-01', shareholder: 'LP1',
@@ -1073,19 +1257,36 @@ test('KV materialization recovers the latest revision when revision changes duri
   const tape1 = await freezeUsTape(env, 1, { from: '2026-02-01' });
 
   let injected = false;
-  env.YC_KV.onPut = async key => {
-    if (injected || key !== 'ledger:us') return;
-    injected = true;
-    env.FEEDBACK_DB.database.prepare(`
-      UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
-    `).run();
-    await freezeUsTape(env, 2, { from: '2026-02-01', parent: tape1 });
+  const originalPrepare = env.FEEDBACK_DB.prepare.bind(env.FEEDBACK_DB);
+  env.FEEDBACK_DB.prepare = sql => {
+    const statement = originalPrepare(sql);
+    if (!/INSERT INTO ledger_materialized_projections/.test(sql)) return statement;
+    const originalBind = statement.bind.bind(statement);
+    statement.bind = (...values) => {
+      const bound = originalBind(...values);
+      const originalRun = bound.run.bind(bound);
+      bound.run = async () => {
+        if (!injected) {
+          injected = true;
+          env.FEEDBACK_DB.database.prepare(`
+            UPDATE ledger_portfolios SET ledger_revision = 2 WHERE portfolio_id = 'us'
+          `).run();
+          await freezeUsTape(env, 2, { from: '2026-02-01', parent: tape1 });
+        }
+        return originalRun();
+      };
+      return bound;
+    };
+    return statement;
   };
 
   const materialized = await materializeLedgerKv(env, 'us');
   assert.equal(injected, true);
   assert.equal(materialized.ledgerRevision, 2);
-  assert.equal(JSON.parse(await env.YC_KV.get('ledger:us')).ledgerRevision, 2);
+  const stored = await loadMaterializedLedgerProjection(env, 'us');
+  assert.equal(stored.ledgerRevision, 2);
+  assert.equal(stored.projection.ledgerRevision, 2);
+  assert.equal(env.YC_KV.values.has('ledger:us'), false);
 
   const recovery = env.FEEDBACK_DB.database.prepare(`
     SELECT ledger_revision, status, attempts, last_error
@@ -1096,8 +1297,4 @@ test('KV materialization recovers the latest revision when revision changes duri
   assert.equal(recovery.status, 'DONE');
   assert.equal(recovery.attempts, 1);
   assert.equal(recovery.last_error, null);
-  assert.deepEqual(
-    env.YC_KV.puts.slice(-2).map(item => JSON.parse(item.value).ledgerRevision),
-    [1, 2],
-  );
 });

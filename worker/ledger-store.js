@@ -32,6 +32,8 @@ const CASH_PRIORITY = Object.freeze({
   REVERSAL: 6,
 });
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_PUBLIC_SNAPSHOT_BYTES = 1536 * 1024;
+const MAX_MATERIALIZED_PROJECTION_BYTES = 1536 * 1024;
 const MAX_IMPORT_ROWS = 280;
 const MAX_NAV_BATCH_ROWS = 800;
 const MAX_RAW_PRICE_TAPE_ROWS = 40_000;
@@ -300,6 +302,328 @@ export async function portfolioDerivationState(env, requestedPortfolio) {
     derivedWorkPending: pendingCount > 0,
     pendingCount,
   };
+}
+
+export async function loadPublicPortfolioSnapshot(env, requestedPortfolio) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const row = await dbFirst(ledgerDb(env), `
+    SELECT snapshot.portfolio_id, snapshot.ledger_revision, snapshot.snapshot_id,
+      snapshot.as_of_date, snapshot.snapshot_json, snapshot.snapshot_sha256,
+      snapshot.status_json, snapshot.generated_at, snapshot.status_at,
+      snapshot.published_at, snapshot.updated_at,
+      attempt.ledger_revision AS attempt_ledger_revision,
+      attempt.status_json AS attempt_status_json,
+      attempt.status_sha256 AS attempt_status_sha256,
+      attempt.status_at AS attempt_status_at
+    FROM ledger_public_snapshots snapshot
+    LEFT JOIN ledger_public_attempts attempt
+      ON attempt.portfolio_id = snapshot.portfolio_id
+    WHERE snapshot.portfolio_id = ?
+  `, [portfolio]);
+  if (!row) return null;
+  const actualSha256 = await sha256Hex(row.snapshot_json);
+  if (actualSha256 !== row.snapshot_sha256) {
+    throw new LedgerHttpError(503, '公開投資組合快照校驗失敗');
+  }
+  let snapshot;
+  let status = null;
+  try {
+    snapshot = JSON.parse(row.snapshot_json);
+    status = row.status_json ? JSON.parse(row.status_json) : null;
+  } catch {
+    throw new LedgerHttpError(503, '公開投資組合快照損壞');
+  }
+  if (String(snapshot.portfolio || '') !== portfolio ||
+      Number(snapshot.ledgerRevision) !== Number(row.ledger_revision) ||
+      String(snapshot.snapshot_id || '') !== String(row.snapshot_id || '')) {
+    throw new LedgerHttpError(503, '公開投資組合快照 revision 不一致');
+  }
+  let statusLedgerRevision = Number(row.ledger_revision);
+  let statusAt = Number(row.status_at);
+  if (row.attempt_status_json &&
+      Number(row.attempt_ledger_revision) >= Number(row.ledger_revision) &&
+      Number(row.attempt_status_at) > statusAt) {
+    const attemptSha256 = await sha256Hex(row.attempt_status_json);
+    if (attemptSha256 !== row.attempt_status_sha256) {
+      throw new LedgerHttpError(503, '公開投資組合狀態校驗失敗');
+    }
+    try {
+      status = JSON.parse(row.attempt_status_json);
+      statusLedgerRevision = Number(row.attempt_ledger_revision);
+      statusAt = Number(row.attempt_status_at);
+    } catch {
+      throw new LedgerHttpError(503, '公開投資組合狀態損壞');
+    }
+  }
+  return {
+    portfolio,
+    ledgerRevision: Number(row.ledger_revision),
+    snapshotId: row.snapshot_id,
+    asOf: row.as_of_date,
+    snapshot,
+    status,
+    generatedAt: Number(row.generated_at),
+    statusAt,
+    statusLedgerRevision,
+    publishedAt: Number(row.published_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+export async function persistPublicPortfolioSnapshot(
+  env,
+  requestedPortfolio,
+  expectedLedgerRevision,
+  snapshot,
+  status = null,
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const ledgerRevision = Number(expectedLedgerRevision);
+  if (!Number.isInteger(ledgerRevision) || ledgerRevision < 0 ||
+      !snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) ||
+      !String(snapshot.snapshot_id || '').trim() ||
+      String(snapshot.portfolio || '') !== portfolio ||
+      Number(snapshot.ledgerRevision) !== ledgerRevision) {
+    throw new LedgerHttpError(400, '公開投資組合快照無效');
+  }
+  const snapshotJson = stableJson(snapshot);
+  const statusJson = status == null ? null : stableJson(status);
+  if (textEncoder.encode(snapshotJson).byteLength > MAX_PUBLIC_SNAPSHOT_BYTES) {
+    throw new LedgerHttpError(413, '公開投資組合快照過大');
+  }
+  const timestamp = now();
+  const generatedAtCandidate = Date.parse(String(
+    status && status.ranAt || snapshot.updatedAt || snapshot.fetched_at || '',
+  ));
+  const generatedAt = Number.isFinite(generatedAtCandidate)
+    ? generatedAtCandidate : timestamp;
+  const snapshotSha256 = await sha256Hex(snapshotJson);
+  const result = await ledgerDb(env).prepare(`
+    INSERT INTO ledger_public_snapshots (
+      portfolio_id, ledger_revision, snapshot_id, as_of_date,
+      snapshot_json, snapshot_sha256, status_json, generated_at, status_at,
+      published_at, updated_at
+    )
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    FROM ledger_portfolios
+    WHERE portfolio_id = ? AND ledger_revision = ?
+    ON CONFLICT(portfolio_id) DO UPDATE SET
+      ledger_revision = excluded.ledger_revision,
+      snapshot_id = excluded.snapshot_id,
+      as_of_date = excluded.as_of_date,
+      snapshot_json = excluded.snapshot_json,
+      snapshot_sha256 = excluded.snapshot_sha256,
+      status_json = excluded.status_json,
+      generated_at = excluded.generated_at,
+      status_at = excluded.status_at,
+      published_at = excluded.published_at,
+      updated_at = excluded.updated_at
+    WHERE ledger_public_snapshots.ledger_revision < excluded.ledger_revision
+       OR (ledger_public_snapshots.ledger_revision = excluded.ledger_revision
+         AND ledger_public_snapshots.generated_at < excluded.generated_at)
+  `).bind(
+    portfolio,
+    ledgerRevision,
+    String(snapshot.snapshot_id || ''),
+    String(snapshot.as_of || snapshot.asOf || snapshot.marketDate || '').slice(0, 10) || null,
+    snapshotJson,
+    snapshotSha256,
+    statusJson,
+    generatedAt,
+    generatedAt,
+    timestamp,
+    timestamp,
+    portfolio,
+    ledgerRevision,
+  ).run();
+  if (Number(result && result.meta && result.meta.changes || 0) !== 1) {
+    const [current, stored] = await Promise.all([
+      portfolioRow(ledgerDb(env), portfolio),
+      dbFirst(ledgerDb(env), `
+        SELECT ledger_revision, generated_at
+        FROM ledger_public_snapshots WHERE portfolio_id = ?
+      `, [portfolio]),
+    ]);
+    if (Number(current.ledger_revision) === ledgerRevision && stored &&
+        Number(stored.ledger_revision) === ledgerRevision &&
+        Number(stored.generated_at) >= generatedAt) {
+      return {
+        portfolio,
+        ledgerRevision,
+        publishedAt: timestamp,
+        supersededByNewerSameRevision: true,
+      };
+    }
+    throw new LedgerHttpError(409, '公開快照 revision 已變更', {
+      code: 'LEDGER_REVISION_CHANGED',
+    });
+  }
+  return { portfolio, ledgerRevision, publishedAt: timestamp };
+}
+
+export async function loadPublicPortfolioAttempt(env, requestedPortfolio) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const row = await dbFirst(ledgerDb(env), `
+    SELECT ledger_revision, status_json, status_sha256, status_at, updated_at
+    FROM ledger_public_attempts WHERE portfolio_id = ?
+  `, [portfolio]);
+  if (!row) return null;
+  if (await sha256Hex(row.status_json) !== row.status_sha256) {
+    throw new LedgerHttpError(503, '公開投資組合狀態校驗失敗');
+  }
+  try {
+    return {
+      portfolio,
+      ledgerRevision: Number(row.ledger_revision),
+      status: JSON.parse(row.status_json),
+      statusAt: Number(row.status_at),
+      updatedAt: Number(row.updated_at),
+    };
+  } catch {
+    throw new LedgerHttpError(503, '公開投資組合狀態損壞');
+  }
+}
+
+export async function updatePublicPortfolioStatus(
+  env,
+  requestedPortfolio,
+  status,
+  expectedLedgerRevision = null,
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const timestamp = now();
+  const statusAtCandidate = Date.parse(String(status && status.ranAt || ''));
+  const statusAt = Number.isFinite(statusAtCandidate) ? statusAtCandidate : timestamp;
+  const suppliedRevision = expectedLedgerRevision == null
+    ? Number(status && status.ledgerRevision)
+    : Number(expectedLedgerRevision);
+  const ledgerRevision = Number.isInteger(suppliedRevision) && suppliedRevision >= 0
+    ? suppliedRevision
+    : await currentLedgerRevision(env, portfolio);
+  const statusJson = stableJson(status || {});
+  const statusSha256 = await sha256Hex(statusJson);
+  const result = await ledgerDb(env).prepare(`
+    INSERT INTO ledger_public_attempts (
+      portfolio_id, ledger_revision, status_json, status_sha256,
+      status_at, updated_at
+    )
+    SELECT ?, ?, ?, ?, ?, ?
+    FROM ledger_portfolios
+    WHERE portfolio_id = ? AND ledger_revision = ?
+    ON CONFLICT(portfolio_id) DO UPDATE SET
+      ledger_revision = excluded.ledger_revision,
+      status_json = excluded.status_json,
+      status_sha256 = excluded.status_sha256,
+      status_at = excluded.status_at,
+      updated_at = excluded.updated_at
+    WHERE ledger_public_attempts.ledger_revision < excluded.ledger_revision
+       OR (ledger_public_attempts.ledger_revision = excluded.ledger_revision
+         AND ledger_public_attempts.status_at < excluded.status_at)
+  `).bind(
+    portfolio, ledgerRevision, statusJson, statusSha256, statusAt, timestamp,
+    portfolio, ledgerRevision,
+  ).run();
+  if (Number(result && result.meta && result.meta.changes || 0) === 1) return true;
+  const current = await currentLedgerRevision(env, portfolio);
+  if (current !== ledgerRevision) return false;
+  const existing = await dbFirst(ledgerDb(env), `
+    SELECT ledger_revision, status_at FROM ledger_public_attempts WHERE portfolio_id = ?
+  `, [portfolio]);
+  return !!existing && Number(existing.ledger_revision) === ledgerRevision &&
+    Number(existing.status_at) >= statusAt;
+}
+
+export async function loadMaterializedLedgerProjection(env, requestedPortfolio) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const row = await dbFirst(ledgerDb(env), `
+    SELECT ledger_revision, projection_json, projection_sha256,
+      generated_at, updated_at
+    FROM ledger_materialized_projections
+    WHERE portfolio_id = ?
+  `, [portfolio]);
+  if (!row) return null;
+  if (await sha256Hex(row.projection_json) !== row.projection_sha256) {
+    throw new LedgerHttpError(503, '賬本物化投影校驗失敗');
+  }
+  let projection;
+  try { projection = JSON.parse(row.projection_json); } catch {
+    throw new LedgerHttpError(503, '賬本物化投影損壞');
+  }
+  if (String(projection.portfolio || projection.market || '') !== portfolio ||
+      Number(projection.ledgerRevision) !== Number(row.ledger_revision)) {
+    throw new LedgerHttpError(503, '賬本物化投影 revision 不一致');
+  }
+  return {
+    portfolio,
+    ledgerRevision: Number(row.ledger_revision),
+    projection,
+    generatedAt: Number(row.generated_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+export async function persistMaterializedLedgerProjection(
+  env,
+  requestedPortfolio,
+  expectedLedgerRevision,
+  projection,
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const ledgerRevision = Number(expectedLedgerRevision);
+  if (!Number.isInteger(ledgerRevision) || ledgerRevision < 0 ||
+      !projection || typeof projection !== 'object' || Array.isArray(projection) ||
+      String(projection.portfolio || projection.market || '') !== portfolio ||
+      Number(projection.ledgerRevision) !== ledgerRevision) {
+    throw new LedgerHttpError(400, '賬本物化投影無效');
+  }
+  const projectionJson = stableJson(projection);
+  if (textEncoder.encode(projectionJson).byteLength > MAX_MATERIALIZED_PROJECTION_BYTES) {
+    throw new LedgerHttpError(413, '賬本物化投影過大');
+  }
+  const projectionSha256 = await sha256Hex(projectionJson);
+  const generatedAtCandidate = Date.parse(String(projection.savedAt || ''));
+  const timestamp = now();
+  const generatedAt = Number.isFinite(generatedAtCandidate)
+    ? generatedAtCandidate : timestamp;
+  const result = await ledgerDb(env).prepare(`
+    INSERT INTO ledger_materialized_projections (
+      portfolio_id, ledger_revision, projection_json, projection_sha256,
+      generated_at, updated_at
+    )
+    SELECT ?, ?, ?, ?, ?, ?
+    FROM ledger_portfolios
+    WHERE portfolio_id = ? AND ledger_revision = ?
+    ON CONFLICT(portfolio_id) DO UPDATE SET
+      ledger_revision = excluded.ledger_revision,
+      projection_json = excluded.projection_json,
+      projection_sha256 = excluded.projection_sha256,
+      generated_at = excluded.generated_at,
+      updated_at = excluded.updated_at
+    WHERE ledger_materialized_projections.ledger_revision < excluded.ledger_revision
+       OR (ledger_materialized_projections.ledger_revision = excluded.ledger_revision
+         AND ledger_materialized_projections.generated_at < excluded.generated_at)
+  `).bind(
+    portfolio, ledgerRevision, projectionJson, projectionSha256,
+    generatedAt, timestamp, portfolio, ledgerRevision,
+  ).run();
+  if (Number(result && result.meta && result.meta.changes || 0) === 1) {
+    return { portfolio, ledgerRevision, generatedAt };
+  }
+  const [current, existing] = await Promise.all([
+    currentLedgerRevision(env, portfolio),
+    dbFirst(ledgerDb(env), `
+      SELECT ledger_revision, generated_at
+      FROM ledger_materialized_projections WHERE portfolio_id = ?
+    `, [portfolio]),
+  ]);
+  if (current === ledgerRevision && existing &&
+      Number(existing.ledger_revision) === ledgerRevision &&
+      Number(existing.generated_at) >= generatedAt) {
+    return { portfolio, ledgerRevision, generatedAt, supersededByNewerSameRevision: true };
+  }
+  throw new LedgerHttpError(409, '賬本物化投影 revision 已變更', {
+    code: 'LEDGER_REVISION_CHANGED',
+  });
 }
 
 export async function assertLedgerRevision(env, requestedPortfolio, expectedLedgerRevision) {
@@ -3435,8 +3759,10 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
   const marketValue = positions.reduce((sum, row) => sum + Number(row.mv || row.q * row.p || 0), 0);
   const totalAssets = cash + marketValue;
   const netValue = totalAssets - liability;
-  const oldRaw = await env.YC_KV.get('ledger:' + portfolio);
-  const old = oldRaw ? parseJson(oldRaw, {}) : {};
+  const storedProjection = await loadMaterializedLedgerProjection(env, portfolio);
+  const oldRaw = storedProjection ? null : await env.YC_KV.get('ledger:' + portfolio);
+  const old = storedProjection && storedProjection.projection ||
+    (oldRaw ? parseJson(oldRaw, {}) : {});
   const history = historyFromNav(navRows, events);
   const latestNav = navRows.length ? navRows[navRows.length - 1] : null;
   const fundActionAdjustments = fundActionAdjustmentByDate(events);
@@ -3509,7 +3835,31 @@ export async function materializeLedgerKv(env, requestedPortfolio, options = {})
     }
     throw new Error('ledger revision kept changing before KV publication');
   }
-  await env.YC_KV.put('ledger:' + portfolio, JSON.stringify(ledger));
+  try {
+    await persistMaterializedLedgerProjection(
+      env,
+      portfolio,
+      capturedRevision,
+      ledger,
+    );
+  } catch (error) {
+    if (!isRevisionChangedError(error)) throw error;
+    const latestRevision = await currentLedgerRevision(env, portfolio);
+    if (expectedRevision != null) throw error;
+    await requeueLatestKv(
+      db,
+      portfolio,
+      latestRevision,
+      'revision changed during D1 projection publication',
+    );
+    if (Number(options.raceRetry || 0) < 2) {
+      return materializeLedgerKv(env, portfolio, {
+        ...options,
+        raceRetry: Number(options.raceRetry || 0) + 1,
+      });
+    }
+    throw new Error('ledger revision kept changing during D1 projection publication');
+  }
   const afterWrite = await portfolioRow(db, portfolio);
   if (Number(afterWrite.ledger_revision) === capturedRevision) {
     await db.prepare(`
@@ -4087,19 +4437,55 @@ export async function ledgerHealth(env) {
         'ledger_transaction_guards', 'ledger_events', 'ledger_audit_log',
         'ledger_exports', 'ledger_imports', 'ledger_import_rows',
         'ledger_outbox', 'ledger_prices', 'ledger_nav_snapshots',
-        'ledger_price_tapes', 'ledger_price_tape_rows'
+        'ledger_price_tapes', 'ledger_price_tape_rows',
+        'ledger_public_snapshots', 'ledger_public_attempts',
+        'ledger_materialized_projections'
       )
     `);
     const outbox = await dbFirst(db, `
       SELECT COUNT(*) AS pending FROM ledger_outbox
       WHERE status IN ('PENDING', 'FAILED', 'PROCESSING')
     `).catch(() => ({ pending: 0 }));
-    const ready = Number(row && row.count || 0) === 14;
+    const ready = Number(row && row.count || 0) === 17;
     const rawNavPortfolios = {};
+    const storagePortfolios = {};
     if (ready) {
       const portfolios = await dbAll(db, `
         SELECT portfolio_id, ledger_revision FROM ledger_portfolios ORDER BY portfolio_id
       `);
+      const storageRows = await dbAll(db, `
+        SELECT portfolio.portfolio_id,
+          portfolio.ledger_revision,
+          projection.ledger_revision AS projection_revision,
+          snapshot.ledger_revision AS public_revision,
+          attempt.ledger_revision AS attempt_revision
+        FROM ledger_portfolios portfolio
+        LEFT JOIN ledger_materialized_projections projection
+          ON projection.portfolio_id = portfolio.portfolio_id
+        LEFT JOIN ledger_public_snapshots snapshot
+          ON snapshot.portfolio_id = portfolio.portfolio_id
+        LEFT JOIN ledger_public_attempts attempt
+          ON attempt.portfolio_id = portfolio.portfolio_id
+        ORDER BY portfolio.portfolio_id
+      `);
+      for (const storage of storageRows) {
+        const ledgerRevision = Number(storage.ledger_revision);
+        const projectionRevision = storage.projection_revision == null
+          ? null : Number(storage.projection_revision);
+        const publicRevision = storage.public_revision == null
+          ? null : Number(storage.public_revision);
+        storagePortfolios[storage.portfolio_id] = {
+          ledgerRevision,
+          projectionRevision,
+          publicRevision,
+          attemptRevision: storage.attempt_revision == null
+            ? null : Number(storage.attempt_revision),
+          projectionCurrent: ledgerRevision === 0 || projectionRevision === ledgerRevision,
+          publicPresent: publicRevision != null,
+          publicCurrent: publicRevision === ledgerRevision,
+          publicFallback: publicRevision != null && publicRevision < ledgerRevision,
+        };
+      }
       for (const state of portfolios) {
         const portfolio = state.portfolio_id;
         const revision = Number(state.ledger_revision);
@@ -4212,11 +4598,15 @@ export async function ledgerHealth(env) {
       }
     }
     const rawNavReady = ready && Object.values(rawNavPortfolios).every(item => item.ready);
+    const storageReady = ready && Object.values(storagePortfolios).every(item =>
+      item.projectionCurrent && (item.ledgerRevision === 0 || item.publicPresent));
     return {
       ready,
       outboxPending: Number(outbox && outbox.pending || 0),
       rawNavReady,
       rawNavPortfolios,
+      storageReady,
+      storagePortfolios,
     };
   } catch (error) {
     return {
@@ -4224,6 +4614,8 @@ export async function ledgerHealth(env) {
       outboxPending: null,
       rawNavReady: false,
       rawNavPortfolios: {},
+      storageReady: false,
+      storagePortfolios: {},
     };
   }
 }
