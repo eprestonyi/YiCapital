@@ -206,7 +206,7 @@ test('a current password login does not spend shared KV writes on last-login met
   assert.equal([...kv.values.keys()].some(key => key.startsWith('sess:')), true);
 });
 
-test('a password-cost upgrade fails closed when the upgraded verifier cannot persist', async () => {
+test('a legacy 100k login stays available without spending a shared KV write', async () => {
   const salt = '2031425364758697a8b9cadbecfd0e1f';
   const hash = await passwordHash('legacy-member-password', salt);
   const kv = kvStore({
@@ -216,8 +216,9 @@ test('a password-cost upgrade fails closed when the upgraded verifier cannot per
     }),
   });
   const originalPut = kv.put.bind(kv);
+  let userWrites = 0;
   kv.put = async (key, ...args) => {
-    if (key === 'user:legacy-member') throw new Error('KV put limit exceeded');
+    if (key === 'user:legacy-member') { userWrites += 1; throw new Error('KV put limit exceeded'); }
     return originalPut(key, ...args);
   };
   const response = await worker.fetch(new Request('https://portal.test/api/login', {
@@ -225,9 +226,9 @@ test('a password-cost upgrade fails closed when the upgraded verifier cannot per
     headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.30' },
     body: JSON.stringify({ username: 'legacy-member', password: 'legacy-member-password' }),
   }), { YC_KV: kv, ADMIN_USERNAME: 'site-admin' });
-  assert.equal(response.status, 503);
-  assert.equal((await response.json()).code, 'auth_store_unavailable');
-  assert.equal([...kv.values.keys()].some(key => key.startsWith('sess:')), false);
+  assert.equal(response.status, 200);
+  assert.equal(userWrites, 0);
+  assert.equal([...kv.values.keys()].some(key => key.startsWith('sess:')), true);
   assert.equal(JSON.parse(kv.values.get('user:legacy-member')).passwordIterations, undefined);
 });
 
