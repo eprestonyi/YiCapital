@@ -367,7 +367,8 @@ test('scheduled cleanup removes expired session, revocation and rate buckets', a
   );
 
   assert.equal(database.sessions.size, 1);
-  assert.equal(await cleanupAuthState(env, { now: () => now + SESSION_ABSOLUTE_TTL_MS + DAY }), true);
+  const cleanupAt = Math.max(now, Date.now()) + SESSION_ABSOLUTE_TTL_MS + DAY;
+  assert.equal(await cleanupAuthState(env, { now: () => cleanupAt }), true);
   assert.equal(database.sessions.size, 0);
   assert.equal(database.revocations.size, 0);
   assert.equal(database.rateLimits.size, 0);
