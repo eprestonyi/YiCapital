@@ -1524,6 +1524,15 @@ function normalizeHistory(rows) {
   });
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
+async function portfolioHistorySha256(rows) {
+  const canonical = normalizeHistory(rows).map(row => [row.date, row.ret]);
+  return sha256Hex(JSON.stringify(canonical));
+}
+const PORTFOLIO_RISK_MODEL_CONFIG = Object.freeze({
+  model: 'noncentral-t', method: 'moment-fit-conditional-monte-carlo',
+  modelVersion: 'yc-risk-js-v2', fittedPoolSize: 200000, nSims: 10000,
+  seeds: Object.freeze({ pool: 0x59494341, crash: 17, bear: 18, grind: 19 }),
+});
 function normalizeNavRows(rows) {
   const byDate = new Map();
   (Array.isArray(rows) ? rows : []).forEach(row => {
@@ -1723,13 +1732,92 @@ function makePortfolioCache(led, live, status, options = {}) {
     status: status || null, cacheVersion: 3,
   };
 }
-async function persistPortfolioCache(env, pf, led, live, status, options = {}) {
+export async function persistPortfolioCache(env, pf, led, live, status, options = {}) {
   const cache = makePortfolioCache({ ...led, portfolio: pf }, live, status, options);
+  const currentHistorySha256 = await portfolioHistorySha256(cache.history);
+  const priorLineage = options.stressLineage &&
+    typeof options.stressLineage === 'object' ? options.stressLineage : null;
+  const stressInputHistory = Object.hasOwn(options, 'stressInputHistory')
+    ? options.stressInputHistory : cache.history;
+  const stressHistory = normalizeHistory(stressInputHistory);
+  const calculatedStressHistorySha256 = await portfolioHistorySha256(stressHistory);
+  const lineageHistorySha256 = priorLineage &&
+    /^[a-f0-9]{64}$/.test(String(priorLineage.history_sha256 || ''))
+    ? priorLineage.history_sha256 : null;
+  const stressHistorySha256 = lineageHistorySha256 || calculatedStressHistorySha256;
+  const [configSha256, outputSha256] = await Promise.all([
+    sha256Hex(JSON.stringify(PORTFOLIO_RISK_MODEL_CONFIG)),
+    cache.stress ? sha256Hex(JSON.stringify(cache.stress)) : Promise.resolve(null),
+  ]);
+  const riskSnapshotSha256 = outputSha256 ? await sha256Hex(JSON.stringify({
+    portfolio: pf,
+    historySha256: stressHistorySha256,
+    outputSha256,
+    modelVersion: PORTFOLIO_RISK_MODEL_CONFIG.modelVersion,
+    configSha256,
+  })) : null;
+  const riskStatus = !cache.stress ? 'unavailable'
+    : stressHistorySha256 === currentHistorySha256 ? 'current' : 'stale';
+  const stressThrough = priorLineage && (
+    priorLineage.history_through || priorLineage.input_as_of
+  ) || stressHistory.at(-1) && stressHistory.at(-1).date || null;
+  const currentThrough = cache.history.at(-1) && cache.history.at(-1).date || null;
+  cache.risk_snapshot = {
+    risk_snapshot_id: riskSnapshotSha256
+      ? 'risk-' + riskSnapshotSha256.slice(0, 20) : null,
+    status: riskStatus,
+    portfolio_id: pf,
+    currency: cache.currency || null,
+    ledger_revision: cache.ledgerRevision,
+    valuation_snapshot_id: cache.snapshot_id,
+    input_as_of: stressThrough,
+    calculated_at: priorLineage && priorLineage.calculated_at ||
+      options.stressCalculatedAt ||
+      status && status.ranAt || led.savedAt || live.updatedAt || null,
+    history_from: priorLineage && priorLineage.history_from ||
+      stressHistory[0] && stressHistory[0].date || null,
+    history_through: stressThrough,
+    observation_count: priorLineage && Number.isInteger(priorLineage.observation_count)
+      ? priorLineage.observation_count : stressHistory.length,
+    history_sha256: stressHistorySha256,
+    current_history_sha256: currentHistorySha256,
+    model_id: PORTFOLIO_RISK_MODEL_CONFIG.method,
+    model_version: PORTFOLIO_RISK_MODEL_CONFIG.modelVersion,
+    config_sha256: configSha256,
+    output_sha256: outputSha256,
+    code_version: 'portfolio-risk-v2',
+    price_basis: 'fund_return_series_from_raw_close_nav',
+    adjusted: false,
+    stale_reason: riskStatus === 'stale' ? 'newer_nav_history_not_yet_in_risk_model' : null,
+    stale_by_sessions: riskStatus === 'stale'
+      ? Math.max(0, normalizeHistory(cache.history)
+        .filter(row => !stressThrough || row.date > stressThrough).length)
+      : 0,
+    pending_job_id: null,
+    current_input_as_of: currentThrough,
+  };
+  cache.stress_status = riskStatus;
+  cache.stress_as_of = stressThrough;
+  cache.stress_history_sha256 = stressHistorySha256;
+
+  if (!portfolioFallbackCacheRenderable(cache, pf)) {
+    const existingRaw = await env.YC_KV.get('navcache:' + pf);
+    let existing = null;
+    try { existing = existingRaw ? JSON.parse(existingRaw) : null; } catch {}
+    if (portfolioFallbackCacheRenderable(existing, pf)) {
+      const error = new Error('portfolio_public_cache_not_renderable');
+      error.code = 'PORTFOLIO_PUBLIC_CACHE_NOT_RENDERABLE';
+      throw error;
+    }
+  }
+  // navcache is the public release barrier. A failed live/status write leaves
+  // the old public snapshot untouched; a failed final put can never expose a
+  // half-built chart payload.
   await Promise.all([
     env.YC_KV.put('live:' + pf, JSON.stringify(live)),
     env.YC_KV.put('navstatus:' + pf, JSON.stringify(status)),
-    env.YC_KV.put('navcache:' + pf, JSON.stringify(cache)),
   ]);
+  await env.YC_KV.put('navcache:' + pf, JSON.stringify(cache));
   return cache;
 }
 
@@ -1856,15 +1944,22 @@ async function portfolioHistoricalPrices(
   historyFetch,
 ) {
   if (market === 'us' && typeof historyFetch === 'function') {
-    const yahoo = await yahooUsPortfolioHistory(ticker, startDate, endDate, nowFn, {
-      fetch: historyFetch,
-    });
+    const normalized = String(ticker || '').trim().toUpperCase().replace(/\.US$/, '');
+    const knownInactive = Object.hasOwn(CHARTEXCHANGE_INACTIVE_US_SYMBOLS, normalized);
+    let yahoo;
+    try {
+      yahoo = await yahooUsPortfolioHistory(ticker, startDate, endDate, nowFn, {
+        fetch: historyFetch,
+      });
+    } catch (error) {
+      // Yahoo can remove the chart endpoint after a symbol becomes inactive.
+      // Keep the source-backed inactive-history path usable for the period in
+      // which the position actually existed; active symbols remain fail-closed.
+      if (!knownInactive) throw error;
+      yahoo = { ticker: normalized, rows: [] };
+    }
     let rows = yahoo.rows;
-    const needsInactivePrefix = !rows.some(row => row.date <= startDate) &&
-      Object.hasOwn(
-        CHARTEXCHANGE_INACTIVE_US_SYMBOLS,
-        String(ticker || '').trim().toUpperCase().replace(/\.US$/, ''),
-      );
+    const needsInactivePrefix = knownInactive && !rows.some(row => row.date <= startDate);
     if (needsInactivePrefix) {
       const inactive = await chartExchangeInactiveUsHistory(
         ticker,
@@ -2059,6 +2154,53 @@ function corporateActionReplayPrices(events, priceMap) {
   }
   return [...selected.values()].sort((left, right) =>
     left.date.localeCompare(right.date) || left.ticker.localeCompare(right.ticker));
+}
+
+function portfolioPriceExtensionPlans(events, tape, calendarDates, portfolio) {
+  const allTickers = portfolioHistoricalTickers(events);
+  const dates = [...new Set((Array.isArray(calendarDates) ? calendarDates : [])
+    .filter(date => isoDatePattern.test(date) &&
+      (!tape || !isoDatePattern.test(tape.tapeThrough) || date > tape.tapeThrough)))]
+    .sort();
+  if (!dates.length) return [];
+  const conservative = () => allTickers.map(ticker => ({
+    ticker,
+    from: dates[0],
+    through: dates.at(-1),
+  }));
+  if (!tape || !isoDatePattern.test(tape.tapeThrough)) return conservative();
+  const priceMap = new Map(allTickers.map(ticker => [
+    ticker,
+    (Array.isArray(tape.priceRows) ? tape.priceRows : [])
+      .filter(row => row.ticker === ticker),
+  ]));
+  const requiredDates = new Map();
+  try {
+    for (const date of dates) {
+      const projectionEvents = (Array.isArray(events) ? events : [])
+        .filter(event => eventEffectiveDate(event) <= date);
+      const projection = replayPortfolioLedger(projectionEvents, {
+        portfolio,
+        currency: { us: 'USD', hk: 'HKD', a: 'CNY' }[portfolio],
+        include_pending: false,
+        corporate_action_prices: corporateActionReplayPrices(projectionEvents, priceMap),
+        as_of_date: date,
+      });
+      for (const position of projection.positions || []) {
+        if (!(Number(position.quantity || 0) > 1e-12)) continue;
+        if (!requiredDates.has(position.ticker)) requiredDates.set(position.ticker, []);
+        requiredDates.get(position.ticker).push(date);
+      }
+    }
+  } catch {
+    // If an older, unusual corporate action cannot be projected here, retain
+    // the conservative all-ticker fetch rather than guessing a holding state.
+    return conservative();
+  }
+  return allTickers.flatMap(ticker => {
+    const required = requiredDates.get(ticker) || [];
+    return required.length ? [{ ticker, from: required[0], through: required.at(-1) }] : [];
+  });
 }
 
 function historicalNavBatchSize(value) {
@@ -2492,13 +2634,20 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
     await assertLedgerRevision(env, pf, ledgerRevision);
     // Historical stress is intentionally expensive. Reuse it only when the
     // prior same-revision public history is an exact prefix of the freshly
-    // materialized D1 history; otherwise publish an explicit null instead of
-    // silently running a 200k-sample Monte Carlo inside the outbox request.
-    const reusableStress = reusableHistoricalPublishStress(
+    // materialized D1 history. Otherwise this isolated publish phase builds a
+    // fresh model before replacing the last complete public snapshot; a
+    // partial cache with stress:null must never become the public release.
+    const reusableStress = await reusableHistoricalPublishStress(
       previousCache, publishedLedger, pf, ledgerRevision,
     );
     const publishedCache = await persistPortfolioCache(
-      env, pf, publishedLedger, live, status, { stress: reusableStress },
+      env, pf, publishedLedger, live, status,
+      reusableStress ? {
+        stress: reusableStress.stress,
+        stressInputHistory: reusableStress.history,
+        stressLineage: reusableStress.lineage,
+        stressCalculatedAt: reusableStress.calculatedAt,
+      } : {},
     );
     try {
       await assertLedgerRevision(env, pf, ledgerRevision);
@@ -2546,26 +2695,32 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       throw error;
     }
     if (calendarExtension.dates.length) {
-      const extensionThrough = calendarExtension.dates.at(-1);
-      const fetchedExtension = await mapWithConcurrency(tickers, 3, async ticker => {
+      // Price coverage follows actual holding intervals. A ticker sold before
+      // this extension (for example inactive XHYH) keeps its frozen historical
+      // rows but is not required to manufacture a new close after quantity=0.
+      const extensionPlans = portfolioPriceExtensionPlans(
+        events,
+        tape,
+        calendarExtension.dates,
+        pf,
+      );
+      const fetchedExtension = await mapWithConcurrency(extensionPlans, 3, async plan => {
         try {
           const result = await portfolioHistoricalPrices(
             adapter,
-            ticker,
+            plan.ticker,
             market,
-            addIsoDays(tape.tapeThrough, 1),
-            extensionThrough,
+            plan.from,
+            plan.through,
             nowFn,
             historyFetch,
           );
-          // A sold/delisted or temporarily suspended ticker can legitimately
-          // have no new counter print. Its previously frozen raw close remains
-          // available to priceAsOf; active holdings still fail below if no
-          // as-of price exists in the combined tape.
-          return result;
+          return result.rows.length
+            ? result
+            : { ...result, error: 'empty_raw_close_rows' };
         } catch (error) {
           return {
-            ticker,
+            ticker: plan.ticker,
             rows: [],
             error: String(error && (error.code || error.message) || 'unavailable'),
           };
@@ -2668,6 +2823,14 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
       }
 
       const fetchPlans = [];
+      const futureRequiredPlans = new Map(segmentTapes
+        .filter(segment => segment.kind === 'future')
+        .map(segment => [segment, new Map(portfolioPriceExtensionPlans(
+          events,
+          parentTape,
+          segment.tape.dates,
+          pf,
+        ).map(plan => [plan.ticker, plan]))]));
       for (const ticker of newTickers) {
         const firstHoldingDate = tickerFirstDates.get(ticker) || historyStart;
         if (firstHoldingDate > targetThrough) continue;
@@ -2676,17 +2839,22 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
           from: firstHoldingDate,
           through: targetThrough,
           requireRows: true,
+          requireAtStart: true,
         });
       }
       for (const ticker of commonTickers) {
         for (const segment of segmentTapes) {
           const segmentThrough = segment.tape.dates.at(-1);
           if (!segmentThrough) continue;
+          const futurePlan = segment.kind === 'future'
+            ? futureRequiredPlans.get(segment).get(ticker) : null;
+          if (segment.kind === 'future' && !futurePlan) continue;
           fetchPlans.push({
             ticker,
-            from: segment.from,
-            through: segmentThrough,
-            requireRows: false,
+            from: futurePlan ? futurePlan.from : segment.from,
+            through: futurePlan ? futurePlan.through : segmentThrough,
+            requireRows: segment.kind === 'future',
+            requireAtStart: false,
           });
         }
       }
@@ -2704,7 +2872,10 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
           return {
             ...plan,
             rows: result.rows,
-            error: plan.requireRows && !result.rows.some(row => row.date <= plan.from),
+            error: plan.requireRows && (
+              !result.rows.length || plan.requireAtStart &&
+              !result.rows.some(row => row.date <= plan.from)
+            ),
           };
         } catch (error) {
           return {
@@ -3012,8 +3183,88 @@ export async function rebuildPortfolioNavHistory(env, pf, led, options = {}) {
   return baseStatus;
 }
 
-function publicPortfolioSnapshot(cache, latestStatus) {
+function portfolioCacheRevision(cache) {
+  const rawRevision = cache && (cache.ledgerRevision ??
+    (cache.status && cache.status.ledgerRevision));
+  if (rawRevision == null) return null;
+  const revision = Number(rawRevision);
+  return Number.isInteger(revision) ? revision : null;
+}
+
+function portfolioCacheStressRenderable(stress) {
+  if (!stress || stress.model !== 'noncentral-t') return false;
+  return ['crash', 'bear', 'grind'].every(key => {
+    const row = stress[key];
+    return row && row.model === 'noncentral-t' &&
+      [row.nDays, row.p50, row.p5, row.p1, row.probHalf]
+        .every(value => Number.isFinite(value)) &&
+      ['pathP5', 'pathP50', 'pathP95'].every(path =>
+        Array.isArray(row[path]) && row[path].length >= 2 &&
+        row[path].every(value => Number.isFinite(value))) &&
+      row.pathP5.length === row.pathP50.length &&
+      row.pathP50.length === row.pathP95.length;
+  });
+}
+
+function portfolioCacheMetricsRenderable(metrics) {
+  return metrics && typeof metrics === 'object' && [
+    'days', 'totalRet', 'annRet', 'vol', 'sharpe', 'sortino', 'calmar',
+    'maxDD', 'winRate', 'plRatio', 'var95', 'cvar95', 'skew', 'kurt',
+  ].every(key => Number.isFinite(metrics[key]));
+}
+
+function portfolioCacheHistogramRenderable(hist) {
+  if (!hist || !Array.isArray(hist.counts) || !Array.isArray(hist.normal) ||
+      !hist.counts.length || hist.counts.length !== hist.normal.length ||
+      !Number.isFinite(hist.lo) || !Number.isFinite(hist.width) || hist.width <= 0) {
+    return false;
+  }
+  return hist.counts.every(value => Number.isFinite(value) && value >= 0) &&
+    hist.normal.every(value => Number.isFinite(value) && value >= 0) &&
+    Math.max(...hist.counts, ...hist.normal) > 0;
+}
+
+function portfolioCacheVarTableRenderable(rows) {
+  if (!Array.isArray(rows)) return false;
+  return [0.95, 0.98, 0.99].every(level => {
+    const row = rows.find(candidate => candidate && candidate.level === level);
+    return row && ['normal', 'cf', 'empirical', 'cvar']
+      .every(key => Number.isFinite(row[key]));
+  });
+}
+
+function portfolioFallbackCacheRenderable(cache, portfolio) {
+  const history = Array.isArray(cache && cache.history)
+    ? cache.history : Array.isArray(cache && cache.rets) ? cache.rets : [];
+  const metrics = cache && (cache.metrics || cache.statistics);
+  const freshnessClass = String(cache && (
+    cache.freshness_class || cache.freshness && cache.freshness.class || 'eod'
+  ));
+  return cache && cache.ok === true && cache.enabled === true &&
+    String(cache.portfolio || '') === String(portfolio) &&
+    String(cache.snapshot_id || '').length > 0 && Number(cache.cacheVersion) >= 2 &&
+    cache.historyComplete === true && history.length >= 5 &&
+    Array.isArray(cache.navRows) && cache.navRows.length >= 5 &&
+    Array.isArray(cache.curve) && cache.curve.length >= 5 &&
+    portfolioCacheMetricsRenderable(metrics) &&
+    portfolioCacheHistogramRenderable(cache.hist) &&
+    portfolioCacheVarTableRenderable(cache.varTable) &&
+    portfolioCacheStressRenderable(cache.stress) &&
+    Boolean(cache.as_of || cache.asOf || cache.marketDate || cache.end) &&
+    Boolean(cache.source || cache.source_endpoint) &&
+    ['static', 'disclosure', 'macro_release', 'eod', 'news_incremental',
+      'intraday_snapshot', 'live_minute_bar'].includes(freshnessClass);
+}
+
+function publicPortfolioSnapshot(cache, latestStatus, derivationState) {
   const latestFailed = latestStatus && latestStatus.fallback === true;
+  const derivedWorkPending = derivationState && derivationState.derivedWorkPending === true;
+  const servedRevision = portfolioCacheRevision(cache);
+  const targetRevision = derivationState && Number.isInteger(derivationState.ledgerRevision)
+    ? derivationState.ledgerRevision : servedRevision;
+  const revisionSyncPending = Number.isInteger(servedRevision) &&
+    Number.isInteger(targetRevision) && servedRevision < targetRevision;
+  const lastSuccessfulFallback = latestFailed || derivedWorkPending || revisionSyncPending;
   const source = cache.source || cache.source_endpoint || 'persisted-snapshot';
   const asOf = cache.as_of || cache.asOf || cache.marketDate || cache.end || null;
   const fetchedAt = cache.fetched_at || cache.updatedAt || null;
@@ -3026,21 +3277,31 @@ function publicPortfolioSnapshot(cache, latestStatus) {
     freshness_class: freshnessClass,
     freshness: {
       class: freshnessClass,
-      stale: latestFailed || cache.freshness && cache.freshness.stale === true,
-      fallback: latestFailed ? 'last_successful_snapshot' : cache.freshness && cache.freshness.fallback || null,
+      stale: lastSuccessfulFallback || cache.freshness && cache.freshness.stale === true,
+      fallback: lastSuccessfulFallback
+        ? 'last_successful_snapshot'
+        : cache.freshness && cache.freshness.fallback || null,
       last_attempt_at: latestStatus && latestStatus.ranAt || null,
-      reason: latestFailed ? latestStatus.reason || 'latest_tushare_request_failed' : null,
+      reason: latestFailed
+        ? latestStatus.reason || 'latest_market_data_request_failed'
+        : derivedWorkPending ? 'ledger_derived_work_pending'
+          : revisionSyncPending ? 'ledger_revision_snapshot_propagating' : null,
     },
-    fallback: latestFailed,
+    pending: derivedWorkPending || revisionSyncPending,
+    derived_work_pending: derivedWorkPending,
+    revision_sync_pending: revisionSyncPending,
+    pending_count: derivedWorkPending ? Number(derivationState.pendingCount || 0) : 0,
+    servedRevision,
+    targetRevision,
+    fallback: lastSuccessfulFallback,
     status: latestStatus || cache.status || null,
   };
 }
 
-async function publicPortfolioLedgerRevision(env, portfolio) {
+async function publicPortfolioDerivationState(env, portfolio) {
   if (!env || !(env.LEDGER_DB || env.FEEDBACK_DB)) return undefined;
   try {
-    const state = await portfolioDerivationState(env, portfolio);
-    return state.derivedWorkPending ? null : state.ledgerRevision;
+    return await portfolioDerivationState(env, portfolio);
   } catch {
     return null;
   }
@@ -3049,10 +3310,22 @@ async function publicPortfolioLedgerRevision(env, portfolio) {
 function portfolioCacheMatchesRevision(cache, ledgerRevision) {
   if (ledgerRevision === undefined) return true;
   if (!Number.isInteger(ledgerRevision)) return false;
-  const rawRevision = cache && (cache.ledgerRevision ??
-    (cache.status && cache.status.ledgerRevision));
-  if (rawRevision == null) return ledgerRevision === 0;
-  return Number(rawRevision) === ledgerRevision;
+  const revision = portfolioCacheRevision(cache);
+  if (revision == null) return ledgerRevision === 0;
+  return revision === ledgerRevision;
+}
+
+function portfolioCacheServable(cache, derivationState, portfolio) {
+  if (derivationState === undefined) return true;
+  if (!derivationState || !Number.isInteger(derivationState.ledgerRevision)) return false;
+  const cacheRevision = portfolioCacheRevision(cache);
+  if (portfolioCacheMatchesRevision(cache, derivationState.ledgerRevision) &&
+      derivationState.derivedWorkPending !== true) {
+    return portfolioFallbackCacheRenderable(cache, portfolio);
+  }
+  const fallbackRevision = Number.isInteger(cacheRevision) &&
+    cacheRevision <= derivationState.ledgerRevision;
+  return fallbackRevision && portfolioFallbackCacheRenderable(cache, portfolio);
 }
 
 function materializedPublishLedgerUsable(ledger, portfolio, ledgerRevision) {
@@ -3069,7 +3342,7 @@ function materializedPublishLedgerUsable(ledger, portfolio, ledgerRevision) {
       ['raw_close', 'raw_counter'].includes(String(row.priceBasis || '').toLowerCase()));
 }
 
-function reusableHistoricalPublishStress(cacheRaw, ledger, portfolio, ledgerRevision) {
+async function reusableHistoricalPublishStress(cacheRaw, ledger, portfolio, ledgerRevision) {
   let cache;
   try {
     cache = typeof cacheRaw === 'string' ? JSON.parse(cacheRaw) : cacheRaw;
@@ -3084,13 +3357,83 @@ function reusableHistoricalPublishStress(cacheRaw, ledger, portfolio, ledgerRevi
         stress[key].model === 'noncentral-t')) return null;
   const cachedHistory = normalizeHistory(cache.history);
   const materializedHistory = normalizeHistory(ledger && ledger.history);
-  if (!cachedHistory.length || cachedHistory.length > materializedHistory.length ||
-      materializedHistory.length - cachedHistory.length > 1) return null;
+  if (!cachedHistory.length || cachedHistory.length !== materializedHistory.length) return null;
   const exactPrefix = cachedHistory.every((row, index) => {
     const current = materializedHistory[index];
     return current && current.date === row.date && current.ret === row.ret;
   });
-  return exactPrefix ? stress : null;
+  if (!exactPrefix) return null;
+  const lineage = cache.risk_snapshot && typeof cache.risk_snapshot === 'object'
+    ? cache.risk_snapshot : null;
+  // A legacy cache remains a valid last-known-good public fallback, but its
+  // stress output has no provable input/model lineage. Never promote it to a
+  // current v2 risk snapshot merely because the visible dates happen to match.
+  if (!lineage) return null;
+  const historyThrough = materializedHistory.at(-1) && materializedHistory.at(-1).date;
+  const [historySha256, outputSha256, configSha256] = await Promise.all([
+    portfolioHistorySha256(materializedHistory),
+    sha256Hex(JSON.stringify(stress)),
+    sha256Hex(JSON.stringify(PORTFOLIO_RISK_MODEL_CONFIG)),
+  ]);
+  if (lineage.status !== 'current' ||
+      lineage.portfolio_id !== portfolio ||
+      Number(lineage.ledger_revision) !== Number(ledgerRevision) ||
+      lineage.history_sha256 !== historySha256 ||
+      lineage.current_history_sha256 !== historySha256 ||
+      lineage.output_sha256 !== outputSha256 ||
+      lineage.config_sha256 !== configSha256 ||
+      lineage.model_version !== PORTFOLIO_RISK_MODEL_CONFIG.modelVersion ||
+      lineage.code_version !== 'portfolio-risk-v2' ||
+      lineage.adjusted !== false ||
+      lineage.input_as_of !== historyThrough ||
+      lineage.history_through !== historyThrough ||
+      Number(lineage.observation_count) !== materializedHistory.length) return null;
+  return {
+    stress,
+    history: cachedHistory,
+    lineage,
+    calculatedAt: lineage && lineage.calculated_at ||
+      cache.fetched_at || cache.updatedAt || null,
+  };
+}
+
+async function reusableRealtimeStress(cache, portfolio, ledgerRevision) {
+  if (!cache || String(cache.portfolio || '') !== String(portfolio) ||
+      Number(cache.ledgerRevision) !== Number(ledgerRevision) ||
+      !portfolioCacheStressRenderable(cache.stress)) return null;
+  const lineage = cache.risk_snapshot && typeof cache.risk_snapshot === 'object'
+    ? cache.risk_snapshot : null;
+  if (!lineage || !['current', 'stale'].includes(lineage.status)) return null;
+  const history = normalizeHistory(cache.history);
+  const historyThrough = history.at(-1) && history.at(-1).date;
+  const riskThrough = lineage.history_through || lineage.input_as_of;
+  const [currentHistorySha256, outputSha256, configSha256] = await Promise.all([
+    portfolioHistorySha256(history),
+    sha256Hex(JSON.stringify(cache.stress)),
+    sha256Hex(JSON.stringify(PORTFOLIO_RISK_MODEL_CONFIG)),
+  ]);
+  if (!history.length || !isoDatePattern.test(String(riskThrough || '')) ||
+      riskThrough > historyThrough ||
+      lineage.portfolio_id !== portfolio ||
+      Number(lineage.ledger_revision) !== Number(ledgerRevision) ||
+      !/^[a-f0-9]{64}$/.test(String(lineage.history_sha256 || '')) ||
+      lineage.current_history_sha256 !== currentHistorySha256 ||
+      lineage.output_sha256 !== outputSha256 ||
+      lineage.config_sha256 !== configSha256 ||
+      lineage.model_version !== PORTFOLIO_RISK_MODEL_CONFIG.modelVersion ||
+      lineage.code_version !== 'portfolio-risk-v2' ||
+      lineage.adjusted !== false ||
+      lineage.input_as_of !== riskThrough) return null;
+  if (lineage.status === 'current' &&
+      (lineage.history_sha256 !== currentHistorySha256 || riskThrough !== historyThrough)) {
+    return null;
+  }
+  return {
+    stress: cache.stress,
+    history,
+    lineage,
+    calculatedAt: lineage.calculated_at || cache.fetched_at || cache.updatedAt || null,
+  };
 }
 
 /* 持倉/現金/負債/份額為唯一營運基準；價格源只提供可核驗的 counter/raw close。 */
@@ -3771,15 +4114,21 @@ async function updatePortfolioNav(env, pf, options = {}) {
   live.rows = [];
   live.ledgerRevision = ledgerRevision;
   const reusableStress = cachedStressReusable
-    ? cachedPublic.stress ?? null
+    ? await reusableRealtimeStress(cachedPublic, pf, ledgerRevision)
     : null;
+  const cacheOptions = reusableStress
+    ? {
+      stress: reusableStress.stress,
+      stressInputHistory: reusableStress.history,
+      stressLineage: reusableStress.lineage,
+      stressCalculatedAt: reusableStress.calculatedAt,
+    }
+    : {};
   await assertLedgerRevision(env, pf, ledgerRevision);
   const publishedLastPx = JSON.stringify(lastPx);
   const [, publishedCache] = await Promise.all([
     env.YC_KV.put('lastpx:' + pf, publishedLastPx),
-    persistPortfolioCache(env, pf, realtimeLedger, live, st, {
-      stress: reusableStress,
-    }),
+    persistPortfolioCache(env, pf, realtimeLedger, live, st, cacheOptions),
   ]);
   try {
     await assertLedgerRevision(env, pf, ledgerRevision);
@@ -4180,10 +4529,10 @@ export default {
         };
         const markets = {};
         await Promise.all(Object.entries(specs).map(async ([market, spec]) => {
-          const [navRaw, benchmarkRaw, ledgerRevision] = await Promise.all([
+          const [navRaw, benchmarkRaw, derivationState] = await Promise.all([
             env.YC_KV.get('navcache:' + market),
             env.YC_KV.get('bmset:' + market),
-            publicPortfolioLedgerRevision(env, market),
+            publicPortfolioDerivationState(env, market),
           ]);
           if (!navRaw || !benchmarkRaw) {
             markets[market] = null;
@@ -4193,7 +4542,7 @@ export default {
           const benchmark = JSON.parse(benchmarkRaw);
           const benchmarkRows = benchmark.data && benchmark.data[spec.benchmark];
           if (!nav.ok || !nav.enabled || !Array.isArray(nav.navRows)
-              || !portfolioCacheMatchesRevision(nav, ledgerRevision)
+              || !portfolioCacheServable(nav, derivationState, market)
               || !benchmarkSnapshotIsTushare(benchmark, market)
               || !Array.isArray(benchmarkRows)) {
             markets[market] = null;
@@ -4204,9 +4553,11 @@ export default {
             markets[market] = null;
             return;
           }
+          const publicNav = publicPortfolioSnapshot(nav, nav.status || null, derivationState);
           const navReview = !!(
             nav.status && Array.isArray(nav.status.stale) && nav.status.stale.length
             || nav.status && Array.isArray(nav.status.missing) && nav.status.missing.length
+            || publicNav.freshness && publicNav.freshness.stale === true
           );
           const benchmarkReview = benchmark.stale === true
             || Array.isArray(benchmark.missing) && benchmark.missing.length > 0
@@ -4222,9 +4573,9 @@ export default {
             review: navReview || benchmarkReview || history.missingCloseCount > 0,
             missingCloseCount: history.missingCloseCount,
             coverage: round(history.coverage, 6),
-            navAsOf: nav.asOf || nav.marketDate || null,
-            navSource: nav.source || nav.source_endpoint || null,
-            navFreshness: nav.freshness || null,
+            navAsOf: publicNav.as_of || publicNav.asOf || publicNav.marketDate || null,
+            navSource: publicNav.source || publicNav.source_endpoint || null,
+            navFreshness: publicNav.freshness || null,
             benchmarkLabel: spec.benchmark,
             benchmarkSource: benchmark.sources && benchmark.sources[spec.benchmark] || null,
             benchmarkSourceMeta: benchmark.source_meta && benchmark.source_meta[spec.benchmark] || null,
@@ -4917,16 +5268,16 @@ export default {
       if (path.startsWith('/api/nav/') && request.method === 'GET') {
         const pf = path.split('/')[3];
         if (!/^(us|hk|a)$/.test(pf)) return J(env, { error: 'not found' }, 404);
-        const [cached, statusRaw, ledgerRevision] = await Promise.all([
+        const [cached, statusRaw, derivationState] = await Promise.all([
           env.YC_KV.get('navcache:' + pf),
           env.YC_KV.get('navstatus:' + pf),
-          publicPortfolioLedgerRevision(env, pf),
+          publicPortfolioDerivationState(env, pf),
         ]);
         if (cached) {
           const status = statusRaw ? JSON.parse(statusRaw) : null;
           const cache = JSON.parse(cached);
-          if (portfolioCacheMatchesRevision(cache, ledgerRevision)) {
-            return J(env, publicPortfolioSnapshot(cache, status));
+          if (portfolioCacheServable(cache, derivationState, pf)) {
+            return J(env, publicPortfolioSnapshot(cache, status, derivationState));
           }
         }
         return J(env, {

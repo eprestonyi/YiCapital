@@ -40,6 +40,12 @@ async function checkPortal() {
     if (Number(health.ledger_outbox_pending) !== 0) {
       throw new Error(`portfolio D1 ledger outbox has ${health.ledger_outbox_pending} pending item(s)`);
     }
+    if (health.raw_nav_ready !== true) throw new Error('raw NAV publication is not ready');
+    for (const market of ['us', 'hk', 'a']) {
+      if (health.raw_nav_portfolios?.[market]?.ready !== true) {
+        throw new Error(`${market} raw NAV publication is not ready`);
+      }
+    }
     if (health.feedback !== true) throw new Error('feedback D1 binding is unavailable');
     if (health.feedback_rate_limit !== true) throw new Error('feedback rate-limit secret is unavailable');
     if (health.kv !== true) throw new Error('KV binding is unavailable');
@@ -117,6 +123,14 @@ async function checkEntryHistory() {
         fetchChecked(`${PORTAL_BASE}/api/benchmark?set=${market}`),
       ]);
       const [nav, benchmark] = await Promise.all([navResponse.json(), benchmarkResponse.json()]);
+      if (nav.ok !== true || nav.pending === true || nav.fallback === true ||
+          nav.revision_sync_pending === true) {
+        throw new Error(`${market} NAV is serving a pending or fallback snapshot`);
+      }
+      if (Number.isInteger(nav.servedRevision) && Number.isInteger(nav.targetRevision) &&
+          nav.servedRevision !== nav.targetRevision) {
+        throw new Error(`${market} NAV revision has not propagated`);
+      }
       const navDates = new Set((Array.isArray(nav.navRows) ? nav.navRows : []).map(row => row.date));
       const benchmarkRows = benchmark.data && benchmark.data[benchmarkLabel];
       const benchmarkDates = new Set((Array.isArray(benchmarkRows) ? benchmarkRows : []).map(row => row.date));

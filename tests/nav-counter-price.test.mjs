@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -13,6 +14,16 @@ import {
   rebuildPortfolioNavHistory,
   updatePortfolioNav,
 } from '../worker/worker.js';
+
+const RISK_MODEL_CONFIG = {
+  model: 'noncentral-t', method: 'moment-fit-conditional-monte-carlo',
+  modelVersion: 'yc-risk-js-v2', fittedPoolSize: 200000, nSims: 10000,
+  seeds: { pool: 0x59494341, crash: 17, bear: 18, grind: 19 },
+};
+
+function sha256(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
+}
 
 class D1Statement {
   constructor(database, sql, values = []) {
@@ -207,15 +218,39 @@ async function assertSameDayCounterRefresh({
   });
   await materializeLedgerKv(env, portfolio, { expectedLedgerRevision: 2 });
   const materializedLedgerRaw = env.YC_KV.values.get(`ledger:${portfolio}`);
-  const fullStress = { model: 'full-eod-model', fixture: portfolio };
+  const stressScenario = {
+    model: 'noncentral-t', fixture: portfolio, nDays: 2,
+    p50: 1, p5: 0.99, p1: 0.98, probHalf: 0,
+    pathP5: [1, 0.99], pathP50: [1, 1], pathP95: [1, 1.01],
+  };
+  const fullStress = {
+    model: 'noncentral-t', fixture: portfolio,
+    crash: stressScenario, bear: stressScenario, grind: stressScenario,
+  };
+  const initialHistory = [{ date: '2026-07-29', ret: 0 }];
+  const initialHistorySha256 = sha256(JSON.stringify(
+    initialHistory.map(row => [row.date, row.ret]),
+  ));
   env.YC_KV.values.set(`navcache:${portfolio}`, JSON.stringify({
+    portfolio,
     ledgerRevision: 2,
-    history: [{ date: '2026-07-29', ret: 0 }],
+    history: initialHistory,
     navRows: [{
       date: '2026-07-29', nav: 0.98, unitNav: 0.98,
       cash: 900, marketValue: 80, totalAssets: 980, netValue: 980, units: 1000,
     }],
     stress: fullStress,
+    risk_snapshot: {
+      status: 'current', portfolio_id: portfolio, ledger_revision: 2,
+      input_as_of: '2026-07-29', history_through: '2026-07-29',
+      observation_count: 1,
+      history_sha256: initialHistorySha256,
+      current_history_sha256: initialHistorySha256,
+      output_sha256: sha256(JSON.stringify(fullStress)),
+      config_sha256: sha256(JSON.stringify(RISK_MODEL_CONFIG)),
+      model_version: 'yc-risk-js-v2', code_version: 'portfolio-risk-v2',
+      adjusted: false, calculated_at: '2026-07-29T22:00:00.000Z',
+    },
   }));
 
   let counterClose = 10;
@@ -274,7 +309,12 @@ async function assertSameDayCounterRefresh({
   assert.equal(first.netValue, 1000);
   assert.equal(first.upToDate, undefined);
   assert.equal(env.YC_KV.values.get(`ledger:${portfolio}`), materializedLedgerRaw);
-  assert.deepEqual(JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`)).stress, fullStress);
+  const firstCache = JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`));
+  assert.deepEqual(firstCache.stress, fullStress);
+  assert.equal(firstCache.risk_snapshot.status, 'stale');
+  assert.equal(firstCache.risk_snapshot.input_as_of, '2026-07-29');
+  assert.equal(firstCache.risk_snapshot.current_input_as_of, '2026-07-30');
+  assert.equal(firstCache.risk_snapshot.stale_by_sessions, 1);
   const intradayNavValuation = JSON.parse(database.prepare(`
     SELECT valuation_json FROM ledger_nav_snapshots
     WHERE portfolio_id = ? AND nav_date = '2026-07-30'
@@ -293,6 +333,9 @@ async function assertSameDayCounterRefresh({
   counterClose = 12;
   const second = await updatePortfolioNav(env, portfolio, { adapter, now });
   assert.equal(second.appended, '2026-07-30');
+  const secondCache = JSON.parse(env.YC_KV.values.get(`navcache:${portfolio}`));
+  assert.equal(secondCache.risk_snapshot.status, 'stale');
+  assert.equal(secondCache.risk_snapshot.input_as_of, '2026-07-29');
   assert.equal(second.marketValue, 120);
   assert.equal(second.netValue, 1020);
   assert.equal(second.upToDate, undefined);
