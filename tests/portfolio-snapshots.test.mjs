@@ -148,6 +148,52 @@ test('validated same-revision legacy read snapshots bootstrap into D1 without ch
   assert.deepEqual((await loadPublicPortfolioSnapshot(env, 'us')).snapshot, cache);
 });
 
+test('current D1 public snapshot can complete a missing projection without legacy public KV', async () => {
+  const db = await ledgerDatabase();
+  db.database.prepare(`
+    UPDATE ledger_portfolios SET ledger_revision = 1 WHERE portfolio_id = 'us'
+  `).run();
+  const cache = {
+    ...renderablePortfolioCache({ revision: 1 }),
+    base: {
+      cash: -100, marketValue: 1100, totalAssets: 1000,
+      liability: 0, netValue: 1000, units: 1000, unitNav: 1,
+    },
+    holdings: [{
+      t: 'AAA.US', q: 10, price: 110, marketValue: 1100,
+      adjusted: false, priceBasis: 'raw_counter',
+    }],
+    risk_snapshot: {
+      adjusted: false,
+      price_basis: 'fund_return_series_from_raw_close_nav',
+    },
+  };
+  const ledger = {
+    market: 'us', portfolio: 'us', ledgerRevision: 1,
+    source: 'd1-confirmed-event-ledger', savedBy: 'ledger-outbox',
+    valuationReady: true, navRecalculationRequired: [],
+    sourceHoldings: [{ adjusted: false, priceBasis: 'raw_close' }],
+    savedAt: '2026-07-30T20:00:00.000Z',
+  };
+  const status = {
+    pf: 'us', ledgerRevision: 1, complete: true, fallback: false,
+    ranAt: '2026-07-30T20:00:00.000Z',
+  };
+  const env = {
+    FEEDBACK_DB: db,
+    YC_KV: new MockKV({ 'ledger:us': JSON.stringify(ledger) }),
+  };
+  await persistPublicPortfolioSnapshot(env, 'us', 1, cache, status);
+
+  const automated = await bootstrapMissingPortfolioStorage(env);
+  assert.equal(automated.length, 1);
+  assert.equal(automated[0].ok, true);
+  assert.equal(automated[0].projectionSource, 'legacy-kv');
+  assert.equal(automated[0].publicSource, 'd1');
+  assert.deepEqual((await loadMaterializedLedgerProjection(env, 'us')).projection, ledger);
+  assert.deepEqual((await loadPublicPortfolioSnapshot(env, 'us')).snapshot, cache);
+});
+
 class D1Statement {
   constructor(database, sql, values = []) {
     this.database = database;

@@ -3481,22 +3481,38 @@ export async function bootstrapPortfolioStorageFromLegacyKv(env, requestedPortfo
   if (!portfolioSnapshotDbAvailable(env)) throw new Error('ledger_db_unavailable');
   const derivation = await portfolioDerivationState(env, pf);
   if (derivation.derivedWorkPending) throw new Error('ledger_derived_work_pending');
-  const [ledgerRaw, cacheRaw, statusRaw] = await Promise.all([
+  const [storedProjection, storedPublic, ledgerRaw, cacheRaw, statusRaw] = await Promise.all([
+    loadMaterializedLedgerProjection(env, pf).catch(() => null),
+    loadPublicPortfolioSnapshot(env, pf).catch(() => null),
     env.YC_KV.get('ledger:' + pf),
     env.YC_KV.get('navcache:' + pf),
     env.YC_KV.get('navstatus:' + pf),
   ]);
-  let ledger;
-  let cache;
-  let status;
-  try {
-    ledger = ledgerRaw ? JSON.parse(ledgerRaw) : null;
-    cache = cacheRaw ? JSON.parse(cacheRaw) : null;
-    status = statusRaw ? JSON.parse(statusRaw) : cache && cache.status || null;
-  } catch {
+  let legacyLedger = null;
+  let legacyCache = null;
+  let legacyStatus = null;
+  let legacyLedgerInvalid = false;
+  let legacyCacheInvalid = false;
+  let legacyStatusInvalid = false;
+  try { legacyLedger = ledgerRaw ? JSON.parse(ledgerRaw) : null; } catch { legacyLedgerInvalid = true; }
+  try { legacyCache = cacheRaw ? JSON.parse(cacheRaw) : null; } catch { legacyCacheInvalid = true; }
+  try { legacyStatus = statusRaw ? JSON.parse(statusRaw) : null; } catch { legacyStatusInvalid = true; }
+  const ledgerRevision = derivation.ledgerRevision;
+  const currentStoredProjection = storedProjection &&
+    Number(storedProjection.ledgerRevision) === ledgerRevision
+    ? storedProjection.projection : null;
+  const currentStoredPublic = storedPublic &&
+    Number(storedPublic.ledgerRevision) === ledgerRevision
+    ? storedPublic.snapshot : null;
+  const ledger = currentStoredProjection || legacyLedger;
+  const cache = currentStoredPublic || legacyCache;
+  const status = currentStoredPublic
+    ? storedPublic.status
+    : legacyStatus || cache && cache.status || null;
+  if ((!currentStoredProjection && legacyLedgerInvalid) ||
+      (!currentStoredPublic && (legacyCacheInvalid || legacyStatusInvalid))) {
     throw new Error('legacy_portfolio_snapshot_invalid_json');
   }
-  const ledgerRevision = derivation.ledgerRevision;
   if (!materializedPublishLedgerUsable(ledger, pf, ledgerRevision)) {
     throw new Error('legacy_ledger_projection_not_current_raw');
   }
@@ -3517,6 +3533,8 @@ export async function bootstrapPortfolioStorageFromLegacyKv(env, requestedPortfo
     ledgerRevision,
     projectionBackend: 'd1',
     publicBackend: 'd1',
+    projectionSource: currentStoredProjection ? 'd1' : 'legacy-kv',
+    publicSource: currentStoredPublic ? 'd1' : 'legacy-kv',
     snapshot_id: stored && stored.snapshotId || cache.snapshot_id,
     as_of: stored && stored.asOf || cache.as_of || null,
   };
