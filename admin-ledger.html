@@ -24,8 +24,25 @@
   .ledger-grid{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(340px,.88fr);gap:22px;align-items:start}
   .ledger-stack{display:grid;gap:16px}
   .ledger-card{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:18px}
-  .ledger-card[data-kind="CONFLICT"],.import-op.conflict{border-left:3px solid #fbbf24}
-  .ledger-card[data-kind="ERROR"],.import-op.error{border-left:3px solid var(--down)}
+  .ledger-card[data-kind="CONFLICT"],.import-op.conflict,.import-op.missing{border-left:3px solid #fbbf24}
+  .ledger-card[data-kind="ERROR"],.import-op.error,.import-op.blocker{border-left:3px solid var(--down)}
+  .dividend-inbox-card{border-color:rgba(34,211,238,.24)}
+  .dividend-inbox-count{border:1px solid rgba(34,211,238,.36);border-radius:999px;color:var(--cyan);font-family:var(--mono);font-size:10px;padding:4px 9px}
+  .dividend-candidate{border-left:3px solid rgba(34,211,238,.62)}
+  .dividend-review-form{display:grid;gap:12px;margin-top:15px;padding-top:14px;border-top:1px solid var(--line)}
+  .dividend-review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
+  .dividend-review-form .ledger-field>span{color:var(--muted);display:block;font-family:var(--mono);font-size:10px;letter-spacing:.65px;margin-bottom:6px}
+  .dividend-review-form input{background:var(--bg);border:1px solid var(--line);border-radius:7px;box-sizing:border-box;color:var(--txt);font-family:var(--zh);font-size:13px;padding:10px 12px;width:100%}
+  .dividend-amount-note{color:#cbd5e1;font-size:11px;line-height:1.6;margin-top:5px}
+  .dividend-evidence{background:rgba(255,255,255,.018);border:1px solid rgba(255,255,255,.065);border-radius:7px;margin-top:12px;padding:0 11px}
+  .dividend-evidence summary{color:#b9c5d4;cursor:pointer;font-family:var(--mono);font-size:10px;padding:10px 0}
+  .dividend-evidence-grid{border-top:1px solid var(--line);display:grid;gap:7px;padding:10px 0}
+  .dividend-evidence-row{display:grid;gap:7px;grid-template-columns:120px minmax(0,1fr)}
+  .dividend-evidence-row small{color:var(--muted);font-family:var(--mono);font-size:9px;overflow-wrap:anywhere}
+  .dividend-evidence-row span,.dividend-evidence-row a{color:#d6deea;font-family:var(--mono);font-size:9.5px;overflow-wrap:anywhere}
+  .dividend-evidence-row a{color:var(--cyan)}
+  .dividend-dismiss{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  #dividend-inbox-list{margin-top:14px}
   .ledger-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
   .ledger-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .ledger-pill{border:1px solid var(--line);border-radius:999px;color:#aeb9c8;font-family:var(--mono);font-size:10px;padding:3px 9px}
@@ -48,19 +65,27 @@
   .ledger-field.full{grid-column:1/-1}
   .ledger-field label{color:var(--muted);display:block;font-family:var(--mono);font-size:10px;letter-spacing:.65px;margin-bottom:6px}
   .ledger-form textarea{min-height:80px;resize:vertical}
-  .tax-box{background:rgba(34,211,238,.025);border:1px solid rgba(34,211,238,.18);border-radius:8px;grid-column:1/-1;padding:14px}
-  .tax-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}
-  .tax-result{color:var(--cyan);font-family:var(--mono);font-size:11px;margin-top:10px}
   .form-actions{align-items:center;display:flex;gap:10px;grid-column:1/-1;flex-wrap:wrap}
   .form-state{color:var(--muted);font-family:var(--mono);font-size:11px}
   .danger-solid{background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.48);border-radius:6px;color:var(--down);cursor:pointer;font-family:var(--mono);font-size:11px;padding:8px 13px}
   .sync-row{align-items:center;display:flex;gap:10px;flex-wrap:wrap}
   .sync-note{color:var(--muted);font-size:12.5px;line-height:1.75;margin:10px 0 16px}
   .sync-log{margin-top:14px}
+  .pipeline-status{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:14px 0}
+  .pipeline-stage{background:var(--bg);border:1px solid var(--line);border-radius:7px;display:grid;gap:4px;min-width:0;padding:10px 11px}
+  .pipeline-stage small{color:var(--muted);font-family:var(--mono);font-size:9px;letter-spacing:.65px}
+  .pipeline-stage b{color:#dbe4f0;font-family:var(--sans);font-size:12px}
+  .pipeline-stage span{color:var(--muted);font-family:var(--mono);font-size:9.5px;line-height:1.45;overflow-wrap:anywhere}
+  .pipeline-stage[data-state="done"]{border-color:rgba(74,222,128,.3)}
+  .pipeline-stage[data-state="done"] b{color:var(--up)}
+  .pipeline-stage[data-state="active"]{border-color:rgba(34,211,238,.42)}
+  .pipeline-stage[data-state="active"] b{color:var(--cyan)}
+  .pipeline-stage[data-state="waiting"]{border-color:rgba(251,191,36,.34)}
+  .pipeline-stage[data-state="waiting"] b{color:#fbbf24}
   .drop2 strong{color:#dbe4f0;display:block;font-family:var(--sans);font-size:15px;margin-bottom:7px}
   .drop2 small{display:block;line-height:1.7}
   .import-controls{display:grid;grid-template-columns:1fr 170px;gap:10px;margin:14px 0}
-  .import-summary{display:grid;grid-template-columns:repeat(6,minmax(90px,1fr));gap:8px;margin:14px 0}
+  .import-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin:14px 0}
   .import-summary div{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:10px;text-align:center}
   .import-summary b{color:#fff;display:block;font-family:var(--mono);font-size:17px}
   .import-summary span{color:var(--muted);font-family:var(--mono);font-size:9px}
@@ -69,6 +94,11 @@
   .import-op label{align-items:flex-start;cursor:pointer;display:flex;gap:10px}
   .import-op input[type="checkbox"]{margin-top:3px}
   .import-diff{color:#cbd5e1;font-family:var(--mono);font-size:10px;line-height:1.65;margin:8px 0 0;max-height:130px;overflow:auto;white-space:pre-wrap}
+  .import-confirm-box{background:rgba(34,211,238,.025);border:1px solid rgba(34,211,238,.2);border-radius:8px;display:grid;gap:10px;margin-top:15px;padding:13px}
+  .import-confirm-box.blocked{background:rgba(248,113,113,.035);border-color:rgba(248,113,113,.35)}
+  .import-confirm-ack{align-items:flex-start;color:#dbe4f0;cursor:pointer;display:flex;font-size:11.5px;gap:9px;line-height:1.55}
+  .import-confirm-ack input{margin-top:3px}
+  .import-confirm-box input[type="text"]{background:var(--bg);border:1px solid var(--line);border-radius:7px;box-sizing:border-box;color:var(--txt);font-family:var(--zh);font-size:12px;padding:10px 12px;width:100%}
   .legacy-migration{padding:0;overflow:hidden}
   .legacy-migration>summary{align-items:center;cursor:pointer;display:flex;gap:12px;justify-content:space-between;list-style:none;padding:18px}
   .legacy-migration>summary::-webkit-details-marker{display:none}
@@ -102,8 +132,8 @@
   .empty-state{color:var(--muted);font-family:var(--mono);font-size:12px;padding:24px;text-align:center}
   .sr-only{height:1px;margin:-1px;overflow:hidden;padding:0;position:absolute;width:1px;clip:rect(0,0,0,0)}
   @media(max-width:1050px){.ledger-grid{grid-template-columns:1fr}.ledger-payload{grid-template-columns:repeat(2,minmax(120px,1fr))}}
-  @media(max-width:760px){.ledger-summary{grid-template-columns:1fr 1fr}.tax-grid{grid-template-columns:1fr 1fr}.import-summary{grid-template-columns:repeat(3,1fr)}}
-  @media(max-width:520px){.ledger-summary,.ledger-form,.tax-grid,.import-controls{grid-template-columns:1fr}.ledger-field.full,.tax-box,.form-actions{grid-column:1}.ledger-payload{grid-template-columns:1fr}.ledger-review{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}}
+  @media(max-width:760px){.ledger-summary{grid-template-columns:1fr 1fr}.import-summary{grid-template-columns:repeat(3,1fr)}}
+  @media(max-width:520px){.ledger-summary,.ledger-form,.import-controls,.pipeline-status,.dividend-review-grid{grid-template-columns:1fr}.ledger-field.full,.form-actions{grid-column:1}.ledger-payload{grid-template-columns:1fr}.ledger-review,.dividend-dismiss{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}.dividend-evidence-row{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -138,12 +168,22 @@
 
     <div class="ledger-grid">
       <section>
+        <div class="card dividend-inbox-card">
+          <div class="topbar">
+            <h3 style="margin:0">自動派息待核實</h3>
+            <span class="dividend-inbox-count" id="dividend-inbox-count">讀取中…</span>
+          </div>
+          <p class="sync-note">後台來源只偵測「可能發生派息」，不採用供應商推算金額。Amount 必須填寫券商最終實際到賬金額，已包含所有預扣稅與費用；核實後只會建立 Automation Pending，仍須在下方另行 Confirm 才正式入賬。</p>
+          <div class="form-state" id="dividend-inbox-status" role="status">正在讀取候選…</div>
+          <div id="dividend-inbox-list" class="ledger-stack"><div class="empty-state">載入中…</div></div>
+        </div>
+
         <div class="card">
           <div class="topbar">
             <h3 style="margin:0">Pending · 待確認事件</h3>
             <button class="btn2" id="refresh-ledger" type="button">刷新</button>
           </div>
-          <p class="sync-note">人工交易／股東出入金、自動股息／公司行動，以及 Excel 反向變更都先停在這裡。修改與扣稅確認完成後才會寫入正式賬本。</p>
+          <p class="sync-note">人工交易／股東出入金與自動股息／公司行動先進入 Pending；Excel 反向同步則先做完整賬本 Preview，再經一次明確確認以 CAS 原子切換 active revision，舊版本永久保留歷史。Amount 是唯一最終現金金額。</p>
           <div id="pending-list" class="ledger-stack"><div class="empty-state">載入中…</div></div>
         </div>
 
@@ -173,36 +213,6 @@
             </div>
             <div id="event-fields" class="ledger-field full"><div class="ledger-form" id="event-fields-grid"></div></div>
 
-            <div class="tax-box" id="tax-box">
-              <div class="tax-grid">
-                <div class="ledger-field">
-                  <label for="tax-mode">扣稅方式</label>
-                  <select id="tax-mode">
-                    <option value="NONE">None · 不扣稅</option>
-                    <option value="RATE">Rate · 稅率</option>
-                    <option value="FIXED">Fixed · 固定稅額</option>
-                  </select>
-                </div>
-                <div class="ledger-field">
-                  <label for="gross-amount">毛額</label>
-                  <input id="gross-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
-                </div>
-                <div class="ledger-field" id="tax-rate-wrap">
-                  <label for="tax-rate">稅率 %</label>
-                  <input id="tax-rate" type="number" min="0" max="100" step="0.0001" inputmode="decimal" placeholder="0">
-                </div>
-                <div class="ledger-field" id="tax-amount-wrap">
-                  <label for="tax-amount">稅額</label>
-                  <input id="tax-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
-                </div>
-                <div class="ledger-field">
-                  <label for="fee-amount">Fees</label>
-                  <input id="fee-amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
-                </div>
-              </div>
-              <div class="tax-result" id="tax-result">淨額將按事件金額處理。</div>
-            </div>
-
             <div class="form-actions">
               <button class="btn" id="save-event" type="submit">加入 Pending</button>
               <button class="btn2" id="reset-event" type="button">清空</button>
@@ -215,10 +225,16 @@
       <aside>
         <div class="card">
           <h3>Excel 輸出 · Database → Excel</h3>
-          <p class="sync-note">下載與目前三份基金工作簿相同的 11-sheet 可見格式。只輸出已確認事件；Pending 不會進入 Excel。事件行的 ID、版本、hash 及完整稅費 payload 放在隱藏欄，供安全反向同步。</p>
+          <p class="sync-note">Excel 是後台完整快照的輸出，不是動態計算的輸入。只輸出已確認事件；Pending 不會進入 Excel。事件行的 ID、版本、hash 及完整原始事件 payload 放在隱藏欄，供安全反向同步。</p>
+          <div class="pipeline-status" id="ledger-pipeline" aria-live="polite">
+            <div class="pipeline-stage" id="pipeline-pricing" data-state="loading"><small>01 · 取價凍結</small><b>檢查中…</b><span>raw-close / raw counter</span></div>
+            <div class="pipeline-stage" id="pipeline-accounting" data-state="loading"><small>02 · 賬務重算</small><b>檢查中…</b><span>現金 / 持倉 / NAV</span></div>
+            <div class="pipeline-stage" id="pipeline-snapshot" data-state="loading"><small>03 · Snapshot 存儲</small><b>檢查中…</b><span>最後完整 revision</span></div>
+            <div class="pipeline-stage" id="pipeline-excel" data-state="loading"><small>04 · Excel 導出</small><b>檢查中…</b><span>只輸出完整 snapshot</span></div>
+          </div>
           <div class="sync-row">
-            <button class="btn" id="export-workbook" type="button">下載確認版 Excel</button>
-            <span class="form-state" id="export-revision"></span>
+            <button class="btn" id="export-workbook" type="button">下載 Snapshot Excel</button>
+            <span class="form-state" id="export-revision">正在核對 snapshot…</span>
           </div>
           <div class="log sync-log" id="export-log">尚未輸出。</div>
         </div>
@@ -239,7 +255,7 @@
 
         <div class="card">
           <h3>Excel 反向同步 · Excel → Database</h3>
-          <p class="sync-note">只讀取 7 張事件 sheet。Asset Position、Liability Statement、Cash Flow、NAV 四張派生表的修改會列為忽略，不會反寫。CREATE / UPDATE 確認後只會進入 Pending，需再逐筆核對稅項才能入賬。</p>
+          <p class="sync-note">只讀取 7 張事件 sheet，並把它們視為一份完整事件賬本。Preview 會列出 CREATE、UPDATE、MISSING 與 blockers；確認後以單一 CAS 建立新的 active ledger revision。舊事件版本永久保留在歷史中，不刪除、不 truncate。四張派生表不反寫。</p>
           <label class="drop2" id="import-drop">
             <strong>點此或拖入 .xlsx</strong>
             <small>最大 8 MB · 瀏覽器先算 SHA-256 · 上傳前只做本地解析</small>
@@ -253,9 +269,17 @@
           <div id="import-preview" style="display:none">
             <div class="import-summary" id="import-summary"></div>
             <div class="import-list" id="import-operations"></div>
-            <div class="sync-row" style="margin-top:15px">
-              <button class="btn" id="confirm-import" type="button" disabled>確認所選安全變更</button>
-              <span class="form-state" id="import-selection"></span>
+            <div class="import-confirm-box" id="import-confirm-box">
+              <label class="import-confirm-ack" for="import-replace-all-ack">
+                <input id="import-replace-all-ack" type="checkbox" disabled>
+                <span>我確認以這份 Excel 整賬本替換目前 active ledger；MISSING 項不進入新 revision，舊版本仍完整保留在不可變歷史中，不刪除、不 truncate。</span>
+              </label>
+              <label class="ledger-field" for="import-confirm-reason"><span class="sr-only">整賬本替換確認理由</span></label>
+              <input id="import-confirm-reason" type="text" maxlength="500" disabled placeholder="整賬本替換確認理由（必填）">
+              <div class="sync-row">
+                <button class="danger-solid" id="confirm-import" type="button" disabled>確認整賬本替換</button>
+                <span class="form-state" id="import-selection">Preview 後才可確認。</span>
+              </div>
             </div>
           </div>
         </div>
@@ -296,7 +320,6 @@
               <h4 style="margin-top:16px">條件確認</h4>
               <div class="legacy-acks" id="legacy-ack-list">
                 <label class="legacy-ack" id="legacy-ack-duplicates-row"><input id="legacy-ack-duplicates" type="checkbox" disabled><span>保留後台識別出的完全重複事件。</span><small id="legacy-ack-duplicates-state">待 Preview</small></label>
-                <label class="legacy-ack" id="legacy-ack-unknown-tax-row"><input id="legacy-ack-unknown-tax" type="checkbox" disabled><span>歷史稅項維持 UNKNOWN_LEGACY，日後逐筆審閱。</span><small id="legacy-ack-unknown-tax-state">待 Preview</small></label>
               </div>
               <div class="legacy-phrase">
                 <label for="legacy-confirm-phrase">逐字輸入 <code id="legacy-required-phrase">CONFIRM LEGACY US</code></label>
@@ -317,6 +340,6 @@
 
 <footer><div class="wrap"><div class="logo">Yi<b>Capital</b></div><p>© 2026 Yi Capital.</p></div></footer>
 
-<script src="assets/yc-ledger-admin.js?v=20260805b"></script>
+<script src="assets/yc-ledger-admin.js?v=20260805e"></script>
 </body>
 </html>

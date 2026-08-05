@@ -4,12 +4,12 @@
 
   const { api, $ } = window.YCAdmin;
   const MAX_FILE_BYTES = 8 * 1024 * 1024;
-  const MAX_IMPORT_ROWS = 280;
+  const MAX_IMPORT_ROWS = 1000;
   const MAX_LEGACY_JSON_BYTES = 2 * 1024 * 1024;
   const MAX_LEGACY_EVENTS = 120;
+  const DEFAULT_REPLACE_REASON = '已核對 Excel 完整事件賬本，確認以此建立新的 active ledger revision；舊版本保留歷史。';
   const LEGACY_ACKS = [
     { key: 'duplicates', input: 'legacy-ack-duplicates', row: 'legacy-ack-duplicates-row', state: 'legacy-ack-duplicates-state' },
-    { key: 'unknownTax', input: 'legacy-ack-unknown-tax', row: 'legacy-ack-unknown-tax-row', state: 'legacy-ack-unknown-tax-state' },
   ];
   const PORTFOLIOS = {
     us: { label: 'Yi Capital US', currency: 'USD', template: 'assets/data/Yi_Capital_US.xlsx', file: 'Yi_Capital_US.xlsx' },
@@ -73,23 +73,23 @@
       field('ticker', 'Ticker', 'text', { required: true, placeholder: '例如 NVDA' }),
       field('name', '資產名稱', 'text', { placeholder: '可留空由後台映射' }),
       field('quantity', 'Quantity', 'number', { required: true, min: '0', step: '0.000001' }),
-      field('amount', '淨現金成本 Amount', 'number', { required: true, min: '0', step: '0.01' }),
-      field('price', '參考 Buy Price', 'number', { min: '0', step: '0.000001' }),
+      field('amount', '最終現金 Amount', 'number', { required: true, min: '0', step: '0.01' }),
+      field('price', '參考 Buy Price（可留空）', 'number', { min: '0', step: '0.000001' }),
       field('notes', 'Notes', 'textarea', { full: true }),
     ],
     SELL: [
       field('ticker', 'Ticker', 'text', { required: true, placeholder: '例如 0700.HK' }),
       field('name', '資產名稱', 'text', { placeholder: '可留空由後台映射' }),
       field('quantity', 'Quantity', 'number', { required: true, min: '0', step: '0.000001' }),
-      field('amount', '淨到賬 Amount', 'number', { required: true, min: '0', step: '0.01' }),
-      field('price', '參考 Sell Price', 'number', { min: '0', step: '0.000001' }),
+      field('amount', '最終現金 Amount', 'number', { required: true, min: '0', step: '0.01' }),
+      field('price', '參考 Sell Price（可留空）', 'number', { min: '0', step: '0.000001' }),
       field('notes', 'Notes', 'textarea', { full: true }),
     ],
     DIVIDEND: [
       field('ticker', 'Ticker', 'text', { required: true }),
       field('name', '資產名稱', 'text'),
       field('quantity', 'Quantity', 'number', { required: true, min: '0', step: '0.000001' }),
-      field('amount', '淨入賬 Amount', 'number', { required: true, min: '0', step: '0.01' }),
+      field('amount', '最終現金 Amount', 'number', { required: true, min: '0', step: '0.01' }),
       field('notes', 'Notes', 'textarea', { full: true }),
     ],
     CORPORATE_ACTION: [
@@ -125,8 +125,11 @@
 
   const state = {
     portfolio: 'us', ledger: null, pending: [], confirmed: [], ledgerRevision: 0,
+    dividendCandidates: [], dividendLoadSequence: 0,
+    pipelineHealth: null, pipelineView: null,
     importFile: null, importBuffer: null, importHash: null, importParsed: null,
     importPreview: null, importId: null, importExpectedRevision: null,
+    importBlockers: [], importBlockerCount: 0,
     legacyPackage: null, legacyPreview: null, legacyImportId: null,
     legacyMigrationHash: null, legacyRequirements: null, legacyConfirmed: false,
   };
@@ -190,6 +193,141 @@
     if (!Number.isFinite(number)) return String(value === undefined || value === null ? '—' : value);
     return new Intl.NumberFormat('zh-HK', { maximumFractionDigits: 6 }).format(number);
   }
+  function revisionNumber(value) {
+    const revision = asNumber(value, NaN);
+    return Number.isInteger(revision) && revision >= 0 ? revision : null;
+  }
+  function pipelineReasonText(reason) {
+    return ({
+      CURRENT_REVISION_RAW_TAPE_MISSING: '正在凍結當前 revision 的 raw-close 價格帶',
+      NAV_CALENDAR_COVERAGE_MISSING: '正在補齊交易日 NAV',
+      NAV_RECALCULATION_REQUIRED: '現金、持倉與 NAV 正在重算',
+      RAW_NAV_COMPLETED_SESSION_STALE: 'NAV 正在追上最新已完成市場日',
+      NAV_TARGET_MISMATCH: 'NAV 正在追上價格帶目標日',
+      RECALC_NAV_OUTBOX_PENDING: '賬務重算已排隊',
+    })[String(reason || '').toUpperCase()] || '派生計算正在進行';
+  }
+  function pipelineStatusView(health, portfolio, fallbackRevision) {
+    const rawPortfolios = first(health, ['raw_nav_portfolios', 'rawNavPortfolios'], {}) || {};
+    const storagePortfolios = first(health, ['ledger_storage_portfolios', 'ledgerStoragePortfolios'], {}) || {};
+    const raw = rawPortfolios[portfolio] || {};
+    const storage = storagePortfolios[portfolio] || {};
+    const targetRevision = revisionNumber(first(storage, [
+      'targetRevision', 'target_revision', 'ledgerRevision', 'ledger_revision',
+    ], first(raw, ['targetRevision', 'target_revision', 'ledgerRevision', 'ledger_revision'], fallbackRevision)))
+      ?? revisionNumber(fallbackRevision) ?? 0;
+    const projectionRevision = revisionNumber(first(storage, ['projectionRevision', 'projection_revision'], null));
+    const publicRevision = revisionNumber(first(storage, ['publicRevision', 'public_revision'], null));
+    const explicitComplete = revisionNumber(first(storage, [
+      'completedSnapshotRevision', 'completed_snapshot_revision',
+      'exportRevision', 'export_revision', 'snapshotRevision', 'snapshot_revision',
+    ], null));
+    // Excel fallback is backed by the materialized projection, not merely the
+    // public-page snapshot. Never advertise a public-only revision as exportable.
+    const completedSnapshotRevision = explicitComplete ?? projectionRevision;
+    const projectionCurrentValue = first(storage, ['projectionCurrent', 'projection_current'], null);
+    const projectionCurrent = targetRevision === 0 && projectionRevision === null ||
+      projectionCurrentValue === true ||
+      (projectionCurrentValue === null && projectionRevision === targetRevision);
+    const publicCurrentValue = first(storage, ['publicCurrent', 'public_current'], null);
+    const publicCurrent = publicCurrentValue === true ||
+      (publicCurrentValue === null && publicRevision === targetRevision);
+    const rawReady = first(raw, ['ready'], false) === true || targetRevision === 0;
+    const reason = String(first(raw, ['reason'], '') || '').toUpperCase();
+    const tapeThrough = String(first(raw, ['tapeThrough', 'tape_through'], '') || '');
+    const latestNavDate = String(first(raw, ['latestNavDate', 'latest_nav_date'], '') || '');
+    const priceTapeId = String(first(raw, ['priceTapeId', 'price_tape_id'], '') || '');
+    const priceReady = targetRevision === 0 || Boolean(priceTapeId || tapeThrough) &&
+      reason !== 'CURRENT_REVISION_RAW_TAPE_MISSING';
+    const snapshotCurrent = projectionCurrent;
+    const currentReady = rawReady && snapshotCurrent;
+    const exportRevision = currentReady ? targetRevision : completedSnapshotRevision;
+    const exportReady = exportRevision !== null;
+    const stableRevision = completedSnapshotRevision === null ? '尚未生成' : `Revision ${completedSnapshotRevision}`;
+    const target = `Revision ${targetRevision}`;
+    const publicSuffix = publicRevision !== null && !publicCurrent
+      ? `；前台仍穩定服務 Revision ${publicRevision}` : '';
+
+    return {
+      targetRevision,
+      completedSnapshotRevision,
+      exportRevision,
+      currentReady,
+      exportReady,
+      pricing: targetRevision === 0
+        ? { state: 'done', title: '無需持倉取價', detail: 'Revision 0 · 現金起始快照' }
+        : priceReady
+          ? { state: 'done', title: '原始價格已凍結', detail: `${target}${tapeThrough ? ` · raw-close 至 ${tapeThrough}` : ' · raw-close'} · 不復權` }
+          : { state: 'active', title: '動態取價中', detail: `${target} · ${pipelineReasonText(reason)}` },
+      accounting: rawReady
+        ? { state: 'done', title: '賬務重算完成', detail: `${target} · 現金 / 持倉 / NAV 已對齊` }
+        : { state: priceReady ? 'active' : 'waiting', title: priceReady ? '動態計算中' : '等待價格帶', detail: `${target} · ${latestNavDate && tapeThrough ? `${latestNavDate} → ${tapeThrough} · ` : ''}${pipelineReasonText(reason)}` },
+      snapshot: snapshotCurrent
+        ? { state: 'done', title: '完整 Snapshot 已存儲', detail: `${target}${publicSuffix}` }
+        : { state: 'active', title: '保留上一完整 Snapshot', detail: `${stableRevision} 穩定可讀；正在生成 ${target}${publicSuffix}` },
+      excel: currentReady
+        ? { state: 'done', title: 'Snapshot 可導出', detail: `Excel 將導出凍結 Snapshot ${target}` }
+        : exportReady
+          ? { state: 'done', title: '上一完整 Snapshot 可導出', detail: `Excel 將導出凍結 Snapshot Revision ${exportRevision}；動態 ${target} 仍在計算（可簽名整賬本替換）` }
+          : { state: 'waiting', title: '尚無完整 Snapshot', detail: `Excel 不讀取半成品；正在生成 ${target}` },
+    };
+  }
+  function setPipelineStage(id, item) {
+    const host = $(id);
+    if (!host || !item) return;
+    host.dataset.state = item.state;
+    const title = host.querySelector('b');
+    const detail = host.querySelector('span');
+    if (title) title.textContent = item.title;
+    if (detail) detail.textContent = item.detail;
+  }
+  function renderPipelineStatus(view, error) {
+    const button = $('export-workbook');
+    if (!view) {
+      ['pipeline-pricing', 'pipeline-accounting', 'pipeline-snapshot', 'pipeline-excel'].forEach(id => {
+        const host = $(id);
+        if (!host) return;
+        host.dataset.state = 'unknown';
+        const title = host.querySelector('b');
+        const detail = host.querySelector('span');
+        if (title) title.textContent = '狀態暫不可讀';
+        if (detail) detail.textContent = String(error && error.message || '可直接嘗試導出，由後台做最終校驗。');
+      });
+      if (button) { button.disabled = false; button.textContent = '下載 Snapshot Excel'; }
+      $('export-revision').textContent = `Ledger Revision ${state.ledgerRevision}`;
+      return;
+    }
+    setPipelineStage('pipeline-pricing', view.pricing);
+    setPipelineStage('pipeline-accounting', view.accounting);
+    setPipelineStage('pipeline-snapshot', view.snapshot);
+    setPipelineStage('pipeline-excel', view.excel);
+    if (button) {
+      button.disabled = !view.exportReady;
+      button.textContent = view.exportReady ? '下載 Snapshot Excel' : '等待完整 Snapshot';
+    }
+    const complete = view.completedSnapshotRevision === null
+      ? '尚無完整 Snapshot'
+      : `最後完整 Snapshot Revision ${view.completedSnapshotRevision}`;
+    $('export-revision').textContent = view.currentReady
+      ? `Snapshot Revision ${view.targetRevision} · 可導出`
+      : view.exportReady
+        ? `將導出 Snapshot Revision ${view.exportRevision} · 動態 Revision ${view.targetRevision} 計算中`
+        : `動態 Revision ${view.targetRevision} · ${complete}`;
+  }
+  async function loadPipelineStatus() {
+    try {
+      const health = await api('/api/health');
+      state.pipelineHealth = health;
+      state.pipelineView = pipelineStatusView(health, state.portfolio, state.ledgerRevision);
+      renderPipelineStatus(state.pipelineView);
+      return state.pipelineView;
+    } catch (error) {
+      state.pipelineHealth = null;
+      state.pipelineView = null;
+      renderPipelineStatus(null, error);
+      return null;
+    }
+  }
   function stableClone(value) {
     if (value === undefined) return null;
     return JSON.parse(JSON.stringify(value));
@@ -227,6 +365,79 @@
     };
   }
 
+  function normalizeDividendCandidate(item) {
+    const evidence = parseJson(first(item, ['evidence', 'evidence_json', 'evidenceJson'], {}), {});
+    const currentQuantity = optionalNumber(first(item, [
+      'currentQuantity', 'current_quantity', 'holdingQuantity', 'holding_quantity',
+    ], null));
+    const suggestedQuantity = optionalNumber(first(item, [
+      'suggestedQuantity', 'suggested_quantity', 'quantity',
+    ], currentQuantity));
+    return {
+      raw: item,
+      candidateId: String(first(item, ['candidateId', 'candidate_id', 'id'], '') || ''),
+      portfolio: String(first(item, ['portfolio', 'portfolio_id'], '') || '').toLowerCase(),
+      version: asNumber(first(item, ['expectedVersion', 'version'], 1), 1),
+      status: String(first(item, ['status', 'amountStatus', 'amount_status'], 'PENDING_VERIFICATION')).toUpperCase(),
+      ticker: String(first(item, ['ticker'], '') || '').toUpperCase(),
+      name: String(first(item, ['name', 'securityName', 'security_name'], '') || ''),
+      exDate: dateString(first(item, ['exDate', 'ex_date'], '')),
+      recordDate: dateString(first(item, ['recordDate', 'record_date'], '')),
+      payDate: dateString(first(item, ['payDate', 'pay_date'], '')),
+      sourceSystem: String(first(item, ['sourceSystem', 'source_system'], '') || ''),
+      sourceEventId: String(first(item, ['sourceEventId', 'source_event_id'], '') || ''),
+      detectedAt: first(item, ['detectedAt', 'detected_at'], ''),
+      currentQuantity,
+      suggestedQuantity,
+      evidence,
+    };
+  }
+
+  function dividendVerifyPayload(candidate, values) {
+    const payload = {
+      candidateId: candidate.candidateId,
+      expectedVersion: candidate.version,
+      Amount: String(values.amount || '').trim(),
+    };
+    const quantity = optionalNumber(values.quantity);
+    if (quantity !== null) payload.quantity = quantity;
+    const actualReceiptDate = dateString(values.actualReceiptDate);
+    const recordDate = dateString(values.recordDate);
+    const reviewNote = String(values.reviewNote || '').trim();
+    if (actualReceiptDate) payload.actualReceiptDate = actualReceiptDate;
+    if (recordDate) payload.recordDate = recordDate;
+    if (reviewNote) payload.reviewNote = reviewNote;
+    return payload;
+  }
+
+  function dividendDismissPayload(candidate, reason) {
+    return {
+      candidateId: candidate.candidateId,
+      expectedVersion: candidate.version,
+      reason: String(reason || '').trim(),
+    };
+  }
+
+  function dividendEvidenceEntries(candidate) {
+    const rows = [
+      ['source_system', candidate.sourceSystem],
+      ['source_event_id', candidate.sourceEventId],
+    ];
+    function walk(value, prefix, depth) {
+      if (!value || typeof value !== 'object' || depth > 2) return;
+      Object.keys(value).sort().forEach(key => {
+        const nested = value[key];
+        const label = prefix ? `${prefix}.${key}` : key;
+        if (nested && typeof nested === 'object' && !Array.isArray(nested)) walk(nested, label, depth + 1);
+        else if (nested !== null && nested !== undefined && nested !== '') {
+          rows.push([label, Array.isArray(nested) ? JSON.stringify(nested) : String(nested)]);
+        }
+      });
+    }
+    walk(candidate.evidence, '', 0);
+    return rows.filter((row, index) => row[1] && rows.findIndex(other => other[0] === row[0] && other[1] === row[1]) === index).slice(0, 16);
+  }
+
   function mountLedgerNavLink() {
     const nav = $('adminnav');
     if (!nav || nav.querySelector('[href="admin-ledger"]')) return;
@@ -242,9 +453,7 @@
       button.addEventListener('click', () => switchPortfolio(button.dataset.portfolio));
     });
     $('refresh-ledger').addEventListener('click', loadLedger);
-    $('event-type').addEventListener('change', () => { renderEventFields(); updateTax(); });
-    $('tax-mode').addEventListener('change', updateTax);
-    ['gross-amount', 'tax-rate', 'tax-amount', 'fee-amount'].forEach(id => $(id).addEventListener('input', updateTax));
+    $('event-type').addEventListener('change', renderEventFields);
     $('event-form').addEventListener('submit', savePending);
     $('reset-event').addEventListener('click', resetForm);
     $('export-workbook').addEventListener('click', exportWorkbook);
@@ -252,6 +461,8 @@
     $('drain-outbox').addEventListener('click', drainPortfolioOutbox);
     $('import-file').addEventListener('change', event => prepareImport(event.target.files && event.target.files[0]));
     $('preview-import').addEventListener('click', previewImport);
+    $('import-replace-all-ack').addEventListener('change', updateImportConfirmation);
+    $('import-confirm-reason').addEventListener('input', updateImportConfirmation);
     $('confirm-import').addEventListener('click', confirmImport);
     $('legacy-json').addEventListener('input', invalidateLegacyPackage);
     $('parse-legacy').addEventListener('click', parseLegacyMigrationPackage);
@@ -263,7 +474,6 @@
     $('drain-legacy-outbox').addEventListener('click', drainLegacyOutbox);
     bindDropzone();
     renderEventFields();
-    updateTax();
   }
 
   async function switchPortfolio(portfolio) {
@@ -290,13 +500,14 @@
       card.append(el('b', '', value), el('span', '', label));
       host.append(card);
     }
-    $('export-revision').textContent = `Revision ${state.ledgerRevision}`;
   }
 
   async function loadLedger() {
     const host = $('pending-list');
     host.replaceChildren(el('div', 'empty-state', '載入中…'));
     $('refresh-ledger').disabled = true;
+    const dividendLoad = loadDividendCandidates();
+    let loadError = null;
     try {
       const result = await api(`/api/admin/ledger?portfolio=${encodeURIComponent(state.portfolio)}&status=all`);
       state.ledger = result;
@@ -308,9 +519,222 @@
       renderSummary();
       renderPending();
     } catch (error) {
-      host.replaceChildren(el('div', 'log err', '✗ ' + error.message));
+      loadError = error;
     } finally {
+      const [pipeline] = await Promise.all([loadPipelineStatus(), dividendLoad]);
+      if (loadError) {
+        const message = pipeline && !pipeline.currentReady
+          ? `↻ 動態 Revision ${pipeline.targetRevision} 正在處理；事件沒有丟失。請等四個階段完成後刷新。`
+          : '✗ ' + loadError.message;
+        host.replaceChildren(el('div', pipeline && !pipeline.currentReady ? 'log' : 'log err', message));
+      }
       $('refresh-ledger').disabled = false;
+    }
+  }
+
+  async function loadDividendCandidates() {
+    const portfolio = state.portfolio;
+    const sequence = ++state.dividendLoadSequence;
+    const host = $('dividend-inbox-list');
+    const count = $('dividend-inbox-count');
+    const status = $('dividend-inbox-status');
+    host.replaceChildren(el('div', 'empty-state', `正在讀取 ${portfolio.toUpperCase()} 派息候選…`));
+    count.textContent = '讀取中…';
+    status.textContent = '來源候選只提供派息存在性與日期證據，不提供 Amount。';
+    try {
+      const result = await api(`/api/admin/ledger/dividends?portfolio=${encodeURIComponent(portfolio)}&status=PENDING_VERIFICATION`);
+      if (sequence !== state.dividendLoadSequence || portfolio !== state.portfolio) return;
+      const responsePortfolio = String(first(result, ['portfolio'], portfolio)).toLowerCase();
+      if (responsePortfolio !== portfolio) throw new Error('後端返回了錯誤的投資組合派息候選。');
+      const raw = first(result, ['candidates', 'items'], []);
+      state.dividendCandidates = (Array.isArray(raw) ? raw : [])
+        .map(normalizeDividendCandidate)
+        .filter(item => item.status === 'PENDING_VERIFICATION' || item.status === 'PENDING');
+      count.textContent = `${state.dividendCandidates.length} 待核實`;
+      status.textContent = state.dividendCandidates.length
+        ? '請用券商結單核對最終到賬 Amount；每筆操作均保留來源與版本審計。'
+        : '目前沒有待核實派息候選。';
+      renderDividendCandidates();
+    } catch (error) {
+      if (sequence !== state.dividendLoadSequence || portfolio !== state.portfolio) return;
+      state.dividendCandidates = [];
+      count.textContent = '讀取失敗';
+      status.textContent = '✗ ' + error.message;
+      host.replaceChildren(el('div', 'log err', '派息候選讀取失敗；賬本 Pending 不受影響，可稍後刷新。'));
+    }
+  }
+
+  function renderDividendCandidates() {
+    const host = $('dividend-inbox-list');
+    host.replaceChildren();
+    if (!state.dividendCandidates.length) {
+      host.append(el('div', 'empty-state', '目前沒有待核實派息候選。'));
+      return;
+    }
+    state.dividendCandidates
+      .slice()
+      .sort((a, b) => String(b.payDate || b.exDate).localeCompare(String(a.payDate || a.exDate)) || a.candidateId.localeCompare(b.candidateId))
+      .forEach(candidate => host.append(dividendCandidateCard(candidate)));
+  }
+
+  function dividendCandidateCard(candidate) {
+    const card = el('article', 'ledger-card dividend-candidate');
+    const head = el('div', 'ledger-head');
+    const title = el('div', 'ledger-title');
+    title.append(
+      el('span', 'ledger-pill pending', 'AWAITING AMOUNT'),
+      el('span', 'ledger-pill', candidate.ticker || 'UNKNOWN'),
+      el('strong', '', candidate.name || candidate.ticker || '未命名資產'),
+    );
+    head.append(title, el('span', 'ledger-meta', `Candidate v${candidate.version}`));
+
+    const dates = el('div', 'ledger-payload');
+    [
+      ['EX DATE', candidate.exDate || '—'],
+      ['RECORD DATE', candidate.recordDate || '—'],
+      ['PAY DATE', candidate.payDate || '—'],
+      ['CURRENT QUANTITY', candidate.currentQuantity === null ? '沒有可靠建議，必須手填' : amountText(candidate.currentQuantity)],
+    ].forEach(([key, value]) => {
+      const cell = el('div', 'ledger-kv');
+      cell.append(el('small', '', key), el('span', '', value));
+      dates.append(cell);
+    });
+
+    const evidence = document.createElement('details');
+    evidence.className = 'dividend-evidence';
+    const evidenceSummary = document.createElement('summary');
+    evidenceSummary.textContent = `來源證據 · ${candidate.sourceSystem || 'UNKNOWN SOURCE'}`;
+    const evidenceGrid = el('div', 'dividend-evidence-grid');
+    dividendEvidenceEntries(candidate).forEach(([key, value]) => {
+      const row = el('div', 'dividend-evidence-row');
+      row.append(el('small', '', key));
+      if (/^https?:\/\//i.test(value)) {
+        const link = el('a', '', value);
+        link.href = value; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        row.append(link);
+      } else row.append(el('span', '', value));
+      evidenceGrid.append(row);
+    });
+    evidence.append(evidenceSummary, evidenceGrid);
+
+    const review = el('div', 'dividend-review-form');
+    const fields = el('div', 'dividend-review-grid');
+    const amount = dividendInput('number', `券商最終到賬 Amount (${PORTFOLIOS[state.portfolio].currency})`, {
+      required: true, min: '0.01', step: '0.01', placeholder: '必填，例如 123.45', inputMode: 'decimal',
+    });
+    amount.wrap.append(el('div', 'dividend-amount-note', '唯一現金輸入：券商最終實際到賬，已含所有預扣稅與費用。'));
+    const quantity = dividendInput('number', 'Quantity（必須核實，可修改）', {
+      required: true, min: '0.000001', step: '0.000001', placeholder: '必填：按券商派息明細核實', inputMode: 'decimal',
+      value: candidate.suggestedQuantity === null ? '' : candidate.suggestedQuantity,
+    });
+    const receiptDate = dividendInput('date', '實際到賬日期（可修改）', {
+      value: candidate.payDate || candidate.exDate || '',
+    });
+    const recordDate = dividendInput('date', 'Record Date（可修改）', {
+      value: candidate.recordDate || '',
+    });
+    const reviewNote = dividendInput('text', '核實備註（可選）', {
+      placeholder: '例如：已核對券商結單', maxLength: 1000,
+    });
+    reviewNote.wrap.classList.add('full');
+    fields.append(amount.wrap, quantity.wrap, receiptDate.wrap, recordDate.wrap, reviewNote.wrap);
+
+    const status = el('span', 'form-state', '核實只轉入 Automation Pending，不會自動 Confirm。');
+    status.setAttribute('role', 'status');
+    const verify = el('button', 'btn', '核實並轉入 Automation Pending');
+    verify.type = 'button';
+    const dismissReason = document.createElement('input');
+    dismissReason.type = 'text'; dismissReason.maxLength = 1000;
+    dismissReason.placeholder = '忽略理由（按忽略時必填）';
+    dismissReason.setAttribute('aria-label', '忽略派息候選理由');
+    const dismiss = el('button', 'danger-solid', '忽略候選');
+    dismiss.type = 'button';
+    const dismissRow = el('div', 'dividend-dismiss');
+    dismissRow.append(dismissReason, dismiss);
+    const controls = [amount.input, quantity.input, receiptDate.input, recordDate.input, reviewNote.input, dismissReason, verify, dismiss];
+    verify.addEventListener('click', () => verifyDividend(candidate, {
+      amount: amount.input, quantity: quantity.input, actualReceiptDate: receiptDate.input,
+      recordDate: recordDate.input, reviewNote: reviewNote.input,
+    }, controls, status));
+    dismiss.addEventListener('click', () => dismissDividend(candidate, dismissReason, controls, status));
+    review.append(fields, verify, dismissRow, status);
+    card.append(head, dates, evidence, review);
+    return card;
+  }
+
+  function dividendInput(type, labelText, attributes) {
+    const wrap = el('label', 'ledger-field');
+    const label = el('span', '', labelText);
+    const input = document.createElement('input');
+    input.type = type;
+    Object.entries(attributes || {}).forEach(([key, value]) => {
+      if (key === 'required') input.required = Boolean(value);
+      else if (key === 'inputMode') input.inputMode = value;
+      else if (key === 'maxLength') input.maxLength = value;
+      else input[key] = value;
+    });
+    wrap.append(label, input);
+    return { wrap, input };
+  }
+
+  function setDividendControlsBusy(controls, busy) {
+    controls.forEach(control => { control.disabled = busy; });
+  }
+
+  async function verifyDividend(candidate, inputs, controls, status) {
+    const amount = String(inputs.amount.value || '').trim();
+    const quantity = String(inputs.quantity.value || '').trim();
+    if (!(Number(amount) > 0)) {
+      status.textContent = '✗ Amount 必須填寫券商最終到賬正數。';
+      inputs.amount.focus();
+      return;
+    }
+    if (!(Number(quantity) > 0)) {
+      status.textContent = '✗ Quantity 必須按券商派息明細核實並填寫大於 0 的數值。';
+      inputs.quantity.focus();
+      return;
+    }
+    const payload = dividendVerifyPayload(candidate, {
+      amount,
+      quantity,
+      actualReceiptDate: inputs.actualReceiptDate.value,
+      recordDate: inputs.recordDate.value,
+      reviewNote: inputs.reviewNote.value,
+    });
+    setDividendControlsBusy(controls, true);
+    status.textContent = '正在核實來源版本並建立 Automation Pending…';
+    try {
+      const result = await api('/api/admin/ledger/dividends/verify', {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+      const pending = first(result, ['pending'], {}) || {};
+      const pendingId = first(pending, ['pendingId', 'pending_id'], '—');
+      status.textContent = `✓ 已建立 Automation Pending ${pendingId}；尚未 Confirm、尚未正式入賬。`;
+      await loadLedger();
+    } catch (error) {
+      status.textContent = '✗ ' + error.message;
+      setDividendControlsBusy(controls, false);
+    }
+  }
+
+  async function dismissDividend(candidate, reasonInput, controls, status) {
+    const payload = dividendDismissPayload(candidate, reasonInput.value);
+    if (!payload.reason) {
+      status.textContent = '✗ 忽略候選必須填寫理由。';
+      reasonInput.focus();
+      return;
+    }
+    setDividendControlsBusy(controls, true);
+    status.textContent = '正在保存忽略理由…';
+    try {
+      await api('/api/admin/ledger/dividends/dismiss', {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+      status.textContent = '✓ 候選已忽略；未建立 Pending、未修改正式賬本。';
+      await loadLedger();
+    } catch (error) {
+      status.textContent = '✗ ' + error.message;
+      setDividendControlsBusy(controls, false);
     }
   }
 
@@ -333,6 +757,7 @@
       const revision = asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.ledgerRevision), state.ledgerRevision);
       const affectedFrom = first(result, ['affectedFrom', 'affected_from'], '—');
       log.textContent = `✓ 已排隊 ${state.portfolio.toUpperCase()} revision ${revision} · from ${affectedFrom}。後台會按批次自動完成。`;
+      await loadPipelineStatus();
     } catch (error) {
       log.textContent = '✗ 重算排隊失敗：' + error.message;
     } finally {
@@ -420,15 +845,8 @@
     const reason = document.createElement('input');
     reason.type = 'text'; reason.placeholder = '確認／驳回理由（必填）'; reason.setAttribute('aria-label', '確認或驳回理由');
     const cashRule = el('span', 'ledger-meta', '負現金照實進入現金與淨值計算，不報警、不改寫、不阻斷。');
-    const taxStatus = String(first(item.event, ['tax_status', 'taxStatus'], '') || '').toUpperCase();
-    const taxNeedsReview = item.event.tax_review_required === true ||
-      taxStatus === 'PENDING_RECONFIRMATION' || taxStatus === 'UNKNOWN_LEGACY';
     review.append(reason, cashRule);
-    if (taxNeedsReview) {
-      review.append(el('span', 'log err', '稅項尚未確認：請先點「修改」核對 gross / tax / fees，保存後才能 Confirm。'));
-    }
     const confirm = el('button', 'btn', '確認入賬'); confirm.type = 'button';
-    confirm.disabled = taxNeedsReview;
     const reject = el('button', 'danger-solid', '驳回'); reject.type = 'button';
     const status = el('span', 'form-state', ''); status.setAttribute('role', 'status');
     confirm.addEventListener('click', () => confirmPending(item, reason, confirm, reject, status));
@@ -439,12 +857,19 @@
   }
 
   function displayPayload(event) {
-    const omitted = new Set(['type', 'date', 'schema_version', 'event_id', 'status', 'source', 'payload']);
+    const omitted = new Set([
+      'type', 'date', 'schema_version', 'event_id', 'status', 'source', 'payload',
+      'gross_amount', 'gross_amount_decimal', 'gross_amount_minor', 'gross_amount_inferred',
+      'withholding_tax', 'withholding_tax_decimal', 'withholding_tax_minor',
+      'transaction_tax', 'transaction_tax_decimal', 'transaction_tax_minor',
+      'tax_amount', 'tax_amount_decimal', 'tax_amount_minor', 'tax_rate', 'tax_mode',
+      'fees', 'fees_decimal', 'fees_minor', 'fee_amount', 'fee_amount_decimal', 'fee_amount_minor',
+      'tax_status', 'tax_review_required', 'tax_review_reason',
+    ]);
     const preferred = [
       'ticker', 'name', 'quantity', 'amount', 'price', 'shareholder', 'subscription', 'redemption',
       'unit_price', 'corporate_action_type', 'post_ticker', 'post_quantity', 'interest_expense',
-      'liability_change', 'fund_action_type', 'cash_change', 'gross_amount', 'tax_rate', 'tax_amount',
-      'fees', 'net_amount', 'tax_status', 'tax_review_required', 'tax_review_reason', 'notes',
+      'liability_change', 'fund_action_type', 'cash_change', 'net_amount', 'notes',
     ];
     const keys = [...preferred.filter(key => event[key] !== undefined && event[key] !== null && event[key] !== ''),
       ...Object.keys(event).filter(key => !preferred.includes(key) && !omitted.has(key) && event[key] !== undefined && event[key] !== null && event[key] !== '')];
@@ -474,7 +899,6 @@
       input.dataset.eventField = def.name;
       if (def.required) input.required = true;
       ['min', 'max', 'step', 'placeholder'].forEach(key => { if (def[key] !== undefined) input[key] = def[key]; });
-      input.addEventListener('input', updateTax);
       wrap.append(label, input); host.append(wrap);
     });
   }
@@ -487,61 +911,6 @@
       if (value !== '' && value !== null) event[input.dataset.eventField] = value;
     });
     return event;
-  }
-
-  function primaryAmount(fields, type) {
-    if (fields.amount !== undefined) return asNumber(fields.amount, 0);
-    if (fields.cash_change !== undefined) return asNumber(fields.cash_change, 0);
-    if (type === 'LIABILITY') return asNumber(fields.liability_change, 0) - asNumber(fields.interest_expense, 0);
-    if (type === 'CAPITAL') return asNumber(fields.subscription, 0) - asNumber(fields.redemption, 0);
-    return 0;
-  }
-
-  function taxValues(fields) {
-    const type = canonicalType($('event-type').value);
-    const mode = $('tax-mode').value;
-    const eventAmount = primaryAmount(fields || collectFormFields(), type);
-    const grossInput = optionalNumber($('gross-amount').value);
-    const fees = Math.round((asNumber($('fee-amount').value, 0) + Number.EPSILON) * 100) / 100;
-    const ratePercent = mode === 'RATE' ? asNumber($('tax-rate').value, 0) : 0;
-    const outflow = type === 'BUY' || (!['SELL', 'DIVIDEND'].includes(type) && eventAmount < 0);
-    const inputNet = Math.abs(eventAmount);
-    const fixedTax = mode === 'FIXED'
-      ? Math.round((asNumber($('tax-amount').value, 0) + Number.EPSILON) * 100) / 100 : 0;
-    let gross = grossInput;
-    if (gross === null) {
-      if (mode === 'RATE') {
-        const rate = ratePercent / 100;
-        if (!outflow && rate >= 1) gross = -1;
-        else gross = outflow ? (inputNet - fees) / (1 + rate) : (inputNet + fees) / (1 - rate);
-      } else {
-        gross = outflow ? inputNet - fixedTax - fees : inputNet + fixedTax + fees;
-      }
-      gross = Math.round((gross + Number.EPSILON) * 100) / 100;
-    }
-    let tax = fixedTax;
-    if (mode === 'RATE') tax = Math.round((gross * ratePercent / 100 + Number.EPSILON) * 100) / 100;
-    const net = Math.round(((outflow ? gross + tax + fees : gross - tax - fees) + Number.EPSILON) * 100) / 100;
-    const cashChange = outflow ? -net : net;
-    return { mode, gross, grossInput, inputNet, ratePercent, rate: ratePercent / 100, tax, fees, outflow, net, cashChange };
-  }
-
-  function updateTax() {
-    const type = canonicalType($('event-type').value);
-    const taxable = ['BUY', 'SELL', 'DIVIDEND', 'CORPORATE_ACTION', 'FUND_ACTION'].includes(type);
-    $('tax-box').style.display = taxable ? '' : 'none';
-    const mode = $('tax-mode').value;
-    $('tax-rate-wrap').style.display = mode === 'RATE' ? '' : 'none';
-    $('tax-amount-wrap').style.display = mode === 'FIXED' ? '' : 'none';
-    $('tax-rate').disabled = mode !== 'RATE';
-    $('tax-amount').disabled = mode !== 'FIXED';
-    const values = taxValues();
-    const currency = PORTFOLIOS[state.portfolio].currency;
-    $('tax-result').textContent = mode === 'NONE'
-      ? `未設扣稅；Fees ${amountText(values.fees)}。BUY 費稅加入成本，SELL／股息從收入扣除（${currency}）。`
-      : values.outflow
-        ? `毛額 ${amountText(values.gross)} + 稅額 ${amountText(values.tax)} + Fees ${amountText(values.fees)} = 現金成本 ${amountText(values.net)} ${currency}（Cash Change ${amountText(values.cashChange)}）`
-        : `毛額 ${amountText(values.gross)} − 稅額 ${amountText(values.tax)} − Fees ${amountText(values.fees)} = 淨收入 ${amountText(values.net)} ${currency}`;
   }
 
   function buildEvent() {
@@ -561,52 +930,7 @@
       fields.ticker = String(fields.ticker || '').trim().toUpperCase();
     }
     if (type === 'CORPORATE_ACTION') fields.ticker = String(fields.ticker || '').trim().toUpperCase();
-    const tax = taxValues(fields);
-    const event = { schema_version: 1, type, date, ...fields };
-    if (['BUY', 'SELL', 'DIVIDEND', 'CORPORATE_ACTION', 'FUND_ACTION'].includes(type)) {
-      event.tax_mode = tax.mode;
-      event.tax_status = tax.mode === 'NONE' && tax.fees === 0 ? 'NONE_DECLARED' : 'DECLARED';
-      event.tax_review_required = false;
-    }
-    if (tax.gross < 0 || tax.net < 0) throw new Error('稅額與 Fees 不能超過毛額或淨收入。');
-    if (['BUY', 'SELL', 'DIVIDEND', 'CORPORATE_ACTION', 'FUND_ACTION'].includes(type) &&
-        Math.abs(tax.net - tax.inputNet) >= 0.011) {
-      throw new Error(`Amount 與毛額、稅額和 Fees 推導的淨額不符（應為 ${tax.net}）。`);
-    }
-    if (['BUY', 'SELL', 'DIVIDEND'].includes(type)) {
-      event.gross_amount = tax.gross;
-      event.gross_amount_decimal = tax.gross.toFixed(2);
-      event.amount = tax.net;
-      event.tax_amount = tax.tax;
-      event.tax_amount_decimal = tax.tax.toFixed(2);
-      event.tax_rate = tax.rate;
-      if (type === 'DIVIDEND') event.withholding_tax = tax.tax;
-      else event.transaction_tax = tax.tax;
-      event.fees = tax.fees;
-      event.net_amount = tax.net;
-      event.net_amount_decimal = tax.net.toFixed(2);
-      event.net_cash = tax.cashChange;
-      event.cash_change = tax.cashChange;
-    } else if (tax.mode !== 'NONE' || optionalNumber($('gross-amount').value) !== null || tax.fees > 0) {
-      if (['CORPORATE_ACTION', 'FUND_ACTION'].includes(type)) {
-        event.gross_amount = tax.gross;
-        event.gross_amount_decimal = tax.gross.toFixed(2);
-        event.cash_amount = tax.cashChange;
-        event.cash_amount_decimal = event.cash_amount.toFixed(2);
-      }
-      event.tax_amount = tax.tax;
-      event.tax_amount_decimal = tax.tax.toFixed(2);
-      event.tax_rate = tax.rate;
-      if (type === 'DIVIDEND' || type === 'CORPORATE_ACTION' || type === 'FUND_ACTION') event.withholding_tax = tax.tax;
-      else event.transaction_tax = tax.tax;
-      event.fees = tax.fees;
-      const canonicalNet = tax.cashChange;
-      event.net_amount = canonicalNet;
-      event.net_amount_decimal = canonicalNet.toFixed(2);
-      event.net_cash = tax.cashChange;
-      event.cash_change = tax.cashChange;
-    }
-    return event;
+    return { schema_version: 1, type, date, ...fields };
   }
 
   async function savePending(event) {
@@ -655,19 +979,10 @@
       const value = first(event, fieldAliases(def.name), '');
       if (input) input.value = value === null || value === undefined ? '' : String(value);
     });
-    const taxAmount = asNumber(first(event, ['tax_amount', 'taxAmount', 'withholding_tax'], 0), 0);
-    const taxRate = asNumber(first(event, ['tax_rate', 'taxRate'], 0), 0);
-    const mode = String(first(event, ['tax_mode', 'taxMode'], taxRate > 0 ? 'RATE' : taxAmount > 0 ? 'FIXED' : 'NONE')).toUpperCase();
-    $('tax-mode').value = ['NONE', 'RATE', 'FIXED'].includes(mode) ? mode : 'NONE';
-    $('gross-amount').value = first(event, ['gross_amount', 'grossAmount'], '');
-    $('tax-rate').value = taxRate > 0 && taxRate <= 1 ? taxRate * 100 : taxRate || '';
-    $('tax-amount').value = taxAmount || '';
-    $('fee-amount').value = first(event, ['fees', 'fee_amount', 'feeAmount'], '') || '';
     $('form-title').textContent = '修改 Pending 事件';
     $('form-mode').textContent = `${item.pendingId} · v${item.version}`;
     $('save-event').textContent = '保存修改';
     $('form-status').textContent = '';
-    updateTax();
     $('event-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -679,7 +994,7 @@
     if (name === 'post_ticker') aliases.push('postTicker');
     if (name === 'post_quantity') aliases.push('postQty', 'postQuantity');
     if (name === 'unit_price') aliases.push('unitPrice');
-    if (name === 'amount') aliases.push('net_amount', 'netAmount', 'gross_amount', 'grossAmount');
+    if (name === 'amount') aliases.push('net_amount', 'netAmount', 'operational_amount', 'operationalAmount');
     return aliases;
   }
 
@@ -693,16 +1008,10 @@
     $('form-mode').textContent = 'MANUAL';
     $('save-event').textContent = '加入 Pending';
     if (clearStatus !== false) $('form-status').textContent = '';
-    renderEventFields(); updateTax();
+    renderEventFields();
   }
 
   async function confirmPending(item, reasonInput, confirmButton, rejectButton, status) {
-    const taxStatus = String(first(item.event, ['tax_status', 'taxStatus'], '') || '').toUpperCase();
-    if (item.event.tax_review_required === true ||
-        taxStatus === 'PENDING_RECONFIRMATION' || taxStatus === 'UNKNOWN_LEGACY') {
-      status.textContent = '請先修改並確認稅項，保存 Pending 後再入賬。';
-      return;
-    }
     const reason = reasonInput.value.trim();
     if (!reason) { status.textContent = '請先填寫確認理由。'; reasonInput.focus(); return; }
     confirmButton.disabled = rejectButton.disabled = true; status.textContent = '確認中…';
@@ -950,9 +1259,14 @@
   function clearImport() {
     state.importFile = null; state.importBuffer = null; state.importHash = null; state.importParsed = null;
     state.importPreview = null; state.importId = null; state.importExpectedRevision = null;
+    state.importBlockers = []; state.importBlockerCount = 0;
     $('import-file').value = ''; $('import-file-name').value = '';
     $('preview-import').disabled = true; $('confirm-import').disabled = true;
     $('import-preview').style.display = 'none'; $('import-operations').replaceChildren();
+    $('import-replace-all-ack').checked = false; $('import-replace-all-ack').disabled = true;
+    $('import-confirm-reason').value = ''; $('import-confirm-reason').disabled = true;
+    $('import-confirm-box').classList.remove('blocked');
+    $('import-selection').textContent = 'Preview 後才可確認。';
     $('import-log').textContent = '選擇文件後才會啟用預覽。';
   }
 
@@ -1378,10 +1692,17 @@
       ['portfolio', data.portfolio],
       ['currency', data.currency],
       ['ledgerRevision', data.ledgerRevision],
+      ['servedRevision', data.servedRevision ?? data.ledgerRevision],
+      ['targetRevision', data.targetRevision ?? data.ledgerRevision],
+      ['fallback', data.fallback === true],
+      ['exportMode', data.exportMode || 'FROZEN_COMPLETE_SNAPSHOT'],
+      ['reverseSyncMode', data.reverseSyncMode || 'FULL_LEDGER_REPLACEMENT'],
+      ['reverseSyncWritable', data.reverseSyncWritable !== false],
+      ['snapshotAsOf', data.snapshotAsOf || ''],
       ['exportId', data.exportId || ''],
       ['syncToken', data.syncToken || ''],
       ['layoutHash', data.layoutHash || ''],
-      ['generatedAt', new Date().toISOString()],
+      ['generatedAt', data.snapshotGeneratedAt || new Date().toISOString()],
       ['visibleSheetCount', 11],
       ['eventMetaColumns', META_HEADERS.length],
     ];
@@ -1447,9 +1768,33 @@
           projectionCount += 1;
         }
       });
+      const servedRevision = asNumber(first(result, [
+        'servedRevision', 'served_revision', 'snapshotLedgerRevision', 'snapshot_ledger_revision',
+        'ledgerRevision', 'ledger_revision',
+      ], state.ledgerRevision), state.ledgerRevision);
+      const targetRevision = asNumber(first(result, [
+        'targetRevision', 'target_revision', 'currentLedgerRevision', 'current_ledger_revision',
+      ], servedRevision), servedRevision);
+      const exportMode = String(first(result, ['exportMode', 'export_mode'], 'FROZEN_COMPLETE_SNAPSHOT'));
+      const reverseSyncMode = String(first(result, [
+        'reverseSyncMode', 'reverse_sync_mode',
+      ], 'FULL_LEDGER_REPLACEMENT'));
+      const fallback = first(result, ['fallback'], servedRevision !== targetRevision) === true;
+      const reverseSyncWritable = first(result, [
+        'reverseSyncWritable', 'reverse_sync_writable',
+      ], true) === true;
+      const snapshotAsOf = String(first(result, ['snapshotAsOf', 'snapshot_as_of'], '') || '');
       setSyncSheet(workbook, {
         portfolio, currency: first(result, ['currency'], config.currency),
-        ledgerRevision: asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.ledgerRevision), state.ledgerRevision),
+        ledgerRevision: servedRevision,
+        servedRevision,
+        targetRevision,
+        fallback,
+        exportMode,
+        reverseSyncMode,
+        reverseSyncWritable,
+        snapshotAsOf,
+        snapshotGeneratedAt: first(result, ['snapshotGeneratedAt', 'snapshot_generated_at'], ''),
         exportId: first(result, ['exportId', 'export_id'], ''), syncToken: first(result, ['syncToken', 'sync_token'], ''),
         layoutHash: first(result, ['layoutHash', 'layout_hash'], ''),
       });
@@ -1462,16 +1807,22 @@
         styleManifest,
       );
       downloadWorkbookBytes(preservedWorkbook, config.file);
-      const revision = asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.ledgerRevision), state.ledgerRevision);
       const availableCount = Math.max(0, projectionCount - unavailableProjection.length);
       const unavailableText = unavailableProjection.length
         ? ` · ${unavailableProjection.join(', ')} 後台未提供，已清除模板舊值並標註`
         : '';
-      log.textContent = `✓ 已輸出 ${events.length} 筆確認事件 · Revision ${revision} · 派生表有效重建 ${availableCount}/4${unavailableText}。Pending 未輸出。`;
+      const reverseSyncText = reverseSyncWritable
+        ? '可簽名整賬本替換'
+        : '凍結 fallback Snapshot；仍可簽名整賬本替換';
+      log.textContent = `✓ 已輸出 ${events.length} 筆確認事件 · Snapshot Rev ${servedRevision}（動態目標 Rev ${targetRevision}） · ${snapshotAsOf ? `截至 ${snapshotAsOf} · ` : ''}${reverseSyncText} · 派生表有效重建 ${availableCount}/4${unavailableText}。Pending 未輸出。`;
+      $('export-revision').textContent = `已導出 Snapshot Revision ${servedRevision} · 動態 Revision ${targetRevision}`;
     } catch (error) {
-      log.textContent = '✗ ' + error.message;
+      const pipeline = await loadPipelineStatus();
+      log.textContent = pipeline && !pipeline.exportReady
+        ? `↻ 動態 Revision ${pipeline.targetRevision} 仍在計算／存儲；Excel 不會讀取半成品。${pipeline.completedSnapshotRevision === null ? '' : `最後完整 Snapshot 是 Revision ${pipeline.completedSnapshotRevision}。`}`
+        : '✗ ' + error.message;
     } finally {
-      button.disabled = false;
+      button.disabled = Boolean(state.pipelineView && !state.pipelineView.exportReady);
     }
   }
 
@@ -1490,7 +1841,8 @@
       const parsed = await parseImportWorkbook(buffer);
       state.importFile = file; state.importBuffer = buffer; state.importHash = hash; state.importParsed = parsed;
       $('preview-import').disabled = false;
-      log.textContent = `✓ 本地預檢通過：${parsed.rows.length} 個事件行 · SHA-256 ${hash.slice(0, 16)}… · 4 張派生表將忽略。尚未寫入後台。`;
+      const fallback = parsed.manifest && parsed.manifest.fallback === true;
+      log.textContent = `✓ 本地預檢通過：${parsed.rows.length} 個事件行 · SHA-256 ${hash.slice(0, 16)}… · 4 張派生表將忽略。${fallback ? '此為凍結 fallback Snapshot；後台會按目前 revision 做全賬本 Preview + CAS。' : '尚未寫入後台。'}`;
     } catch (error) {
       log.textContent = '✗ ' + error.message;
       $('preview-import').disabled = true;
@@ -1547,6 +1899,17 @@
     });
   }
 
+  function dropLegacyTaxFields(event) {
+    dropMoney(event, [
+      'gross_amount', 'withholding_tax', 'transaction_tax', 'tax_amount', 'fees', 'fee_amount',
+    ]);
+    [
+      'gross_amount_inferred', 'tax_status', 'tax_review_required', 'tax_review_reason',
+      'tax_mode', 'tax_rate',
+    ].forEach(field => delete event[field]);
+    return event;
+  }
+
   function setMoney(event, field, value) {
     dropMoney(event, [field]);
     if (value !== null && value !== undefined && Number.isFinite(Number(value))) event[field] = round2(value);
@@ -1558,36 +1921,8 @@
     return ['BUY', 'SELL', 'DIVIDEND'].includes(type) ? Math.abs(value) : value;
   }
 
-  function taxFacts(event) {
-    const withholding = moneyValue(event, ['withholding_tax']);
-    const transaction = moneyValue(event, ['transaction_tax']);
-    const fees = moneyValue(event, ['fees', 'fee_amount']);
-    const gross = moneyValue(event, ['gross_amount']);
-    const status = String(first(event, ['tax_status', 'taxStatus'], '') || '').toUpperCase();
-    const unknown = ['UNKNOWN_LEGACY', 'PENDING_RECONFIRMATION'].includes(status);
-    return {
-      withholding, transaction, fees, gross, status,
-      known: !unknown && [withholding, transaction, fees, gross].every(value => value !== null),
-      deductions: asNumber(withholding, 0) + asNumber(transaction, 0) + asNumber(fees, 0),
-    };
-  }
-
   function sameMoney(left, right) {
     return left !== null && right !== null && Math.abs(Number(left) - Number(right)) < 0.005;
-  }
-
-  function taxReview(event, reason) {
-    event.tax_status = 'PENDING_RECONFIRMATION';
-    event.tax_review_required = true;
-    event.tax_review_reason = reason;
-    const marker = `[TAX REVIEW REQUIRED] ${reason}`;
-    const notes = String(event.notes || '').trim();
-    if (!notes.includes('[TAX REVIEW REQUIRED]')) event.notes = notes ? `${notes}\n${marker}` : marker;
-  }
-
-  function prepareInferredGross(event) {
-    if (event.gross_amount_inferred === true) dropMoney(event, ['gross_amount']);
-    return event;
   }
 
   function listValue(value) {
@@ -1623,34 +1958,29 @@
       event.ticker = String(visible.ticker || '').toUpperCase();
       event.name = String(visible.name || '').trim();
       event.quantity = asNumber(visible.quantity, 0);
-      event.price = def.type === 'DIVIDEND' ? null : optionalNumber(visible.price);
+      if (def.type === 'DIVIDEND') {
+        delete event.price;
+      } else {
+        const visiblePrice = optionalNumber(visible.price);
+        // Price is only a reference. A blank Excel cell must not erase an
+        // existing reference price; CPS is always recomputed from Amount / quantity.
+        if (visiblePrice !== null) event.price = visiblePrice;
+        else if (!isExisting) delete event.price;
+      }
       const net = Math.abs(asNumber(visible.amount, 0));
       const priorNet = operationalAmount(base, def.type);
       const changed = !isExisting || !sameMoney(net, priorNet);
       if (changed) {
-        const facts = taxFacts(base);
         dropMoney(event, [
           'gross_amount', 'net_amount', 'operational_amount', 'cash_change', 'net_cash', 'amount',
           'per_share', 'gross_per_share', 'tax_amount', 'fee_amount',
         ]);
-        if (facts.known) {
-          const gross = def.type === 'BUY' ? net - facts.deductions : net + facts.deductions;
-          if (gross < 0) throw new Error(`${def.sheet} 的淨 Amount 小於原有稅費，無法推導毛額。`);
-          setMoney(event, 'gross_amount', gross);
-        } else {
-          dropMoney(event, ['gross_amount', 'withholding_tax', 'transaction_tax', 'fees']);
-        }
+        dropLegacyTaxFields(event);
         setMoney(event, 'amount', net);
-        setMoney(event, 'net_amount', net);
-        setMoney(event, 'cash_change', def.type === 'BUY' ? -net : net);
-        setMoney(event, 'net_cash', def.type === 'BUY' ? -net : net);
-        taxReview(event, isExisting
-          ? 'Excel Amount changed; reconfirm gross, tax and fees before ledger confirmation.'
-          : 'New Excel row contains net Amount only; enter or confirm gross, tax and fees.');
       } else {
         event.amount = net;
       }
-      return cleanEvent(prepareInferredGross(event));
+      return cleanEvent(event);
     }
 
     if (def.type === 'CORPORATE_ACTION') {
@@ -1670,28 +2000,14 @@
       const priorNet = operationalAmount(base, def.type);
       const changed = !isExisting || !sameMoney(net, priorNet);
       if (changed) {
-        const facts = taxFacts(base);
         dropMoney(event, [
           'gross_amount', 'cash_amount', 'operational_amount', 'net_amount', 'cash_change',
           'net_cash', 'amount', 'tax_amount', 'fee_amount',
         ]);
-        if (facts.known) {
-          const gross = net < 0 ? Math.abs(net) - facts.deductions : net + facts.deductions;
-          if (gross < 0) throw new Error(`${def.sheet} 的淨 Cash Change 小於原有稅費，無法推導毛額。`);
-          setMoney(event, 'gross_amount', gross);
-        } else {
-          dropMoney(event, ['withholding_tax', 'transaction_tax', 'fees']);
-        }
-        setMoney(event, 'cash_amount', net);
-        setMoney(event, 'operational_amount', net);
-        setMoney(event, 'net_amount', net);
+        dropLegacyTaxFields(event);
         setMoney(event, 'cash_change', net);
-        setMoney(event, 'net_cash', net);
-        taxReview(event, isExisting
-          ? 'Excel Cash Change changed; reconfirm gross cash, tax and fees before ledger confirmation.'
-          : 'New Excel row contains net Cash Change only; enter or confirm gross cash, tax and fees.');
       }
-      return cleanEvent(prepareInferredGross(event));
+      return cleanEvent(event);
     }
 
     if (def.type === 'LIABILITY') {
@@ -1746,12 +2062,10 @@
         rows.push({
           sheetName: def.sheet, rowNumber: index + 1, eventId: eventId || null,
           eventVersion, baseHash: baseHash || null, event,
-          taxReviewRequired: event.tax_review_required === true,
-          taxReviewReason: event.tax_review_reason || null,
         });
       }
     }
-    if (rows.length > MAX_IMPORT_ROWS) throw new Error(`事件行超過 ${MAX_IMPORT_ROWS} 行單次安全上限；請分批處理。`);
+    if (rows.length > MAX_IMPORT_ROWS) throw new Error(`完整 Excel 最多包含 ${MAX_IMPORT_ROWS} 筆事件；請清理無效或重複行後整本重新 Preview。`);
     return {
       workbook, rows, manifest,
       baseLedgerRevision: asNumber(manifest.ledgerRevision, state.ledgerRevision),
@@ -1785,6 +2099,9 @@
   async function previewImport() {
     if (!state.importParsed || !state.importFile || !state.importHash) return;
     const button = $('preview-import'); const log = $('import-log');
+    state.importId = null; state.importBlockers = []; state.importBlockerCount = 0;
+    $('import-replace-all-ack').checked = false; $('import-replace-all-ack').disabled = true;
+    $('import-confirm-reason').disabled = true;
     button.disabled = true; $('confirm-import').disabled = true;
     log.textContent = '正在把本地事件行送往後台做三方差異比較…';
     try {
@@ -1795,6 +2112,11 @@
           portfolio: state.portfolio, fileName: state.importFile.name, uploadSha256: state.importHash,
           baseLedgerRevision: parsed.baseLedgerRevision, rows: parsed.rows,
           exportId: parsed.exportId, syncToken: parsed.syncToken,
+          replaceAll: true,
+          sourceSnapshotRevision: revisionNumber(parsed.manifest.servedRevision ?? parsed.manifest.ledgerRevision),
+          sourceTargetRevision: revisionNumber(parsed.manifest.targetRevision),
+          sourceExportMode: parsed.manifest.exportMode || null,
+          sourceReverseSyncMode: parsed.manifest.reverseSyncMode || 'FULL_LEDGER_REPLACEMENT',
           ignoredDerivedSheets: parsed.ignoredDerivedSheets,
         }),
       });
@@ -1807,6 +2129,7 @@
       renderImportPreview(result);
       log.textContent = `✓ 差異預覽已建立 · Import ${state.importId || '—'} · 四張派生表不反寫。`;
     } catch (error) {
+      state.importId = null; state.importBlockers = []; state.importBlockerCount = 0;
       log.textContent = '✗ ' + error.message;
       $('import-preview').style.display = 'none';
     } finally {
@@ -1824,77 +2147,159 @@
   }
 
   function operationKind(operation) {
-    return String(first(operation, ['operation', 'classification', 'kind', 'type'], 'ERROR')).toUpperCase();
+    const kind = String(first(operation, ['operation', 'classification', 'kind', 'type'], 'ERROR')).toUpperCase();
+    return ({
+      DELETE: 'MISSING',
+      REMOVE: 'MISSING',
+      MISSING_FROM_EXCEL: 'MISSING',
+      MISSING_IN_EXCEL: 'MISSING',
+    })[kind] || kind;
+  }
+
+  function importBlockerItems(result, operations) {
+    const preview = first(result, ['preview'], null) || {};
+    const direct = first(result, ['blockers', 'blockingErrors', 'blocking_errors'],
+      first(preview, ['blockers', 'blockingErrors', 'blocking_errors'], []));
+    const declared = Array.isArray(direct) ? direct : direct ? [direct] : [];
+    if (declared.length) return declared;
+    return operations.filter(operation => ['ERROR', 'CONFLICT', 'BLOCKER'].includes(operationKind(operation)));
+  }
+
+  function summarizeImportPreview(result) {
+    const operations = previewOperations(result);
+    const operationCounts = { CREATE: 0, UPDATE: 0, MISSING: 0 };
+    operations.forEach(operation => {
+      const kind = operationKind(operation);
+      if (operationCounts[kind] !== undefined) operationCounts[kind] += 1;
+    });
+    const summary = first(result, ['summary', 'counts'], {}) || {};
+    const count = (kind, aliases) => {
+      const keys = [kind, kind.toLowerCase(), ...aliases];
+      const declared = first(summary, keys, first(result, keys, null));
+      return declared === null ? operationCounts[kind] : Math.max(0, asNumber(declared, operationCounts[kind]));
+    };
+    const blockers = importBlockerItems(result, operations);
+    const explicitBlockerCount = first(summary, [
+      'BLOCKERS', 'blockers', 'blocking', 'blockingCount', 'blocking_count',
+    ], first(result, ['blockerCount', 'blocker_count', 'blockingCount', 'blocking_count'], null));
+    const errorCount = asNumber(first(summary, ['ERROR', 'error', 'errorCount', 'error_count'],
+      first(result, ['errorCount', 'error_count'], 0)), 0);
+    const conflictCount = asNumber(first(summary, ['CONFLICT', 'conflict', 'conflictCount', 'conflict_count'],
+      first(result, ['conflictCount', 'conflict_count'], 0)), 0);
+    const declaredBlockers = Math.max(0, explicitBlockerCount === null
+      ? errorCount + conflictCount || blockers.length
+      : asNumber(explicitBlockerCount, blockers.length));
+    if (!blockers.length && declaredBlockers > 0) {
+      blockers.push({ operation: 'BLOCKER', error: `${declaredBlockers} 項後台 blocker` });
+    }
+    return {
+      operations,
+      blockers,
+      counts: {
+        CREATE: count('CREATE', ['createCount', 'create_count']),
+        UPDATE: count('UPDATE', ['updateCount', 'update_count']),
+        MISSING: count('MISSING', [
+          'MISSING_IN_EXCEL', 'missingInExcel', 'missing_in_excel',
+          'missingCount', 'missing_count',
+        ]),
+        BLOCKERS: Math.max(blockers.length, declaredBlockers),
+      },
+    };
   }
 
   function renderImportPreview(result) {
-    const operations = previewOperations(result);
-    const counts = { CREATE: 0, UPDATE: 0, NOOP: 0, CONFLICT: 0, ERROR: 0, IGNORED_DERIVED: 0 };
-    operations.forEach(operation => { const kind = operationKind(operation); counts[kind] = (counts[kind] || 0) + 1; });
+    const preview = summarizeImportPreview(result);
+    const { operations, counts, blockers } = preview;
+    state.importBlockers = blockers;
+    state.importBlockerCount = counts.BLOCKERS;
     const summary = $('import-summary'); summary.replaceChildren();
-    [['CREATE', counts.CREATE], ['UPDATE', counts.UPDATE], ['NOOP', counts.NOOP], ['CONFLICT', counts.CONFLICT], ['ERROR', counts.ERROR], ['IGNORED', Math.max(4, counts.IGNORED_DERIVED)]].forEach(([label, value]) => {
+    [['CREATE', counts.CREATE], ['UPDATE', counts.UPDATE], ['MISSING', counts.MISSING], ['BLOCKERS', counts.BLOCKERS]].forEach(([label, value]) => {
       const item = el('div'); item.append(el('b', '', value), el('span', '', label)); summary.append(item);
     });
     const host = $('import-operations'); host.replaceChildren();
     if (!operations.length) host.append(el('div', 'empty-state', '後台沒有返回逐行操作。'));
     operations.forEach(operation => host.append(importOperation(operation)));
+    if (blockers.length && !operations.some(operation => ['ERROR', 'CONFLICT', 'BLOCKER'].includes(operationKind(operation)))) {
+      blockers.forEach(blocker => host.append(importOperation(typeof blocker === 'object'
+        ? blocker : { operation: 'BLOCKER', error: String(blocker) })));
+    }
+    const blocked = counts.BLOCKERS > 0;
+    $('import-confirm-box').classList.toggle('blocked', blocked);
+    $('import-replace-all-ack').checked = false;
+    $('import-replace-all-ack').disabled = blocked;
+    $('import-confirm-reason').value = DEFAULT_REPLACE_REASON;
+    $('import-confirm-reason').disabled = blocked;
     $('import-preview').style.display = 'block';
-    updateImportSelection();
+    updateImportConfirmation();
   }
 
   function importOperation(operation) {
     const kind = operationKind(operation);
-    const safe = kind === 'CREATE' || kind === 'UPDATE';
     const card = el('div', `import-op ${kind.toLowerCase()}`);
-    const label = document.createElement('label');
-    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = safe; checkbox.disabled = !safe;
-    checkbox.dataset.operationId = String(first(operation, ['operationId', 'operation_id', 'id'], ''));
-    checkbox.addEventListener('change', updateImportSelection);
     const body = el('div');
     const title = el('div', 'ledger-title');
     title.append(el('span', `ledger-pill ${kind.toLowerCase()}`, kind), el('span', 'ledger-pill', first(operation, ['sheetName', 'sheet_name'], '—')), el('span', 'ledger-pill', `Row ${first(operation, ['rowNumber', 'row_number'], '—')}`));
     const errorText = first(operation, ['error', 'errorText', 'error_text', 'message'], '');
     const diff = first(operation, ['diff', 'diff_json', 'changes'], null);
-    const excel = first(operation, ['excel'], null);
     body.append(title);
     if (errorText) body.append(el('div', 'ledger-meta', errorText));
-    if (excel && excel.tax_review_required === true) {
-      body.append(el('div', 'log err', '稅項需重新確認：' + (excel.tax_review_reason || '請在 Pending 內核對 gross / tax / fees。')));
+    if (kind === 'MISSING' && !errorText) {
+      body.append(el('div', 'ledger-meta', '此事件不會進入新的 active revision；舊版本仍保留在不可變歷史中，不會 truncate。'));
     }
     if (diff) body.append(el('pre', 'import-diff', typeof diff === 'string' ? diff : JSON.stringify(diff, null, 2)));
-    label.append(checkbox, body); card.append(label);
+    card.append(body);
     return card;
   }
 
-  function selectedOperationIds() {
-    return [...document.querySelectorAll('#import-operations input[type="checkbox"]:checked')]
-      .map(input => input.dataset.operationId).filter(Boolean);
+  function importConfirmationState({ importId, blockerCount, acknowledged, reason }) {
+    const blockers = Math.max(0, asNumber(blockerCount, 0));
+    const normalizedReason = String(reason || '').trim();
+    const canConfirm = Boolean(importId) && blockers === 0 && acknowledged === true && Boolean(normalizedReason);
+    const message = blockers > 0
+      ? `${blockers} 項 blocker；禁止整賬本確認。`
+      : acknowledged !== true
+        ? '請明確勾選整賬本替換與歷史保留確認。'
+        : !normalizedReason
+          ? '請填寫整賬本替換理由。'
+          : '已確認整賬本替換；舊版本保留歷史，可提交。';
+    return { canConfirm, message, reason: normalizedReason };
   }
 
-  function updateImportSelection() {
-    const selected = selectedOperationIds();
-    $('confirm-import').disabled = !state.importId || selected.length === 0;
-    $('import-selection').textContent = `已選 ${selected.length} 個 CREATE / UPDATE`;
+  function updateImportConfirmation() {
+    const confirmation = importConfirmationState({
+      importId: state.importId,
+      blockerCount: state.importBlockerCount,
+      acknowledged: $('import-replace-all-ack').checked === true,
+      reason: $('import-confirm-reason').value,
+    });
+    $('confirm-import').disabled = !confirmation.canConfirm;
+    $('import-selection').textContent = confirmation.message;
   }
 
   async function confirmImport() {
-    const selectedOperationIds = selectedOperationIds();
-    if (!state.importId || !selectedOperationIds.length) return;
+    updateImportConfirmation();
     const button = $('confirm-import'); const log = $('import-log');
-    button.disabled = true; log.textContent = '正在以樂觀鎖確認所選變更…';
+    if (button.disabled || !state.importId) return;
+    const reason = String($('import-confirm-reason').value || '').trim();
+    button.disabled = true; log.textContent = '正在以 CAS 原子建立新的 active ledger revision；舊版本會保留歷史，不會 truncate…';
     try {
       const result = await api('/api/admin/ledger/import/confirm', {
         method: 'POST',
-        body: JSON.stringify({ importId: state.importId, expectedLedgerRevision: state.importExpectedRevision, selectedOperationIds }),
+        body: JSON.stringify({
+          importId: state.importId,
+          expectedLedgerRevision: state.importExpectedRevision,
+          replaceAll: true,
+          confirmation: { replaceAll: true, reason },
+        }),
       });
       const revision = asNumber(first(result, ['ledgerRevision', 'ledger_revision'], state.importExpectedRevision), state.importExpectedRevision);
-      const staged = asNumber(first(result, ['staged'], selectedOperationIds.length), selectedOperationIds.length);
-      log.textContent = `✓ Excel 差異已分流為 ${staged} 筆 Pending，尚未入賬。請逐筆修改稅項並確認 · Ledger Revision ${revision}。`;
+      const replaced = asNumber(first(result, ['eventCount', 'event_count', 'replaced', 'staged'], state.importParsed && state.importParsed.rows.length || 0), 0);
+      log.textContent = `✓ Excel 完整事件賬本已原子簽入 · ${replaced} events · Ledger Revision ${revision}。舊資料版本完整保留在歷史中，沒有刪除或 truncate。`;
       state.importId = null; $('confirm-import').disabled = true;
       await loadLedger();
     } catch (error) {
       log.textContent = '✗ ' + error.message + '；若 Revision 已變，請重新建立預覽。';
-      button.disabled = false;
+      updateImportConfirmation();
     }
   }
 
@@ -2124,11 +2529,9 @@
   function renderLegacyPreview(result) {
     const exactDuplicates = Array.isArray(result.exactDuplicates) ? result.exactDuplicates : [];
     const eventCount = asNumber(first(result, ['eventCount', 'event_count'], 0), 0);
-    const unknownTaxEvents = asNumber(first(result, ['unknownTaxEvents', 'unknown_tax_events'], 0), 0);
     renderLegacyStats($('legacy-preview-summary'), [
       ['EVENTS', eventCount],
       ['DUPLICATES', exactDuplicates.length],
-      ['UNKNOWN TAX', unknownTaxEvents],
     ]);
     $('legacy-import-id').textContent = state.legacyImportId;
     $('legacy-migration-hash').textContent = state.legacyMigrationHash;
@@ -2137,7 +2540,6 @@
     renderLegacyMessages($('legacy-preview-messages'), [], [...previewNotes, ...(Array.isArray(result.warnings) ? result.warnings : [])]);
     state.legacyRequirements = {
       duplicates: exactDuplicates.length > 0,
-      unknownTax: unknownTaxEvents > 0,
     };
     LEGACY_ACKS.forEach(item => {
       const required = state.legacyRequirements[item.key] === true;
@@ -2259,6 +2661,16 @@
       canonicalStyleManifest,
       remapGeneratedCellStyles,
       preserveTemplateWorkbookLayout,
+      pipelineStatusView,
+      eventRow,
+      mergeExcelEvent,
+      parseImportWorkbook,
+      summarizeImportPreview,
+      importConfirmationState,
+      normalizeDividendCandidate,
+      dividendVerifyPayload,
+      dividendDismissPayload,
+      dividendEvidenceEntries,
     });
   }
 

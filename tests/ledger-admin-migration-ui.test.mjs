@@ -42,10 +42,8 @@ test('admin ledger exposes the complete one-time legacy migration controls', asy
   assertElement(html, 'dd', 'legacy-import-id');
   assertElement(html, 'dd', 'legacy-migration-hash');
 
-  for (const id of [
-    'legacy-ack-duplicates',
-    'legacy-ack-unknown-tax',
-  ]) assertElement(html, 'input', id);
+  assertElement(html, 'input', 'legacy-ack-duplicates');
+  assert.doesNotMatch(html, /legacy-ack-unknown-tax/i);
 
   assert.doesNotMatch(html, /legacy-ack-historical-(?:nav|prices)/i);
 
@@ -81,10 +79,7 @@ test('legacy migration UI uses preview, signed confirm, and outbox contracts', a
   const ackKeys = [...source.matchAll(/\{\s*key\s*:\s*["']([^"']+)["'][^}]*\binput\s*:\s*["']legacy-ack-/g)]
     .map(match => match[1])
     .sort();
-  assert.deepEqual(ackKeys, [
-    'duplicates',
-    'unknownTax',
-  ]);
+  assert.deepEqual(ackKeys, ['duplicates']);
   assert.match(acknowledgement, /Object\.fromEntries\(\s*LEGACY_ACKS\.map\(/);
   assert.match(acknowledgement, /item\.key/);
   assert.match(acknowledgement, /\.checked\s*===\s*true/);

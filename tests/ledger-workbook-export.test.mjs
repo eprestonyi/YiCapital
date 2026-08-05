@@ -121,6 +121,14 @@ function buildGeneratedWorkbook(templateWorkbook, currency) {
     portfolio: currency === 'USD' ? 'us' : currency === 'HKD' ? 'hk' : 'a',
     currency,
     ledgerRevision: 7,
+    servedRevision: 7,
+    targetRevision: 9,
+    fallback: true,
+    exportMode: 'FROZEN_COMPLETE_SNAPSHOT',
+    reverseSyncMode: 'FULL_LEDGER_REPLACEMENT',
+    reverseSyncWritable: true,
+    snapshotAsOf: '2026-08-04',
+    snapshotGeneratedAt: '2026-08-05T01:02:03.000Z',
     exportId: 'export-test',
     syncToken: 'sync-test',
     layoutHash: 'layout-test',
@@ -198,6 +206,19 @@ for (const spec of [
     assert.deepEqual(roundTrip.SheetNames.slice(0, 11), REQUIRED_ORDER);
     assert.equal(roundTrip.SheetNames[11], '_YiSync');
     assert.equal(roundTrip.Workbook.Sheets[11].Hidden, 2);
+    const syncRows = XLSX.utils.sheet_to_json(roundTrip.Sheets._YiSync, {
+      header: 1, raw: true, defval: null,
+    });
+    const sync = Object.fromEntries(syncRows.slice(1).map(row => [row[0], row[1]]));
+    assert.equal(sync.ledgerRevision, 7);
+    assert.equal(sync.servedRevision, 7);
+    assert.equal(sync.targetRevision, 9);
+    assert.equal(sync.fallback, true);
+    assert.equal(sync.exportMode, 'FROZEN_COMPLETE_SNAPSHOT');
+    assert.equal(sync.reverseSyncMode, 'FULL_LEDGER_REPLACEMENT');
+    assert.equal(sync.reverseSyncWritable, true);
+    assert.equal(sync.snapshotAsOf, '2026-08-04');
+    assert.equal(sync.generatedAt, '2026-08-05T01:02:03.000Z');
     for (const def of workbookApi.INPUT_DEFS) {
       const hidden = (roundTrip.Sheets[def.sheet]['!cols'] || [])
         .filter(column => column && column.hidden === true);

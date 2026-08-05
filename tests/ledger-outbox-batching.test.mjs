@@ -84,6 +84,7 @@ async function setup() {
     '../migrations/0002_portfolio_ledger.sql',
     '../migrations/0003_frozen_price_tapes.sql',
     '../migrations/0005_public_portfolio_snapshots.sql',
+    '../migrations/0006_dividend_candidate_inbox.sql',
   ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   return {
     FEEDBACK_DB: new D1Database(sql),

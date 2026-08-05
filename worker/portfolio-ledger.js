@@ -183,38 +183,6 @@ function moneyProvided(raw, field, aliases = []) {
   ]) !== undefined;
 }
 
-function readTaxes(raw, decimals, issues, genericAsWithholding = false) {
-  const withholdingSupplied = firstPresent(raw, [
-    'withholding_tax_minor', 'withholding_tax_decimal', 'withholding_tax', 'withholding',
-  ]) !== undefined;
-  const transactionSupplied = firstPresent(raw, [
-    'transaction_tax_minor', 'transaction_tax_decimal', 'transaction_tax',
-    'stamp_duty_minor', 'stamp_duty_decimal', 'stamp_duty',
-  ]) !== undefined;
-  const genericSupplied = firstPresent(raw, [
-    'tax_amount_minor', 'tax_amount_decimal', 'tax_amount', 'tax_minor', 'tax_decimal', 'tax',
-  ]) !== undefined;
-  let withholdingMinor = readMoney(raw, 'withholding_tax', ['withholding'], decimals, issues, {
-    nonNegative: true,
-  });
-  let transactionTaxMinor = readMoney(raw, 'transaction_tax', ['stamp_duty'], decimals, issues, {
-    nonNegative: true,
-  });
-  if (genericSupplied) {
-    const genericMinor = readMoney(raw, 'tax_amount', ['tax'], decimals, issues, {
-      nonNegative: true,
-    });
-    if (!withholdingSupplied && !transactionSupplied) {
-      if (genericAsWithholding) withholdingMinor = genericMinor;
-      else transactionTaxMinor = genericMinor;
-    } else if (genericMinor !== withholdingMinor + transactionTaxMinor) {
-      issues.push(issue('TAX_AMOUNT_MISMATCH', 'tax_amount',
-        'tax_amount must equal withholding_tax plus transaction_tax'));
-    }
-  }
-  return { withholdingMinor, transactionTaxMinor };
-}
-
 function assignTaxReviewMetadata(raw, event) {
   event.tax_status = String(raw.tax_status || '').trim().toUpperCase() || null;
   event.tax_review_required = raw.tax_review_required === true ||
@@ -462,112 +430,69 @@ function normalizeTrade(raw, event, decimals, issues) {
     positive: true,
     defaultValue: 0,
   });
-
+  // Amount is the broker-settled cash magnitude and already contains every
+  // tax, commission and fee. Tax/fee columns are retained only as optional
+  // legacy audit detail; they never change cash, cost, proceeds or dividends.
   assignTaxReviewMetadata(raw, event);
-  const unknownLegacy = event.tax_status === 'UNKNOWN_LEGACY';
-  const incompleteTaxFacts = unknownLegacy || event.tax_status === 'PENDING_RECONFIRMATION';
+  event.tax_review_required = false;
+  event.tax_review_reason = null;
   const withholdingProvided = moneyProvided(raw, 'withholding_tax', ['withholding']);
   const transactionTaxProvided = moneyProvided(raw, 'transaction_tax', ['stamp_duty']);
   const genericTaxProvided = moneyProvided(raw, 'tax_amount', ['tax']);
-  const anyTaxProvided = withholdingProvided || transactionTaxProvided || genericTaxProvided;
   const feesProvided = moneyProvided(raw, 'fees', ['fee', 'commission', 'fee_amount']);
-
-  let withholdingMinor = null;
-  let transactionTaxMinor = null;
-  if (!incompleteTaxFacts || anyTaxProvided) {
-    const taxes = readTaxes(raw, decimals, issues, event.type === 'dividend');
-    withholdingMinor = taxes.withholdingMinor;
-    transactionTaxMinor = taxes.transactionTaxMinor;
+  let withholdingMinor = withholdingProvided
+    ? readMoney(raw, 'withholding_tax', ['withholding'], decimals, issues, { nonNegative: true })
+    : null;
+  let transactionTaxMinor = transactionTaxProvided
+    ? readMoney(raw, 'transaction_tax', ['stamp_duty'], decimals, issues, { nonNegative: true })
+    : null;
+  if (genericTaxProvided && !withholdingProvided && !transactionTaxProvided) {
+    const genericMinor = readMoney(raw, 'tax_amount', ['tax'], decimals, issues, {
+      nonNegative: true,
+    });
+    if (event.type === 'dividend') withholdingMinor = genericMinor;
+    else transactionTaxMinor = genericMinor;
   }
-  const feesMinor = !incompleteTaxFacts || feesProvided
+  const feesMinor = feesProvided
     ? readMoney(raw, 'fees', ['fee', 'commission', 'fee_amount'], decimals, issues, {
       nonNegative: true,
     })
     : null;
-
   const grossProvided = moneyProvided(raw, 'gross_amount');
-  let grossMinor = grossProvided
+  const grossMinor = grossProvided
     ? readMoney(raw, 'gross_amount', [], decimals, issues, { nonNegative: true })
     : null;
-  const operationalProvided = moneyProvided(raw, 'operational_amount', ['amount', 'Amount']);
-  const netProvided = moneyProvided(raw, 'net_amount');
-  const netCashProvided = moneyProvided(raw, 'net_cash');
-  let suppliedOperational = null;
 
-  if (operationalProvided) {
-    suppliedOperational = readMoney(raw, 'operational_amount', ['amount', 'Amount'],
+  let operationalMinor = null;
+  if (moneyProvided(raw, 'operational_amount', ['amount', 'Amount'])) {
+    operationalMinor = readMoney(raw, 'operational_amount', ['amount', 'Amount'],
       decimals, issues, { nonNegative: true });
-  }
-  if (netProvided) {
-    const suppliedNet = readMoney(raw, 'net_amount', [], decimals, issues, {
+  } else if (moneyProvided(raw, 'net_amount')) {
+    operationalMinor = readMoney(raw, 'net_amount', [], decimals, issues, {
       nonNegative: true,
     });
-    if (suppliedOperational != null && suppliedOperational !== suppliedNet) {
-      issues.push(issue('AMOUNT_NET_MISMATCH', 'amount',
-        'Amount must equal net_amount because Amount is the authoritative cash magnitude'));
-    }
-    suppliedOperational = suppliedOperational ?? suppliedNet;
+  } else if (moneyProvided(raw, 'net_cash')) {
+    operationalMinor = Math.abs(readMoney(raw, 'net_cash', [], decimals, issues));
+  } else if (grossMinor != null) {
+    // Backward compatibility for old rows that predate authoritative Amount.
+    const deductions = Number(withholdingMinor || 0) +
+      Number(transactionTaxMinor || 0) + Number(feesMinor || 0);
+    operationalMinor = event.type === 'buy'
+      ? grossMinor + deductions
+      : Math.max(0, grossMinor - deductions);
   }
-  if (netCashProvided) {
-    const suppliedCash = readMoney(raw, 'net_cash', [], decimals, issues);
-    const expectedSign = event.type === 'buy' ? -1 : 1;
-    if (suppliedCash !== 0 && Math.sign(suppliedCash) !== expectedSign) {
-      issues.push(issue('NET_CASH_SIGN_MISMATCH', 'net_cash',
-        `net_cash must be ${event.type === 'buy' ? 'negative' : 'positive'} for ${event.type}`));
-    }
-    const magnitude = Math.abs(suppliedCash);
-    if (suppliedOperational != null && suppliedOperational !== magnitude) {
-      issues.push(issue('NET_CASH_MISMATCH', 'net_cash',
-        'absolute net_cash must equal Amount/net_amount'));
-    }
-    suppliedOperational = suppliedOperational ?? magnitude;
-  }
-
-  const taxFactsKnown = withholdingMinor != null && transactionTaxMinor != null && feesMinor != null;
-  const deductions = taxFactsKnown
-    ? withholdingMinor + transactionTaxMinor + feesMinor
-    : null;
-  let grossInferred = raw.gross_amount_inferred === true ||
-    String(raw.gross_amount_inferred || '').toLowerCase() === 'true';
-  if (grossMinor == null && !incompleteTaxFacts && suppliedOperational != null && deductions != null) {
-    grossMinor = event.type === 'buy'
-      ? suppliedOperational - deductions
-      : suppliedOperational + deductions;
-    grossInferred = true;
-    if (grossMinor < 0) {
-      issues.push(issue('NEGATIVE_INFERRED_GROSS', 'gross_amount',
-        'Amount is smaller than buy taxes and fees, so gross_amount cannot be inferred'));
-    }
-  }
-
-  let computedNet = null;
-  if (grossMinor != null && deductions != null) {
-    computedNet = event.type === 'buy' ? grossMinor + deductions : grossMinor - deductions;
-    if (computedNet < 0) {
-      issues.push(issue('NEGATIVE_NET_AMOUNT', 'net_amount',
-        'taxes and fees cannot exceed gross_amount for sell or dividend'));
-    }
-  }
-  if (computedNet != null && suppliedOperational != null && computedNet !== suppliedOperational) {
-    issues.push(issue('NET_AMOUNT_MISMATCH', 'net_amount',
-      'Amount/net_amount does not match gross_amount and the applicable taxes and fees'));
-  }
-  const netMinor = suppliedOperational ?? computedNet;
-  if (netMinor == null) {
+  if (operationalMinor == null) {
     issues.push(issue('OPERATIONAL_AMOUNT_REQUIRED', 'amount',
-      'trade requires Amount/net_amount, or complete gross/tax/fee facts'));
-  }
-  if (unknownLegacy && grossMinor == null && suppliedOperational == null) {
-    issues.push(issue('UNKNOWN_LEGACY_NET_REQUIRED', 'net_amount',
-      'UNKNOWN_LEGACY trade requires net_amount, net_cash or Amount'));
+      'trade requires the final broker-settled Amount'));
   }
 
-  const safeNetMinor = netMinor ?? 0;
+  const safeNetMinor = operationalMinor ?? 0;
   const cashMinor = event.type === 'buy' ? -safeNetMinor : safeNetMinor;
   if (!event.tax_status) {
-    event.tax_status = (withholdingMinor || transactionTaxMinor || feesMinor) ? 'KNOWN' : 'NONE';
+    event.tax_status = (withholdingMinor != null || transactionTaxMinor != null || feesMinor != null)
+      ? 'LEGACY_DETAIL_ONLY' : 'INCLUDED_IN_AMOUNT';
   }
-  event.gross_amount_inferred = grossInferred;
+  event.gross_amount_inferred = false;
   assignNullableMoney(event, 'gross_amount', grossMinor, decimals);
   assignNullableMoney(event, 'withholding_tax', withholdingMinor, decimals);
   assignNullableMoney(event, 'transaction_tax', transactionTaxMinor, decimals);
@@ -603,28 +528,39 @@ function normalizeTrade(raw, event, decimals, issues) {
       'per_share was recomputed from authoritative Amount / quantity', 'warning'));
   }
   const price = firstPresent(raw, ['price', 'trade_price', 'Price']);
-  event.price = price == null || price === '' ? perShare : Number(price);
-  if (event.price != null && !Number.isFinite(event.price)) {
-    issues.push(issue('INVALID_PRICE', 'price', 'price must be finite when provided'));
+  event.price = price == null || price === '' ? null : Number(price);
+  if (event.price != null && (!Number.isFinite(event.price) || event.price < 0)) {
+    issues.push(issue('INVALID_PRICE', 'price',
+      'price must be finite and non-negative when provided'));
     event.price = null;
   }
 }
 
 function normalizeSignedOperationalCash(raw, event, decimals, issues, options = {}) {
-  const incompleteTaxFacts = assignTaxReviewMetadata(raw, event);
+  // Corporate/fund-action cash is already the final signed cash movement.
+  // Old gross/tax/fee fields survive only as provenance and never participate
+  // in the calculation or create a review gate.
+  assignTaxReviewMetadata(raw, event);
+  event.tax_review_required = false;
+  event.tax_review_reason = null;
   const withholdingProvided = moneyProvided(raw, 'withholding_tax', ['withholding']);
   const transactionTaxProvided = moneyProvided(raw, 'transaction_tax', ['stamp_duty']);
   const genericTaxProvided = moneyProvided(raw, 'tax_amount', ['tax']);
-  const anyTaxProvided = withholdingProvided || transactionTaxProvided || genericTaxProvided;
   const feesProvided = moneyProvided(raw, 'fees', ['fee', 'fee_amount']);
-  let withholdingMinor = null;
-  let transactionTaxMinor = null;
-  if (!incompleteTaxFacts || anyTaxProvided) {
-    const taxes = readTaxes(raw, decimals, issues, options.genericAsWithholding === true);
-    withholdingMinor = taxes.withholdingMinor;
-    transactionTaxMinor = taxes.transactionTaxMinor;
+  let withholdingMinor = withholdingProvided
+    ? readMoney(raw, 'withholding_tax', ['withholding'], decimals, issues, { nonNegative: true })
+    : null;
+  let transactionTaxMinor = transactionTaxProvided
+    ? readMoney(raw, 'transaction_tax', ['stamp_duty'], decimals, issues, { nonNegative: true })
+    : null;
+  if (genericTaxProvided && !withholdingProvided && !transactionTaxProvided) {
+    const genericMinor = readMoney(raw, 'tax_amount', ['tax'], decimals, issues, {
+      nonNegative: true,
+    });
+    if (options.genericAsWithholding === true) withholdingMinor = genericMinor;
+    else transactionTaxMinor = genericMinor;
   }
-  const feesMinor = !incompleteTaxFacts || feesProvided
+  const feesMinor = feesProvided
     ? readMoney(raw, 'fees', ['fee', 'fee_amount'], decimals, issues, {
       nonNegative: true,
     })
@@ -638,10 +574,8 @@ function normalizeSignedOperationalCash(raw, event, decimals, issues, options = 
     ['cash_amount', ['cash', 'Cash']],
   ];
   let operationalMinor = null;
-  let operationalWasProvided = false;
   for (const [field, aliases] of operationalInputs) {
     if (!moneyProvided(raw, field, aliases)) continue;
-    operationalWasProvided = true;
     const candidate = readMoney(raw, field, aliases, decimals, issues);
     if (operationalMinor != null && operationalMinor !== candidate) {
       issues.push(issue('CASH_REPRESENTATION_MISMATCH', field,
@@ -653,44 +587,15 @@ function normalizeSignedOperationalCash(raw, event, decimals, issues, options = 
   if (operationalMinor == null) operationalMinor = 0;
 
   const grossProvided = moneyProvided(raw, 'gross_amount');
-  let grossMinor = grossProvided
+  const grossMinor = grossProvided
     ? readMoney(raw, 'gross_amount', [], decimals, issues, { nonNegative: true })
     : null;
-  const taxFactsKnown = withholdingMinor != null && transactionTaxMinor != null && feesMinor != null;
-  const deductions = taxFactsKnown
-    ? withholdingMinor + transactionTaxMinor + feesMinor
-    : null;
-  let grossInferred = raw.gross_amount_inferred === true ||
-    String(raw.gross_amount_inferred || '').toLowerCase() === 'true';
-  if (grossMinor == null && !incompleteTaxFacts && deductions != null) {
-    grossMinor = operationalMinor < 0
-      ? Math.abs(operationalMinor) - deductions
-      : operationalMinor + deductions;
-    grossInferred = grossInferred || (operationalWasProvided && operationalMinor !== 0);
-    if (grossMinor < 0) {
-      issues.push(issue('NEGATIVE_INFERRED_GROSS', 'gross_amount',
-        'operational cash is smaller than outflow taxes and fees'));
-    }
-  }
-  if (grossMinor != null && deductions != null) {
-    if (!operationalWasProvided && grossMinor !== 0) {
-      issues.push(issue('SIGNED_CASH_REQUIRED', 'cash_change',
-        'signed cash_change/net_cash is required when gross_amount is non-zero'));
-    } else {
-      const computed = operationalMinor < 0
-        ? -(grossMinor + deductions)
-        : grossMinor - deductions;
-      if (computed !== operationalMinor) {
-        issues.push(issue('NET_AMOUNT_MISMATCH', 'cash_change',
-          'cash_change does not match gross_amount and taxes/fees'));
-      }
-    }
-  }
 
   if (!event.tax_status) {
-    event.tax_status = (withholdingMinor || transactionTaxMinor || feesMinor) ? 'KNOWN' : 'NONE';
+    event.tax_status = (withholdingMinor != null || transactionTaxMinor != null || feesMinor != null)
+      ? 'LEGACY_DETAIL_ONLY' : 'INCLUDED_IN_AMOUNT';
   }
-  event.gross_amount_inferred = grossInferred;
+  event.gross_amount_inferred = false;
   assignNullableMoney(event, 'gross_amount', grossMinor, decimals);
   assignNullableMoney(event, 'withholding_tax', withholdingMinor, decimals);
   assignNullableMoney(event, 'transaction_tax', transactionTaxMinor, decimals);
@@ -910,6 +815,11 @@ function normalizeEventInternal(raw, options = {}) {
   event.event_type = event.type;
   event.trade_date = event.date;
   event.trade_no = event.sequence;
+  // Tax and fees are not a separate workflow in YiCapital. Broker-settled
+  // Amount already includes them, so even a legacy payload carrying old
+  // review flags can never block replay or confirmation.
+  event.tax_review_required = false;
+  event.tax_review_reason = null;
   return { event, issues };
 }
 
@@ -1272,25 +1182,6 @@ function checkCorporateActionContinuity(state, event, oldQuantity, quantities) {
 function applyCorporateAction(state, event, decimals) {
   const old = state.positions.get(event.ticker) || emptyPosition(event.ticker, event.name);
   const oldQuantity = old.quantity;
-  if (!state.positions.has(event.ticker)) {
-    addCheck(state.checks, event, 'CORPORATE_ACTION_SOURCE_MISSING',
-      `corporate action source ${event.ticker} was not held`, 'warning', {
-        ticker: event.ticker,
-      });
-  }
-  if (event.pre_quantity != null && Math.abs(old.quantity - event.pre_quantity) > 0.01) {
-    addCheck(state.checks, event, 'CORPORATE_PRE_QUANTITY_MISMATCH',
-      `recorded pre-quantity ${event.pre_quantity} differs from replayed holding ${old.quantity}`,
-      'warning', { ticker: event.ticker, recorded_pre_quantity: event.pre_quantity,
-        replayed_quantity: old.quantity });
-  }
-  // Cash records are the only source of buy cost, sell proceeds, dividends,
-  // taxes and fees. Keep that history on the ticker that generated the cash
-  // record. The corporate action removes its old quantity, then creates only
-  // the declared output quantities; it must not move or invent cost basis.
-  state.positions.set(event.ticker, old);
-  old.quantity = 0;
-
   const quantities = event.outputs.map(output => {
     if (output.quantity != null) return output.quantity;
     if (event.outputs.length === 1 && event.action_type === 'SPLIT' && event.split_ratio > 0) {
@@ -1300,9 +1191,35 @@ function applyCorporateAction(state, event, decimals) {
     addCheck(state.checks, event, 'CORPORATE_OUTPUT_QUANTITY_REQUIRED',
       `corporate action output ${output.ticker || '(missing ticker)'} has no quantity`, 'fatal', {
         ticker: output.ticker || null,
-      });
+    });
     return 0;
   });
+  let invalidSourceState = false;
+  if (oldQuantity <= 1e-12 && quantities.some(quantity => quantity > 1e-12)) {
+    addCheck(state.checks, event, 'CORPORATE_ACTION_SOURCE_MISSING',
+      `corporate action source ${event.ticker} has no positive replayed holding`, 'error', {
+        ticker: event.ticker,
+        replayed_quantity: oldQuantity,
+        output_quantity: roundNumber(quantities.reduce((sum, quantity) => sum + quantity, 0)),
+      });
+    invalidSourceState = true;
+  }
+  if (event.pre_quantity != null && Math.abs(oldQuantity - event.pre_quantity) > 0.01) {
+    addCheck(state.checks, event, 'CORPORATE_PRE_QUANTITY_MISMATCH',
+      `recorded pre-quantity ${event.pre_quantity} differs from replayed holding ${oldQuantity}`,
+      'error', { ticker: event.ticker, recorded_pre_quantity: event.pre_quantity,
+        replayed_quantity: oldQuantity });
+    invalidSourceState = true;
+  }
+  if (invalidSourceState) return;
+
+  // Cash records are the only source of buy cost, sell proceeds, dividends,
+  // taxes and fees. Keep that history on the ticker that generated the cash
+  // record. The corporate action removes its old quantity, then creates only
+  // the declared output quantities; it must not move or invent cost basis.
+  state.positions.set(event.ticker, old);
+  old.quantity = 0;
+
   checkCorporateActionContinuity(state, event, oldQuantity, quantities);
 
   event.outputs.forEach((output, index) => {
@@ -1346,12 +1263,6 @@ function applyReversal(state, event, decimals) {
 }
 
 function applyEvent(state, event, decimals, direction = 1, sourceEvent = event) {
-  if (direction === 1 && event.tax_review_required === true) {
-    addCheck(state.checks, sourceEvent, 'TAX_REVIEW_REQUIRED',
-      event.tax_review_reason || 'tax facts require explicit review before confirmation', 'error', {
-        tax_status: event.tax_status || null,
-      });
-  }
   switch (event.type) {
     case 'buy':
     case 'sell':

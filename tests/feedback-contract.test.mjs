@@ -21,7 +21,7 @@ function testEnv(overrides = {}) {
         const result = query.includes('FROM ledger_outbox')
           ? { pending: 0 }
           : { count: query.includes("'ledger_portfolios'")
-            ? 17
+            ? 18
             : query.includes("'auth_account_revocations'")
               ? 3
               : query.includes("name = 'auth_rate_limits'")
@@ -119,6 +119,28 @@ test('health fails closed when the D1 schema is incomplete', async () => {
     env,
   );
   assert.equal((await response.json()).feedback, false);
+});
+
+test('health fails closed when the dividend candidate inbox migration is missing', async () => {
+  const base = testEnv();
+  const env = testEnv({
+    FEEDBACK_DB: {
+      prepare: sql => {
+        const query = String(sql);
+        if (query.includes("'ledger_portfolios'")) {
+          return { bind() { return this; }, first: async () => ({ count: 17 }) };
+        }
+        return base.FEEDBACK_DB.prepare(sql);
+      },
+    },
+  });
+  const response = await worker.fetch(
+    new Request('https://portal.test/api/health'),
+    env,
+  );
+  const body = await response.json();
+  assert.equal(body.ledger, false);
+  assert.equal(body.ledger_storage_ready, false);
 });
 
 test('public feedback rejects cross-site requests before touching D1', async () => {
@@ -292,7 +314,7 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
     read('assets/yc-ledger-admin.js'),
   ]);
   assert.match(page, /xlsx-js-style@1\.2\.0\/dist\/xlsx\.min\.js/);
-  assert.match(page, /yc-ledger-admin\.js\?v=20260805b/);
+  assert.match(page, /yc-ledger-admin\.js\?v=20260805e/);
   assert.match(ledgerAdmin, /\['trade_no', 'tradeNo', 'sequence_no', 'sequence'\]/);
   assert.match(ledgerAdmin, /Hidden:\s*2/);
   assert.match(ledgerAdmin, /'2F5B7C'/);

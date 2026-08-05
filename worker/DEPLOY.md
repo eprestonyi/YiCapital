@@ -29,11 +29,14 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
      npx wrangler d1 migrations apply FEEDBACK_DB --remote
    這會依次套用 migrations/0001_user_feedback.sql、
    migrations/0002_portfolio_ledger.sql、migrations/0003_frozen_price_tapes.sql 與
-   migrations/0004_auth_sessions.sql、migrations/0005_public_portfolio_snapshots.sql。
+   migrations/0004_auth_sessions.sql、migrations/0005_public_portfolio_snapshots.sql、
+   migrations/0006_dividend_candidate_inbox.sql。
    0003 為每個 ledger revision 建立 immutable、未復權 raw-close price tape，
    是 NAV 發布門禁；0004 必須先於 v9.1 Worker 部署完成；0005 把賬本物化投影、
    最後完整公開快照及最新刷新狀態放入 D1，以單行 guarded UPSERT 取代分鐘級
-   KV 多鍵發布。0005 是 additive migration，必須先套用再部署讀取它的 Worker。
+   KV 多鍵發布。0006 建立派息核實 Inbox：行情只寫 Amount=NULL 的候選，管理員輸入
+   券商實際到賬 Amount 後只轉成 Pending，仍須另行 Confirm。0005/0006 都是 additive
+   migration，必須先套用再部署讀取它們的 Worker。
    不要把登入 token、
    用戶意見、投資組合事件或稅務資料存入公開 GitHub 文件。
 
@@ -92,8 +95,10 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
 ⑥ 驗收
    你的域名/login.html → Admin Login 用 ④ 設的帳密登入 → 進入後台
    → 進入「事件賬本」，依次選 US / HK / A：人工新增只測 BUY / SELL / CAPITAL；
-     股息、公司行動、負債與基金行動必須以自動 source record 進 Pending，再驗證
-     修改/扣稅/Confirm。Excel 可新建的仍只限 BUY / SELL / CAPITAL；已由後台簽名
+     自動檢測到派息時先進核實 Inbox（候選 Amount 永遠為空），人工輸入券商實際
+     到賬 Amount 後才轉入 Pending，再修改/Confirm；Amount 已包含所有稅費，不存在
+     另一套扣稅/費用工作流。公司行動、負債與基金行動同樣須由自動來源進 Pending。
+     Excel 可新建的仍只限 BUY / SELL / CAPITAL；已由後台簽名
      導出的其他既有事件可反向 UPDATE，但也只會重新進 Pending
    → Confirm 後應自動完成最早受影響日起的全歷史 Cash / Position / Liability /
      Units / NAV 重算，然後重建 D1 物化投影、公開快照與 Excel；outbox 最終應回到 0
@@ -113,7 +118,8 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
     Excel/KV 快照回退开关。
   · 人工只可新增 BUY、SELL、CAPITAL；股息、公司行动、负债及基金行动必须由
     Broker/custodian/后台任务自动写 source record 后进入 Pending。所有 Pending 均可
-    修改，现金事件可补扣税资料，Confirm 后才写 immutable event。
+    修改；现金事件的 Amount 已是券商最终结算数，不另拆或重复扣税费，Confirm 后才写
+    immutable event。自动派息信号先进入 Amount=NULL 的核实 Inbox，不会自动 Confirm。
   · Amount 是现金链与买入成本/卖出收入的唯一真相；Price 只作参考，gross/tax/fee
     是审计拆分，不得在 Amount 之外再次扣减。负现金照实进入 NAV，不警告、不阻断 Confirm。
   · 公司行动只记录原股变成哪些新 ticker 及绝对数量；不按价格分配、搬移或创造
@@ -144,14 +150,16 @@ Cloudflare Worker v9.1 部署步驟（D1 登入會話 + D1 事件賬本 + Passwo
    在 preview 环境重放并对账后再导入 production D1。确认三本的事件数、现金、
    份额、持仓和 NAV 一致，再从「事件账本」确认 outbox 与三市场行情预热。
    在任何 production migration/import 前先记录 D1 Time Travel bookmark；导入确认
-   必须显式确认 duplicates 与 unknownTax，并输入服务端真实确认短语：
+   必须显式确认 duplicates，并输入服务端真实确认短语：
    CONFIRM LEGACY US / CONFIRM LEGACY HK / CONFIRM LEGACY A。负现金照实计算且不作 warning；
    Asset Position、Liability Statement、Cash Flow Statement、NAV Statement 只用于
    parity 核验，不得作为 operational seed。SPGI → SPGI + MBGL 只转换数量，不分配
    成本，不要求 Form 8937，也不是 migration blocker。
    不要再通过 admin-publish 或 GitHub 工作簿更新投资组合；Excel 只从数据库导出，
-   上传可为 BUY / SELL / CAPITAL 新建事实，也可修改带签名元数据的既有事件；两者
-   都必须经过 Preview → Pending → Confirm，四张 derived statements 永不反写。
+   上传可为 BUY / SELL / CAPITAL 新建事实，也可修改或移除带签名元数据的既有事件；
+   整本必须经过全量 Preview → 明确确认整本覆盖 → 一个原子 revision。被取代或移除
+   的旧事件仍永久保留；空白 Price 保留已有值，CPS 与税费兼容列不反写，四张 derived
+   statements 永不反写。
    0005 首次上线后保留旧 navcache/ledger KV 原值，不删除；由后台实时刷新或完整重算
    验证当前 ledger revision 后自动 backfill 三市场 D1 projection/public snapshot。确认
    /api/health 的 ledger_storage_ready=true、三个 public snapshot SHA 校验通过、公开接口

@@ -103,6 +103,9 @@ const ENDPOINT_DEFINITIONS = {
   disclosure_date: endpoint('Stocks', 'disclosure', 6 * HOUR, 3000, [
     'ts_code', 'end_date', 'pre_date', 'actual_date',
   ], 162),
+  dividend: endpoint('Stocks', 'disclosure', 6 * HOUR, 6000, [
+    'ts_code', 'ann_date', 'record_date', 'ex_date', 'imp_ann_date',
+  ], 103),
   rt_k: endpoint('Stocks', 'intraday_snapshot', MINUTE, 10000, [
     'ts_code',
   ], 372),
@@ -309,10 +312,10 @@ const DEFAULT_MARKET_ENDPOINT = Object.freeze({
   'Money & Currency': 'shibor',
 });
 
-// These statement and estimate datasets may be used only by controlled
-// ingestion/reconciliation jobs. They are deliberately excluded from the
-// browser-facing market route so FA remains authoritative from the filing
-// warehouse instead of silently mixing Tushare statement history into it.
+// These statement, estimate and corporate-action signal datasets may be used
+// only by controlled ingestion/reconciliation jobs. They are deliberately
+// excluded from the browser-facing market route so FA remains authoritative
+// from the filing warehouse and dividend signals cannot bypass review.
 const WAREHOUSE_ONLY_DATASETS = new Set([
   'income',
   'balancesheet',
@@ -321,6 +324,7 @@ const WAREHOUSE_ONLY_DATASETS = new Set([
   'forecast',
   'express',
   'disclosure_date',
+  'dividend',
 ]);
 
 export class TushareAdapterError extends Error {

@@ -38,6 +38,7 @@ async function d1Fixture() {
     '0003_frozen_price_tapes.sql',
     '0004_auth_sessions.sql',
     '0005_public_portfolio_snapshots.sql',
+    '0006_dividend_candidate_inbox.sql',
   ].map(file => readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8')))).join('\n');
   return new D1Database(sql);
 }

@@ -12,6 +12,7 @@ import {
   freezeLedgerPriceTape,
   handleLedgerAdminRequest,
   ledgerHealth,
+  loadDividendDetectionHoldings,
   loadMaterializedLedgerProjection,
   loadPublicPortfolioAttempt,
   loadPublicPortfolioSnapshot,
@@ -21,11 +22,13 @@ import {
   materializeLedgerKv,
   persistLedgerValuation,
   persistLedgerValuationBatch,
+  persistDividendCandidates,
   persistMaterializedLedgerProjection,
   persistPublicPortfolioSnapshot,
   portfolioDerivationState,
   updatePublicPortfolioStatus,
 } from './ledger-store.js';
+import { detectDividendCandidates } from './dividend-detector.js';
 import { replayPortfolioLedger } from './portfolio-ledger.js';
 import {
   GoogleIdTokenInvalidError,
@@ -1955,6 +1958,112 @@ const addIsoDays = (value, days) => {
   const time = Date.parse(`${String(value).slice(0, 10)}T00:00:00.000Z`);
   return new Date(time + days * 86400000).toISOString().slice(0, 10);
 };
+
+/**
+ * EOD dividend discovery reads only the last complete materialized positive
+ * holdings.  Provider values are presence signals; persistence rejects any
+ * candidate that carries an amount, tax or fee and never creates Pending by
+ * itself.
+ */
+export async function runScheduledDividendDetection(
+  env,
+  requestedPortfolios = ['us', 'hk', 'a'],
+  options = {},
+) {
+  const portfolios = [...new Set((Array.isArray(requestedPortfolios)
+    ? requestedPortfolios : [requestedPortfolios])
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(value => ['us', 'hk', 'a'].includes(value)))];
+  const nowFn = typeof options.now === 'function' ? options.now : Date.now;
+  const nowValue = nowFn();
+  const lookbackDaysCandidate = Number(options.lookbackDays ?? 14);
+  const lookbackDays = Number.isInteger(lookbackDaysCandidate)
+    ? Math.min(45, Math.max(1, lookbackDaysCandidate)) : 14;
+  const tushareAdapter = portfolios.includes('a')
+    ? (options.tushareAdapter || options.adapter || createTushareAdapter(env, {
+        now: nowFn,
+        fetchImpl: options.fetchImpl,
+      }))
+    : null;
+  const results = [];
+  for (const portfolio of portfolios) {
+    try {
+      const toDate = portfolioMarketDate(nowValue, portfolio);
+      const fromDate = addIsoDays(toDate, -lookbackDays);
+      const snapshot = await loadDividendDetectionHoldings(env, portfolio, {
+        fromDate,
+        toDate,
+      });
+      if (!snapshot.ready) {
+        results.push({
+          ok: false,
+          portfolio,
+          skipped: true,
+          reason: snapshot.reason,
+          ledgerRevision: snapshot.ledgerRevision,
+          materializedRevision: snapshot.materializedRevision,
+        });
+        continue;
+      }
+      const detection = await detectDividendCandidates({
+        holdings: snapshot.holdings,
+        fromDate,
+        toDate,
+        tushareAdapter,
+        fetchImpl: options.fetchImpl || globalThis.fetch,
+        concurrency: options.concurrency,
+        now: () => nowValue,
+      });
+      for (const failure of detection.errors || []) {
+        console.error(
+          'dividend_detection_security_failed',
+          failure.portfolio,
+          failure.ticker,
+          failure.code,
+        );
+      }
+      const persisted = await persistDividendCandidates(
+        env,
+        portfolio,
+        detection.candidates,
+        { detectedAt: detection.generated_at },
+      );
+      for (const failure of persisted.results.filter(item => item.error || item.conflict)) {
+        console.error(
+          'dividend_candidate_persist_failed',
+          portfolio,
+          failure.sourceEventId || failure.candidate?.sourceEventId || '',
+          failure.error || 'SOURCE_PAYLOAD_CONFLICT',
+        );
+      }
+      results.push({
+        ok: detection.is_complete === true && persisted.ok === true,
+        portfolio,
+        ledgerRevision: snapshot.ledgerRevision,
+        materializedRevision: snapshot.materializedRevision,
+        holdingCoverage: snapshot.holdingCoverage,
+        entitlementDetermined: false,
+        checkedHoldings: detection.checked_holdings,
+        failedHoldings: detection.failed_holdings,
+        detected: detection.candidates.length,
+        inserted: persisted.inserted,
+        duplicates: persisted.duplicates,
+        conflicts: persisted.conflicts,
+        failedWrites: persisted.failed,
+      });
+    } catch (error) {
+      const code = String(error && (error.code || error.message) ||
+        'DIVIDEND_DETECTION_RUN_FAILED');
+      console.error('dividend_detection_portfolio_failed', portfolio, code);
+      results.push({ ok: false, portfolio, error: code });
+    }
+  }
+  return {
+    ok: results.every(result => result.ok === true || result.skipped === true),
+    generatedAt: new Date(nowValue).toISOString(),
+    results,
+  };
+}
 const eventEffectiveDate = event => String(event && (event.trade_date || event.date) || '').slice(0, 10);
 const eventKind = event => String(event && (event.event_type || event.type) || '').trim().toUpperCase();
 
@@ -5677,6 +5786,8 @@ export default {
         await drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
           .catch(e => console.error('ledger_outbox_failed', e));
         await Promise.all([
+          runScheduledDividendDetection(env, ['us'])
+            .catch(e => console.error('dividend_detection_eod_failed', e)),
           refreshMarketCaches(env, ['us'], ['us'], 'cron:us'),
           refreshTushareTerminalSnapshots(env).catch(e =>
             console.error('terminal_tushare_refresh_failed', e)),
@@ -5707,6 +5818,8 @@ export default {
         await drainLedgerOutbox(env, { refreshPortfolio: updatePortfolioNav })
           .catch(e => console.error('ledger_outbox_failed', e));
         await Promise.all([
+          runScheduledDividendDetection(env, ['hk', 'a'])
+            .catch(e => console.error('dividend_detection_eod_failed', e)),
           refreshMarketCaches(env, ['hk', 'a'], ['hk', 'a'], 'cron:asia-eod'),
           refreshTushareTerminalSnapshots(env).catch(e =>
             console.error('terminal_tushare_refresh_failed', e)),

@@ -6,7 +6,8 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 負責計算；它只保留兩個用途：
 
 1. 從 `CONFIRMED` 事件及後台派生結果生成與舊版相同的 11-sheet 可視工作簿。
-2. 對人工允許的 `BUY`、`SELL`、`CAPITAL` 做三方差異預覽，再寫入 `PENDING`。
+2. 對後台簽名導出的凍結快照做全賬本差異預覽，再以一個原子 revision 覆蓋目前
+   active ledger；舊 revision 和所有被取代事件永久保留，絕不原地刪除。
 
 公開網站只讀 D1 的 `ledger_public_snapshots` 原子快照，`/api/nav/*` 和
 `/api/entry-market` 的數據合同不變；`/api/benchmark` 仍讀低頻 KV benchmark。
@@ -32,7 +33,8 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 人工新增只允许 `BUY`、`SELL`、`CAPITAL`。`DIVIDEND`、`CORPORATE_ACTION`、
 `LIABILITY`、`FUND_ACTION` 及其他非人工来源必须由 Broker、custodian 或后台任务
 先写入不可变 source record，再以 `source=AUTOMATION` 进入 `ledger_pending`。
-所有 Pending 都可在后台复核和修改；股息等现金事件可在 Confirm 前补充扣税资料。
+所有 Pending 都可在后台复核和修改。现金事件只输入券商最终结算的 `Amount`；系统
+没有独立税费录入、扣减、复核或阻断流程。
 确认后写入 append-only `ledger_events`，不可原地覆盖。已确认事件的修订会创建新的
 `event_id`，保留相同 `lineage_id`，并通过 `supersedes_event_id` 指向旧事件。显式
 作废使用新的 `REVERSAL` 事件。
@@ -69,24 +71,16 @@ D1 是 US、HK、A 三個組合的唯一賬務真相源。Excel 不再是網站�
 避免把 JavaScript/SQLite 二进制浮点当作账务事实。现金可以为负；系统照实用于后续
 现金、总资产和 NAV 运算，不产生 warning、确认项或 blocker，也不得自动补融资事件。
 
-## 股息和扣税
+## Amount 边界与派息核实
 
-新股息事件分开保存：
+`Amount` 是券商账单上的最终结算现金，已经包含任何税费影响。BUY、SELL、DIVIDEND
+和其他现金事件都只按这个值入账；`CPS = Amount / Quantity` 由后台计算，不能作为
+输入反推现金。BUY / SELL 的 `Price` 只是可选参考值，可以手填，也可以留空。
 
-- `gross_amount_minor`
-- `tax_amount_minor`
-- `fee_amount_minor`
-- `net_cash_minor`
-- `tax_rate`
-- `tax_type`
-- `tax_jurisdiction`
-- `tax_reclaimable`
-- `tax_evidence_id`
-
-确认页支持 None、Rate、Fixed。确认后的 Amount 是净现金和 cost/income 真相；
-gross、tax、fee 只作审计拆分，不能在 Amount 之外再次扣减。旧 Excel Dividend
-Amount 继续显示净到账，因此可视格式不增加列。旧账没有可验证税项，迁移时必须
-使用 `tax_status=UNKNOWN_LEGACY`，gross/tax 保持 null，不得把未知税额伪装成 0。
+自动派息检测只写入 `ledger_dividend_candidates` 核实 Inbox。候选的 `Amount` 在数据库
+中必须保持 NULL；管理员看到证券、除息日、支付日和来源证据后，手工输入券商实际
+到账 Amount，系统才创建 `source=AUTOMATION` 的 Pending。这个动作不会自动 Confirm。
+重复行情抓取按稳定的市场事实去重，抓取时间或查询窗口变化不会制造重复候选。
 
 ## Excel 双向同步
 
@@ -102,8 +96,7 @@ Amount 继续显示净到账，因此可视格式不增加列。旧账没有可�
 
 只有 Buy、Sell、Capital 允许由 Excel 反向导入全新的 CREATE。Dividend、Corporate
 Action、Liability、Fund Action 的原始事实必须来自自动 source record，Excel 不能凭空
-新建；但由后台签名导出的现有事件可带稳定 lineage/version/hash 在 Excel 修改，并以
-UPDATE 重新进入 Pending，之后仍须在后台复核、扣税及 Confirm。
+新建；后台签名导出的既有事件则可按稳定 lineage/version/hash 修改或移除。
 
 四张只读派生表：
 
@@ -118,12 +111,15 @@ UPDATE 重新进入 Pending，之后仍须在后台复核、扣税及 Confirm。
 
 反向导入只能经过：
 
-`上传 → SHA-256/模板检查 → Preview → CREATE/UPDATE/NOOP/CONFLICT → 写入 Pending → 单笔 Confirm`
+`上传 → SHA-256/模板检查 → 全賬本 Preview → 明確確認整本覆蓋 → 一個原子 revision`
 
-服务端使用导出快照做三方比较：Excel、导出 base、当前 D1。Excel 删除行只显示
-`MISSING_IN_EXCEL`，不会自动删除数据库事件。非人工事件若缺少有效的既有
-lineage/version/hash 会被拒绝；有效 UPDATE 只进入 Pending，不会直接改写 confirmed
-event 或原始 source record。四张派生表的改动显示 `IGNORED_DERIVED`，永不反写事实。
+工作簿是這次覆蓋的 active ledger 真相。服务端列出 CREATE、UPDATE、NOOP、
+`MISSING_IN_EXCEL` 和 blocker；确认时以 ledger revision CAS 防止 Preview 后发生并发
+修改。Excel 中缺失的 active 事件以 append-only `REVERSAL` 墓碑停用，更新以新事件
+supersede 旧事件；D1 历史永不删除。空白 BUY / SELL Price 保留数据库已有 Price，
+新行则继续为空；Excel 中 CPS 和任何兼容税费字段一律忽略。四张派生表的改动显示
+`IGNORED_DERIVED`，永不反写事实。即使当前 revision 正在重算，也可导出上一份完整
+冻结快照并用其做全量 Preview；确认前仍须通过当前 revision CAS。
 
 ## 自动化输入
 
@@ -133,7 +129,9 @@ BUY、SELL 或 CAPITAL；这三类只能由后台人工或签名 Excel 进入 Pe
 
 `(portfolio, source_system, source_account, source_event_id)`
 
-重复 webhook/job 不会重复入账。自动化只负责发现和规范化，不自动 Confirm。
+重复 webhook/job 不会重复入账。自动化只负责发现和规范化，不自动 Confirm。派息
+检测还会回放扫描窗口内曾经持有过的证券，避免除息后卖出导致漏报；资格本身仍标记
+为待人工核实，不由行情源自动判定。
 
 ## D1 派生投影与原子发布
 
@@ -178,13 +176,13 @@ Statement` 只用于离线 parity 核验，不进入 operational migration paylo
 1. US、HK、A 的每笔 Cash Amount 必须按事件顺序连续重放，期末现金分别与原工作簿一致；
    过程中出现负现金时只保留数值并进入 NAV 运算，不作告警或确认门禁。
 2. US 在 2026-05-29 有两笔字段完全相同的 ORCL 卖出（10 股、2,140 USD）。
-3. 历史股息税项全部为 UNKNOWN_LEGACY。
+3. 历史股息只保留工作簿里的最终 Amount，不补造或拆分税费。
 4. US 的 2026-07-01 SPGI → SPGI + MBGL 是多输出公司行动；迁移只保留原 ticker、
    输出 ticker 和绝对数量。行动本身不分配、搬移或创造成本，独立 Cash Amount 才改变现金。
 
 迁移器只警告，不自动补融资、不去重、不推测税额。先在 D1 preview 环境导入三本，
 对账事件数、现金、份额、持仓、负债和 NAV；全部通过后才允许切断旧 `/api/ledger`。
-导入确认必须显式确认 exact duplicates 与 unknown tax。负现金不作 warning；derived
+导入确认必须显式确认 exact duplicates。负现金不作 warning；derived
 NAV/price 不作为迁移 seed，因此没有 historical NAV/prices 的 operational sign-off。
 确认短语必须使用服务端真实合同：US、HK、A 分别为 `CONFIRM LEGACY US`、
 `CONFIRM LEGACY HK`、`CONFIRM LEGACY A`，不得由客户端按事件数自行拼接。
@@ -202,6 +200,9 @@ NAV/price 不作为迁移 seed，因此没有 historical NAV/prices 的 operatio
 - `GET /api/admin/ledger/export?portfolio=us`
 - `POST /api/admin/ledger/import/preview`
 - `POST /api/admin/ledger/import/confirm`
+- `GET /api/admin/ledger/dividends?portfolio=us`
+- `POST /api/admin/ledger/dividends/verify`
+- `POST /api/admin/ledger/dividends/dismiss`
 - `POST /api/admin/ledger/source`
 - `POST /api/admin/ledger/migration/preview`
 - `POST /api/admin/ledger/migration/confirm`

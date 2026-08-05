@@ -18,9 +18,6 @@ const MANUAL_EVENT_TYPES = new Set(['BUY', 'SELL', 'CAPITAL']);
 const AUTOMATION_EVENT_TYPES = new Set([
   'DIVIDEND', 'CORPORATE_ACTION', 'LIABILITY', 'FUND_ACTION',
 ]);
-const TAX_REVIEW_EVENT_TYPES = new Set([
-  'BUY', 'SELL', 'DIVIDEND', 'CORPORATE_ACTION', 'FUND_ACTION',
-]);
 const CASH_PRIORITY = Object.freeze({
   CAPITAL: 0,
   LIABILITY: 1,
@@ -34,7 +31,10 @@ const CASH_PRIORITY = Object.freeze({
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PUBLIC_SNAPSHOT_BYTES = 1536 * 1024;
 const MAX_MATERIALIZED_PROJECTION_BYTES = 1536 * 1024;
-const MAX_IMPORT_ROWS = 280;
+// Full-ledger replacement is one atomic operation. Keep a bounded request
+// ceiling, but never force a valid signed workbook into contradictory
+// per-row batches. The 2 MiB JSON limit remains the primary payload guard.
+const MAX_IMPORT_ROWS = 1000;
 const MAX_NAV_BATCH_ROWS = 800;
 const MAX_RAW_PRICE_TAPE_ROWS = 40_000;
 const RAW_PRICE_TAPE_CHUNK_ROWS = 500;
@@ -151,6 +151,17 @@ function canonicalEvent(raw, portfolio) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new LedgerHttpError(422, '事件日期必須是 YYYY-MM-DD');
   event.trade_date = date;
   event.date = date;
+  if (type === 'DIVIDEND') {
+    // These dates are provenance, not cash inputs.  Preserve the allow-listed
+    // candidate link through Pending edits and Confirm canonicalization.
+    const candidateId = String(raw.dividend_candidate_id || '').trim();
+    if (candidateId) event.dividend_candidate_id = candidateId.slice(0, 200);
+    for (const key of ['ex_date', 'record_date', 'pay_date', 'actual_receipt_date']) {
+      const value = optionalCandidateDate(raw[key], key);
+      if (value) event[key] = value;
+    }
+    if (candidateId) event.amount_status = 'ADMIN_VERIFIED';
+  }
   const problems = validationProblems(validateLedgerEvent(event));
   const errors = problems.filter(item => ['ERROR', 'FATAL'].includes(problemSeverity(item)));
   if (errors.length) throw new LedgerHttpError(422, '事件校驗失敗', errors.map(problemMessage));
@@ -166,35 +177,35 @@ function stripSyncFields(event) {
     'portfolio', 'portfolio_id',
     '__yi_event_id', '__yi_event_version', '__yi_base_hash', '__yi_sync_token',
   ].forEach(key => delete copy[key]);
-  // Dividend price is a display-only derivative of authoritative Amount / quantity.
-  // Legacy workbooks retained more precision here than the reversible Excel format,
-  // so hashing it would turn an untouched export into a false UPDATE.
-  if (upper(copy.event_type || copy.type) === 'DIVIDEND') delete copy.price;
+  const type = upper(copy.event_type || copy.type);
+  if (['BUY', 'SELL', 'DIVIDEND'].includes(type)) {
+    // Amount is the only broker-settled cash fact. CPS is derived from
+    // Amount / quantity, while historical tax/fee/gross columns are audit
+    // detail only. None of those compatibility fields may manufacture an
+    // Excel UPDATE when a workbook intentionally contains just Amount.
+    [
+      'per_share', 'per_share_decimal', 'gross_per_share',
+      'gross_per_share_decimal', 'price_per_share',
+      'gross_amount', 'gross_amount_decimal', 'gross_amount_minor',
+      'gross_amount_inferred',
+      'withholding_tax', 'withholding_tax_decimal', 'withholding_tax_minor',
+      'transaction_tax', 'transaction_tax_decimal', 'transaction_tax_minor',
+      'tax_amount', 'tax_amount_decimal', 'tax_amount_minor',
+      'fees', 'fees_decimal', 'fees_minor',
+      'fee_amount', 'fee_amount_decimal', 'fee_amount_minor',
+      'tax_status', 'tax_review_required', 'tax_review_reason',
+    ].forEach(key => delete copy[key]);
+  }
+  // Dividend has no independent execution-price fact.
+  if (type === 'DIVIDEND') delete copy.price;
   return copy;
 }
 const canonicalHash = event => sha256Hex(stableJson(stripSyncFields(event)));
 
-function cashAuditFingerprint(event) {
-  const source = event && typeof event === 'object' ? event : {};
-  const fields = [
-    'gross_amount_minor', 'tax_amount_minor', 'fee_amount_minor', 'net_cash_minor',
-    'gross_amount', 'tax_amount', 'transaction_tax', 'withholding_tax', 'fees',
-    'net_amount', 'net_cash', 'amount', 'cash_amount', 'cash_change',
-  ];
-  return stableJson(Object.fromEntries(fields.map(field => [field, source[field] ?? null])));
-}
-
-function markExcelTaxReview(currentEvent, excelEvent) {
-  if (!TAX_REVIEW_EVENT_TYPES.has(excelEvent.event_type) ||
-      cashAuditFingerprint(currentEvent) === cashAuditFingerprint(excelEvent)) {
-    return excelEvent;
-  }
-  return {
-    ...excelEvent,
-    tax_status: 'PENDING_RECONFIRMATION',
-    tax_review_required: true,
-    tax_review_reason: 'Excel 修改了 Amount/Cash 或稅費拆分；必須在 Pending 重新核對。',
-  };
+function markExcelTaxReview(_currentEvent, excelEvent) {
+  // Amount is already the final broker-settled cash figure. Excel changes do
+  // not create a second tax/fee review workflow.
+  return excelEvent;
 }
 
 function parseJson(value, fallback = null) {
@@ -223,6 +234,35 @@ function pendingItem(row) {
     updatedBy: row.updated_by,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+  };
+}
+function dividendCandidateItem(row) {
+  if (!row) return null;
+  return {
+    candidateId: row.candidate_id,
+    portfolio: row.portfolio_id,
+    sourceRecordId: row.source_record_id,
+    sourceSystem: row.source_system,
+    sourceEventId: row.source_event_id,
+    ticker: row.ticker,
+    name: row.security_name,
+    exDate: row.ex_date,
+    recordDate: row.record_date,
+    payDate: row.pay_date,
+    // Provider distributions are presence signals only.  The broker-settled
+    // Amount exists first in Pending after an administrator enters it.
+    amount: null,
+    amountStatus: 'PENDING_VERIFICATION',
+    status: row.status,
+    version: Number(row.version),
+    evidence: parseJson(row.evidence_json, {}),
+    contentSha256: row.content_sha256,
+    detectedAt: Number(row.detected_at),
+    createdAt: Number(row.created_at),
+    convertedPendingId: row.converted_pending_id,
+    resolvedBy: row.resolved_by,
+    resolvedAt: row.resolved_at == null ? null : Number(row.resolved_at),
+    resolutionNote: row.resolution_note,
   };
 }
 function eventItem(row) {
@@ -557,6 +597,7 @@ export async function loadMaterializedLedgerProjection(env, requestedPortfolio) 
     portfolio,
     ledgerRevision: Number(row.ledger_revision),
     projection,
+    projectionSha256: row.projection_sha256,
     generatedAt: Number(row.generated_at),
     updatedAt: Number(row.updated_at),
   };
@@ -916,6 +957,645 @@ async function createPending(db, portfolio, rawEvent, actor, options = {}) {
   ]);
   const row = await dbFirst(db, 'SELECT * FROM ledger_pending WHERE pending_id = ?', [pendingId]);
   return { item: pendingItem(row), duplicate: false };
+}
+
+function optionalCandidateDate(value, field) {
+  if (value == null || value === '') return null;
+  const raw = String(value).trim();
+  const date = /^\d{8}$/.test(raw)
+    ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
+    : raw.slice(0, 10);
+  const timestamp = /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? Date.parse(`${date}T00:00:00.000Z`) : NaN;
+  if (!Number.isFinite(timestamp) ||
+      new Date(timestamp).toISOString().slice(0, 10) !== date) {
+    throw new LedgerHttpError(422, `${field} 必須是有效的 YYYY-MM-DD`);
+  }
+  return date;
+}
+
+function evidenceContainsProviderMoney(value) {
+  if (Array.isArray(value)) return value.some(evidenceContainsProviderMoney);
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, nested]) =>
+    /(?:^|_)(?:amount|cash_div|tax|fee|withholding|gross|net_cash)(?:_|$)/i.test(key) ||
+    evidenceContainsProviderMoney(nested));
+}
+
+async function canonicalDividendCandidate(raw, requestedPortfolio, detectedAtValue) {
+  const portfolio = portfolioId(requestedPortfolio);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new LedgerHttpError(422, 'dividend candidate 格式無效');
+  }
+  if (raw.amount != null || raw.amount_minor != null || raw.amount_decimal != null) {
+    throw new LedgerHttpError(422, '派息候選 Amount 必須為空，實際入賬金額只能由管理員核實');
+  }
+  if (raw.portfolio && portfolioId(raw.portfolio) !== portfolio) {
+    throw new LedgerHttpError(422, '派息候選 portfolio 不一致');
+  }
+  const evidence = raw.evidence && typeof raw.evidence === 'object' &&
+    !Array.isArray(raw.evidence) ? raw.evidence : {};
+  if (evidenceContainsProviderMoney(evidence)) {
+    throw new LedgerHttpError(422, '派息候選 evidence 不得保存供應商推算金額、稅或費用');
+  }
+  const sourceSystem = String(raw.source_system || raw.sourceSystem || evidence.source || '')
+    .trim().slice(0, 100);
+  const sourceEventId = String(raw.source_event_id || raw.sourceEventId || '')
+    .trim().slice(0, 200);
+  const ticker = upper(raw.ticker).slice(0, 32);
+  const name = String(raw.name || raw.security_name || ticker).trim().slice(0, 200) || ticker;
+  if (!sourceSystem || !sourceEventId || !ticker) {
+    throw new LedgerHttpError(422, '派息候選缺少 source、sourceEventId 或 ticker');
+  }
+  const exDate = optionalCandidateDate(raw.ex_date || raw.exDate, 'ex_date');
+  const recordDate = optionalCandidateDate(
+    raw.record_date || raw.recordDate || evidence.record_date,
+    'record_date',
+  );
+  const payDate = optionalCandidateDate(raw.pay_date || raw.payDate, 'pay_date');
+  if (!exDate && !payDate) throw new LedgerHttpError(422, '派息候選至少需要 ex_date 或 pay_date');
+  const detectedCandidate = detectedAtValue ?? raw.detected_at ?? raw.detectedAt ?? now();
+  const parsedDetectedAt = typeof detectedCandidate === 'number'
+    ? detectedCandidate : Date.parse(String(detectedCandidate));
+  if (!Number.isFinite(parsedDetectedAt) || parsedDetectedAt <= 0) {
+    throw new LedgerHttpError(422, 'detected_at 無效');
+  }
+  const detectedAt = Math.trunc(parsedDetectedAt);
+  // Hash and immutable source payload contain only stable event facts. Fetch
+  // timestamps and Yahoo query-window URLs live in evidence_json but never
+  // turn the same provider event into a false conflict on the next EOD run.
+  const payload = {
+    schema_version: String(raw.schema_version || 'dividend-candidate-v1'),
+    event_type: 'DIVIDEND',
+    portfolio,
+    source_system: sourceSystem,
+    source_event_id: sourceEventId,
+    ticker,
+    name,
+    ex_date: exDate,
+    record_date: recordDate,
+    pay_date: payDate,
+    amount: null,
+    amount_status: 'PENDING_VERIFICATION',
+  };
+  const contentSha256 = await sha256Hex(stableJson(payload));
+  const identitySha256 = await sha256Hex(`${portfolio}\n${sourceSystem}\n${sourceEventId}`);
+  return {
+    ...payload,
+    evidence,
+    evidenceJson: stableJson(evidence),
+    payloadJson: stableJson(payload),
+    contentSha256,
+    candidateId: `ldc_${identitySha256.slice(0, 40)}`,
+    sourceRecordId: `lsr_div_${identitySha256.slice(0, 36)}`,
+    detectedAt,
+  };
+}
+
+/**
+ * Persist read-only provider signals in the dividend verification inbox.
+ * Each candidate is isolated so one malformed security cannot block the rest
+ * of an EOD detection run.  Duplicate or already-processed rows are never
+ * overwritten.
+ */
+export async function persistDividendCandidates(
+  env,
+  requestedPortfolio,
+  rawCandidates,
+  options = {},
+) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const candidates = Array.isArray(rawCandidates) ? rawCandidates : [];
+  const results = [];
+  for (const raw of candidates) {
+    try {
+      const candidate = await canonicalDividendCandidate(raw, portfolio, options.detectedAt);
+      const existing = await dbFirst(db, `
+        SELECT * FROM ledger_dividend_candidates
+        WHERE portfolio_id = ? AND source_system = ? AND source_event_id = ?
+      `, [portfolio, candidate.source_system, candidate.source_event_id]);
+      if (existing) {
+        results.push({
+          candidate: dividendCandidateItem(existing),
+          inserted: false,
+          duplicate: existing.content_sha256 === candidate.contentSha256,
+          conflict: existing.content_sha256 !== candidate.contentSha256,
+        });
+        continue;
+      }
+      const timestamp = now();
+      const auditId = `lau_detect_${candidate.candidateId.slice(4)}`;
+      const batch = await db.batch([
+        db.prepare(`
+          INSERT INTO ledger_source_records (
+            source_record_id, portfolio_id, source_system, source_account,
+            source_event_id, event_type, trade_date, payload_json,
+            evidence_json, content_sha256, received_at
+          ) VALUES (?, ?, ?, '', ?, 'DIVIDEND', ?, ?, ?, ?, ?)
+          ON CONFLICT(portfolio_id, source_system, source_account, source_event_id)
+          DO NOTHING
+        `).bind(
+          candidate.sourceRecordId, portfolio, candidate.source_system,
+          candidate.source_event_id, candidate.pay_date || candidate.ex_date,
+          candidate.payloadJson, candidate.evidenceJson, candidate.contentSha256,
+          candidate.detectedAt,
+        ),
+        db.prepare(`
+          INSERT INTO ledger_dividend_candidates (
+            candidate_id, portfolio_id, source_record_id, source_system,
+            source_event_id, ticker, security_name, ex_date, record_date,
+            pay_date, amount_minor, status, version, evidence_json,
+            content_sha256, detected_at, created_at
+          )
+          SELECT ?, ?, source_record_id, ?, ?, ?, ?, ?, ?, ?, NULL,
+            'PENDING_VERIFICATION', 1, ?, ?, ?, ?
+          FROM ledger_source_records
+          WHERE portfolio_id = ? AND source_system = ? AND source_account = ''
+            AND source_event_id = ? AND content_sha256 = ?
+          ON CONFLICT(portfolio_id, source_system, source_event_id) DO NOTHING
+        `).bind(
+          candidate.candidateId, portfolio, candidate.source_system,
+          candidate.source_event_id, candidate.ticker, candidate.name,
+          candidate.ex_date, candidate.record_date, candidate.pay_date,
+          candidate.evidenceJson, candidate.contentSha256,
+          candidate.detectedAt, timestamp,
+          portfolio, candidate.source_system, candidate.source_event_id,
+          candidate.contentSha256,
+        ),
+        db.prepare(`
+          INSERT INTO ledger_audit_log (
+            audit_id, portfolio_id, actor_type, actor_ref, action,
+            target_type, target_id, before_json, after_json, metadata_json, created_at
+          )
+          SELECT ?, portfolio_id, 'SYSTEM', ?, 'DIVIDEND_CANDIDATE_DETECTED',
+            'DIVIDEND_CANDIDATE', candidate_id, NULL, ?, ?, ?
+          FROM ledger_dividend_candidates
+          WHERE candidate_id = ? AND content_sha256 = ?
+          ON CONFLICT(audit_id) DO NOTHING
+        `).bind(
+          auditId,
+          String(options.actor || 'dividend-detector').slice(0, 200),
+          candidate.payloadJson,
+          stableJson({ sourceRecordId: candidate.sourceRecordId }),
+          timestamp,
+          candidate.candidateId,
+          candidate.contentSha256,
+        ),
+      ]);
+      const stored = await dbFirst(db, `
+        SELECT * FROM ledger_dividend_candidates
+        WHERE portfolio_id = ? AND source_system = ? AND source_event_id = ?
+      `, [portfolio, candidate.source_system, candidate.source_event_id]);
+      if (!stored) {
+        results.push({
+          inserted: false,
+          duplicate: false,
+          conflict: true,
+          sourceEventId: candidate.source_event_id,
+          error: 'SOURCE_PAYLOAD_CONFLICT',
+        });
+        continue;
+      }
+      results.push({
+        candidate: dividendCandidateItem(stored),
+        inserted: changedRows(batch[1]) === 1,
+        duplicate: changedRows(batch[1]) !== 1 &&
+          stored.content_sha256 === candidate.contentSha256,
+        conflict: stored.content_sha256 !== candidate.contentSha256,
+      });
+    } catch (error) {
+      results.push({
+        inserted: false,
+        duplicate: false,
+        conflict: false,
+        sourceEventId: String(raw && (raw.source_event_id || raw.sourceEventId) || ''),
+        error: String(error && (error.message || error.code) || 'DIVIDEND_CANDIDATE_WRITE_FAILED'),
+      });
+    }
+  }
+  return {
+    ok: results.every(item => !item.error && item.conflict !== true),
+    portfolio,
+    inserted: results.filter(item => item.inserted).length,
+    duplicates: results.filter(item => item.duplicate).length,
+    conflicts: results.filter(item => item.conflict).length,
+    failed: results.filter(item => item.error && item.conflict !== true).length,
+    results,
+  };
+}
+
+function materializedDividendWindowHoldings(projection, portfolio, fromDate, toDate) {
+  const confirmed = projection && (
+    projection.confirmedEvents || projection.confirmed_events
+  );
+  const events = Array.isArray(confirmed) ? confirmed.slice() : [];
+  const fallback = projectionPositions(projection).map(row => ({
+    portfolio,
+    ticker: row.t,
+    name: row.n,
+    quantity: row.q,
+  }));
+  if (!fromDate || !toDate || !events.length) {
+    return { holdings: fallback, coverage: 'CURRENT_POSITIVE_ONLY' };
+  }
+  const effectiveDate = event => String(
+    event && (event.trade_date || event.date || event.effective_date) || '',
+  ).slice(0, 10);
+  events.sort((left, right) =>
+    effectiveDate(left).localeCompare(effectiveDate(right)) ||
+    Number(left.sequence_no ?? left.sequence ?? left.ledger_revision ?? 0) -
+      Number(right.sequence_no ?? right.sequence ?? right.ledger_revision ?? 0));
+  const boundaries = [...new Set([
+    fromDate,
+    ...events.map(effectiveDate).filter(date => date >= fromDate && date <= toDate),
+    toDate,
+  ])].sort();
+  const byTicker = new Map();
+  const remember = row => {
+    if (!(Number(row.q) > ACTIVE_POSITION_EPSILON) || !row.t) return;
+    const key = candidateSecurityKey(portfolio, row.t);
+    const existing = byTicker.get(key);
+    if (!existing || Number(row.q) > Number(existing.quantity)) {
+      byTicker.set(key, {
+        portfolio,
+        ticker: row.t,
+        name: row.n,
+        quantity: Number(row.q),
+      });
+    }
+  };
+  for (const boundary of boundaries) {
+    const cutoff = events.filter(event => effectiveDate(event) <= boundary);
+    let replayed;
+    try {
+      replayed = replayPortfolioLedger(cutoff, {
+        portfolio,
+        currency: PORTFOLIOS[portfolio].currency,
+        include_pending: false,
+        as_of_date: boundary,
+        corporate_action_prices: projection.priceHistory || projection.price_history || [],
+      });
+    } catch (error) {
+      throw new LedgerHttpError(503,
+        `派息偵測持倉窗口重放失敗：${String(error && error.message || error)}`);
+    }
+    projectionPositions(replayed).forEach(remember);
+  }
+  // This is intentionally a broad signal universe, not an entitlement
+  // decision: ex-date eligibility and the broker-settled Amount remain an
+  // administrator verification task.
+  return {
+    holdings: [...byTicker.values()].sort((left, right) =>
+      left.ticker.localeCompare(right.ticker)),
+    coverage: 'WINDOW_POSITIVE_UNION',
+  };
+}
+
+export async function loadDividendDetectionHoldings(env, requestedPortfolio, options = {}) {
+  const portfolio = portfolioId(requestedPortfolio);
+  const db = ledgerDb(env);
+  const fromDate = options.fromDate == null
+    ? null : optionalCandidateDate(options.fromDate, 'fromDate');
+  const toDate = options.toDate == null
+    ? null : optionalCandidateDate(options.toDate, 'toDate');
+  if ((fromDate && !toDate) || (!fromDate && toDate) || fromDate > toDate) {
+    throw new LedgerHttpError(422, 'fromDate/toDate 派息偵測窗口無效');
+  }
+  const state = await portfolioRow(db, portfolio);
+  const materialized = await loadMaterializedLedgerProjection(env, portfolio);
+  const completeRevision = materializedExportRevision(
+    materialized,
+    portfolio,
+    Number(state.ledger_revision),
+  );
+  if (completeRevision == null) {
+    return {
+      portfolio,
+      ready: false,
+      ledgerRevision: Number(state.ledger_revision),
+      materializedRevision: materialized && materialized.ledgerRevision || null,
+      holdings: [],
+      holdingCoverage: null,
+      window: { fromDate, toDate },
+      reason: 'LAST_COMPLETE_MATERIALIZED_PROJECTION_UNAVAILABLE',
+    };
+  }
+  const windowHoldings = materializedDividendWindowHoldings(
+    materialized.projection,
+    portfolio,
+    fromDate,
+    toDate,
+  );
+  return {
+    portfolio,
+    ready: true,
+    ledgerRevision: Number(state.ledger_revision),
+    materializedRevision: completeRevision,
+    generatedAt: materialized.generatedAt,
+    holdings: windowHoldings.holdings,
+    holdingCoverage: windowHoldings.coverage,
+    entitlementDetermined: false,
+    window: { fromDate, toDate },
+  };
+}
+
+function candidateSecurityKey(portfolio, ticker) {
+  const source = upper(ticker);
+  if (portfolio === 'hk') {
+    const base = source.replace(/\.HK$/, '');
+    return /^\d+$/.test(base) ? String(Number(base)) : base;
+  }
+  return source.replace(/\.US$/, '');
+}
+
+function dividendCandidateGuardStatement(db, values) {
+  return db.prepare(`
+    INSERT INTO ledger_transaction_guards (
+      guard_id, pending_id, expected_pending_version,
+      portfolio_id, expected_ledger_revision, created_at
+    ) VALUES (
+      ?,
+      (SELECT candidate_id FROM ledger_dividend_candidates
+        WHERE candidate_id = ? AND portfolio_id = ?
+          AND status = 'PENDING_VERIFICATION' AND version = ?),
+      ?,
+      (SELECT portfolio_id FROM ledger_portfolios
+        WHERE portfolio_id = ? AND ledger_revision = ?),
+      ?, ?
+    )
+  `).bind(
+    values.guardId,
+    values.candidateId, values.portfolio, values.candidateVersion,
+    values.candidateVersion,
+    values.portfolio, values.ledgerRevision,
+    values.ledgerRevision, values.timestamp,
+  );
+}
+
+async function verifyDividendCandidate(db, body, actor) {
+  const candidateId = String(body.candidateId || '').trim();
+  const candidate = await dbFirst(db, `
+    SELECT * FROM ledger_dividend_candidates WHERE candidate_id = ?
+  `, [candidateId]);
+  if (!candidate) throw new LedgerHttpError(404, '派息候選不存在');
+  if (candidate.status === 'CONVERTED') {
+    const pending = await dbFirst(db, `
+      SELECT * FROM ledger_pending WHERE pending_id = ?
+    `, [candidate.converted_pending_id]);
+    return {
+      duplicate: true,
+      candidate: dividendCandidateItem(candidate),
+      pending: pendingItem(pending),
+    };
+  }
+  if (candidate.status === 'DISMISSED') {
+    throw new LedgerHttpError(409, '派息候選已忽略，不能再轉入 Pending');
+  }
+  const expectedVersion = Number(body.expectedVersion);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+    throw new LedgerHttpError(422, 'expectedVersion 必須明確指定');
+  }
+  if (Number(candidate.version) !== expectedVersion) {
+    throw new LedgerHttpError(409, '派息候選已被其他操作修改，請刷新');
+  }
+  const rawAmount = body.amount ?? body.Amount;
+  const amountMinor = scaledInteger(rawAmount, 100, 'Amount');
+  if (amountMinor <= 0) throw new LedgerHttpError(422, 'Amount 必須大於 0');
+  const state = await portfolioRow(db, candidate.portfolio_id);
+  let quantity = Number(body.quantity);
+  if (!Number.isFinite(quantity) || !(quantity > 0)) {
+    throw new LedgerHttpError(
+      422,
+      'Quantity 必須由管理員明確核實並輸入大於 0 的數值；系統不會靜默使用目前持倉',
+    );
+  }
+  quantity = Number(quantity);
+  const actualReceiptDate = optionalCandidateDate(
+    body.actualReceiptDate || body.tradeDate || candidate.pay_date || candidate.ex_date,
+    'actualReceiptDate',
+  );
+  const recordDate = optionalCandidateDate(
+    body.recordDate || candidate.record_date,
+    'recordDate',
+  );
+  const event = canonicalEvent({
+    type: 'DIVIDEND',
+    date: actualReceiptDate,
+    ticker: candidate.ticker,
+    name: candidate.security_name,
+    quantity,
+    amount: (amountMinor / 100).toFixed(2),
+    notes: String(body.notes || '').trim().slice(0, 1000),
+    source: 'DIVIDEND_DETECTOR',
+    dividend_candidate_id: candidate.candidate_id,
+    ex_date: candidate.ex_date,
+    record_date: recordDate,
+    pay_date: candidate.pay_date,
+    actual_receipt_date: actualReceiptDate,
+  }, candidate.portfolio_id);
+  event.status = 'pending';
+  const pendingId = makeId('lpd');
+  const guardId = makeId('ltg');
+  const timestamp = now();
+  const payload = stableJson(event);
+  const sourceRef = `${candidate.source_system}:${candidate.source_event_id}`;
+  const idempotencyKey = `dividend-candidate:${candidate.candidate_id}`;
+  const note = String(body.reviewNote || body.notes || '派息金額已人工輸入，等待 Confirm')
+    .trim().slice(0, 1000);
+  try {
+    await db.batch([
+      dividendCandidateGuardStatement(db, {
+        guardId,
+        candidateId: candidate.candidate_id,
+        portfolio: candidate.portfolio_id,
+        candidateVersion: expectedVersion,
+        ledgerRevision: Number(state.ledger_revision),
+        timestamp,
+      }),
+      db.prepare(`
+        INSERT INTO ledger_pending (
+          pending_id, portfolio_id, event_type, trade_date, payload_json,
+          status, version, source, source_record_id, source_ref,
+          idempotency_key, review_note, created_by, updated_by, created_at, updated_at
+        ) VALUES (?, ?, 'DIVIDEND', ?, ?, 'PENDING', 1, 'AUTOMATION',
+          ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        pendingId, candidate.portfolio_id, event.trade_date, payload,
+        candidate.source_record_id, sourceRef, idempotencyKey, note,
+        actor, actor, timestamp, timestamp,
+      ),
+      db.prepare(`
+        UPDATE ledger_dividend_candidates
+        SET status = 'CONVERTED', version = version + 1,
+          converted_pending_id = ?, resolved_by = ?, resolved_at = ?,
+          resolution_note = ?
+        WHERE candidate_id = ? AND portfolio_id = ?
+          AND status = 'PENDING_VERIFICATION' AND version = ?
+      `).bind(
+        pendingId, actor, timestamp, note, candidate.candidate_id,
+        candidate.portfolio_id, expectedVersion,
+      ),
+      db.prepare(`
+        INSERT INTO ledger_audit_log (
+          audit_id, portfolio_id, actor_type, actor_ref, action,
+          target_type, target_id, before_json, after_json, metadata_json, created_at
+        ) VALUES (?, ?, 'ADMIN', ?, 'DIVIDEND_CANDIDATE_CONVERTED',
+          'DIVIDEND_CANDIDATE', ?, ?, ?, ?, ?)
+      `).bind(
+        makeId('lau'), candidate.portfolio_id, actor, candidate.candidate_id,
+        stableJson(dividendCandidateItem(candidate)),
+        stableJson({ status: 'CONVERTED', pendingId }),
+        stableJson({ amountMinor, quantity, actualReceiptDate, recordDate }),
+        timestamp,
+      ),
+      db.prepare(`
+        INSERT INTO ledger_audit_log (
+          audit_id, portfolio_id, actor_type, actor_ref, action,
+          target_type, target_id, before_json, after_json, metadata_json, created_at
+        ) VALUES (?, ?, 'ADMIN', ?, 'PENDING_CREATED', 'PENDING', ?, NULL, ?, ?, ?)
+      `).bind(
+        makeId('lau'), candidate.portfolio_id, actor, pendingId, payload,
+        stableJson({ source: 'AUTOMATION', dividendCandidateId: candidate.candidate_id }),
+        timestamp,
+      ),
+      db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+    ]);
+  } catch (error) {
+    const raced = await dbFirst(db, `
+      SELECT * FROM ledger_dividend_candidates WHERE candidate_id = ?
+    `, [candidate.candidate_id]);
+    if (raced && raced.status === 'CONVERTED') {
+      const pending = await dbFirst(db, `
+        SELECT * FROM ledger_pending WHERE pending_id = ?
+      `, [raced.converted_pending_id]);
+      return {
+        duplicate: true,
+        candidate: dividendCandidateItem(raced),
+        pending: pendingItem(pending),
+      };
+    }
+    throw new LedgerHttpError(409, '派息候選轉入 Pending 時狀態已改變，請刷新');
+  }
+  return {
+    duplicate: false,
+    candidate: dividendCandidateItem(await dbFirst(db, `
+      SELECT * FROM ledger_dividend_candidates WHERE candidate_id = ?
+    `, [candidate.candidate_id])),
+    pending: pendingItem(await dbFirst(db, `
+      SELECT * FROM ledger_pending WHERE pending_id = ?
+    `, [pendingId])),
+  };
+}
+
+async function dismissDividendCandidate(db, body, actor) {
+  const candidateId = String(body.candidateId || '').trim();
+  const candidate = await dbFirst(db, `
+    SELECT * FROM ledger_dividend_candidates WHERE candidate_id = ?
+  `, [candidateId]);
+  if (!candidate) throw new LedgerHttpError(404, '派息候選不存在');
+  if (candidate.status === 'DISMISSED') {
+    return { duplicate: true, candidate: dividendCandidateItem(candidate) };
+  }
+  if (candidate.status === 'CONVERTED') {
+    throw new LedgerHttpError(409, '派息候選已轉入 Pending，不能忽略');
+  }
+  const expectedVersion = Number(body.expectedVersion);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+    throw new LedgerHttpError(422, 'expectedVersion 必須明確指定');
+  }
+  if (Number(candidate.version) !== expectedVersion) {
+    throw new LedgerHttpError(409, '派息候選已被其他操作修改，請刷新');
+  }
+  const reason = String(body.reason || '').trim().slice(0, 1000);
+  if (!reason) throw new LedgerHttpError(422, '忽略派息候選必須填寫 reason');
+  const state = await portfolioRow(db, candidate.portfolio_id);
+  const timestamp = now();
+  const guardId = makeId('ltg');
+  try {
+    await db.batch([
+      dividendCandidateGuardStatement(db, {
+        guardId,
+        candidateId: candidate.candidate_id,
+        portfolio: candidate.portfolio_id,
+        candidateVersion: expectedVersion,
+        ledgerRevision: Number(state.ledger_revision),
+        timestamp,
+      }),
+      db.prepare(`
+        UPDATE ledger_dividend_candidates
+        SET status = 'DISMISSED', version = version + 1,
+          resolved_by = ?, resolved_at = ?, resolution_note = ?
+        WHERE candidate_id = ? AND portfolio_id = ?
+          AND status = 'PENDING_VERIFICATION' AND version = ?
+      `).bind(
+        actor, timestamp, reason, candidate.candidate_id,
+        candidate.portfolio_id, expectedVersion,
+      ),
+      db.prepare(`
+        INSERT INTO ledger_audit_log (
+          audit_id, portfolio_id, actor_type, actor_ref, action,
+          target_type, target_id, before_json, after_json, metadata_json, created_at
+        ) VALUES (?, ?, 'ADMIN', ?, 'DIVIDEND_CANDIDATE_DISMISSED',
+          'DIVIDEND_CANDIDATE', ?, ?, ?, ?, ?)
+      `).bind(
+        makeId('lau'), candidate.portfolio_id, actor, candidate.candidate_id,
+        stableJson(dividendCandidateItem(candidate)),
+        stableJson({ status: 'DISMISSED', reason }),
+        stableJson({ expectedVersion }), timestamp,
+      ),
+      db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+    ]);
+  } catch (error) {
+    throw new LedgerHttpError(409, '派息候選已被其他操作修改，請刷新');
+  }
+  return {
+    duplicate: false,
+    candidate: dividendCandidateItem(await dbFirst(db, `
+      SELECT * FROM ledger_dividend_candidates WHERE candidate_id = ?
+    `, [candidate.candidate_id])),
+  };
+}
+
+async function listDividendCandidates(db, url) {
+  const portfolio = portfolioId(url.searchParams.get('portfolio'));
+  const requestedStatus = upper(url.searchParams.get('status') || 'PENDING_VERIFICATION');
+  const statusAliases = {
+    PENDING: 'PENDING_VERIFICATION',
+    PENDING_VERIFICATION: 'PENDING_VERIFICATION',
+    CONVERTED: 'CONVERTED',
+    DISMISSED: 'DISMISSED',
+    ALL: 'ALL',
+  };
+  const status = statusAliases[requestedStatus];
+  if (!status) throw new LedgerHttpError(400, 'dividend candidate status 無效');
+  const rows = await dbAll(db, `
+    SELECT * FROM ledger_dividend_candidates
+    WHERE portfolio_id = ?${status === 'ALL' ? '' : ' AND status = ?'}
+    ORDER BY CASE status WHEN 'PENDING_VERIFICATION' THEN 0 ELSE 1 END,
+      COALESCE(pay_date, ex_date) DESC, detected_at DESC
+    LIMIT 500
+  `, status === 'ALL' ? [portfolio] : [portfolio, status]);
+  const state = await portfolioRow(db, portfolio);
+  const events = await activeEvents(db, portfolio, Number(state.ledger_revision));
+  const quantities = new Map(projectionPositions(replay(events, portfolio)).map(row => [
+    candidateSecurityKey(portfolio, row.t),
+    Number(row.q),
+  ]));
+  return {
+    ok: true,
+    portfolio,
+    status,
+    candidates: rows.map(row => {
+      const item = dividendCandidateItem(row);
+      const currentQuantity = quantities.get(candidateSecurityKey(portfolio, item.ticker)) ?? null;
+      return {
+        ...item,
+        currentQuantity,
+        suggestedQuantity: currentQuantity,
+      };
+    }),
+  };
 }
 
 function guardStatement(db, values) {
@@ -2638,13 +3318,8 @@ async function confirmPending(db, env, body, actor) {
   const portfolioState = await portfolioRow(db, portfolio);
   const event = canonicalEvent(parseJson(current.payload_json, {}), portfolio);
   event.status = 'confirmed';
-  const taxStatus = upper(event.tax_status);
-  if (event.tax_review_required === true ||
-      taxStatus === 'PENDING_RECONFIRMATION' || taxStatus === 'UNKNOWN_LEGACY') {
-    throw new LedgerHttpError(422,
-      '稅項尚未確認；請先在 Pending 修改 gross / tax / fees 並保存，再 Confirm。',
-      { code: 'TAX_REVIEW_REQUIRED' });
-  }
+  event.tax_review_required = false;
+  event.tax_review_reason = null;
   if (event.trade_date > currentPortfolioDate(portfolio)) {
     throw new LedgerHttpError(422, '未到生效日期的事件必須保留在 Pending，不能提前確認');
   }
@@ -2758,23 +3433,68 @@ async function confirmPending(db, env, body, actor) {
   };
 }
 
-async function createExport(env, db, portfolio, actor) {
-  const state = await portfolioRow(db, portfolio);
-  const ledgerRevision = Number(state.ledger_revision);
-  const derivation = await portfolioDerivationState(env, portfolio);
-  if (derivation.ledgerRevision !== ledgerRevision || derivation.derivedWorkPending) {
-    throw new LedgerHttpError(
-      409,
-      '當前 revision 的現金、持倉或 NAV 尚未重算完成，Excel 暫不可導出',
-      { code: 'DERIVED_WORK_PENDING', pendingCount: derivation.pendingCount },
-    );
+function materializedExportRevision(materialized, portfolio, currentRevision) {
+  if (!materialized || materialized.portfolio !== portfolio ||
+      !Number.isInteger(Number(materialized.ledgerRevision)) ||
+      Number(materialized.ledgerRevision) < 0 ||
+      Number(materialized.ledgerRevision) > Number(currentRevision)) return null;
+  const projection = materialized.projection || {};
+  const pendingDates = projection.navRecalculationRequired ||
+    projection.nav_recalculation_required || [];
+  if (projection.source !== 'd1-confirmed-event-ledger' ||
+      projection.savedBy !== 'ledger-outbox' ||
+      projection.valuationReady !== true ||
+      !Array.isArray(pendingDates) || pendingDates.length) return null;
+  const positions = projectionPositions(projection);
+  if (positions.some(row => row.priceAdjusted !== false ||
+      !['raw_close', 'raw_counter'].includes(String(row.priceBasis || '').toLowerCase()))) {
+    return null;
   }
-  const [events, navRows, priceRows, priceHistory] = await Promise.all([
+  return Number(materialized.ledgerRevision);
+}
+
+function materializedSnapshotRows(projection) {
+  const navRows = projection && (projection.navRows || projection.nav_rows);
+  const priceHistory = projection && (projection.priceHistory || projection.price_history);
+  const priceRows = projectionPositions(projection).map(row => ({
+    ticker: row.t,
+    date: row.priceDate,
+    price: row.p,
+    source: row.priceSource,
+    sourceRef: row.priceSourceRef,
+    valuation: {
+      priceBasis: row.priceBasis,
+      adjusted: row.priceAdjusted,
+      priceTapeId: row.priceTapeId,
+      sessionVerified: true,
+      quoteDate: row.priceDate,
+      source: row.priceSource,
+    },
+  }));
+  return {
+    navRows: Array.isArray(navRows) ? structuredClone(navRows) : null,
+    priceRows,
+    priceHistory: Array.isArray(priceHistory) ? structuredClone(priceHistory) : [],
+  };
+}
+
+async function buildExportRevisionSnapshot(
+  env,
+  db,
+  portfolio,
+  ledgerRevision,
+  storedProjection = null,
+) {
+  const stored = storedProjection ? materializedSnapshotRows(storedProjection) : null;
+  const [events, databaseNavRows, databasePriceRows, databasePriceHistory] = await Promise.all([
     activeEvents(db, portfolio, ledgerRevision),
-    loadNavSnapshots(db, portfolio, ledgerRevision),
-    loadLatestPrices(db, portfolio, ledgerRevision),
-    loadPriceHistory(db, portfolio, ledgerRevision),
+    stored && stored.navRows ? Promise.resolve(null) : loadNavSnapshots(db, portfolio, ledgerRevision),
+    stored ? Promise.resolve(null) : loadLatestPrices(db, portfolio, ledgerRevision),
+    stored ? Promise.resolve(null) : loadPriceHistory(db, portfolio, ledgerRevision),
   ]);
+  const navRows = stored && stored.navRows || databaseNavRows || [];
+  const priceRows = stored && stored.priceRows || databasePriceRows || [];
+  const priceHistory = stored && stored.priceHistory || databasePriceHistory || [];
   const valued = await replayWithStoredValuationPrices(
     env, portfolio, ledgerRevision, events, navRows, priceRows, priceHistory,
   );
@@ -2811,6 +3531,89 @@ async function createExport(env, db, portfolio, actor) {
     );
   }
   projection.nav_rows = navRows;
+  return {
+    events,
+    navRows,
+    priceRows: valued.priceRows,
+    projection,
+    priceTape: valued.priceTape,
+  };
+}
+
+async function createExport(env, db, portfolio, actor) {
+  const state = await portfolioRow(db, portfolio);
+  const currentLedgerRevision = Number(state.ledger_revision);
+  const [derivation, materialized] = await Promise.all([
+    portfolioDerivationState(env, portfolio),
+    loadMaterializedLedgerProjection(env, portfolio),
+  ]);
+  const lastCompleteRevision = materializedExportRevision(
+    materialized,
+    portfolio,
+    currentLedgerRevision,
+  );
+  const candidates = [];
+  // The materialized projection is the atomically published accounting
+  // snapshot. Prefer it even when it matches the current revision so mutable
+  // same-revision counter rows cannot move underneath an Excel download.
+  if (lastCompleteRevision != null) {
+    candidates.push({
+      revision: lastCompleteRevision,
+      source: lastCompleteRevision === currentLedgerRevision
+        ? 'current-complete-materialized-snapshot'
+        : 'last-complete-materialized-snapshot',
+      storedProjection: materialized.projection,
+    });
+  }
+  // Backward-compatible recovery for a fully derived current revision that
+  // predates D1 materialization. New revisions normally use the branch above.
+  if (derivation.ledgerRevision === currentLedgerRevision &&
+      !derivation.derivedWorkPending &&
+      !candidates.some(item => item.revision === currentLedgerRevision)) {
+    candidates.push({ revision: currentLedgerRevision, source: 'current-complete-revision' });
+  }
+  if (currentLedgerRevision === 0 && !candidates.length) {
+    candidates.push({ revision: 0, source: 'empty-ledger-snapshot' });
+  }
+
+  let selected = null;
+  let lastReadinessError = null;
+  for (const candidate of candidates) {
+    try {
+      selected = {
+        ...candidate,
+        ...await buildExportRevisionSnapshot(
+          env,
+          db,
+          portfolio,
+          candidate.revision,
+          candidate.storedProjection || null,
+        ),
+      };
+      break;
+    } catch (error) {
+      const code = String(error && error.details && error.details.code || '');
+      if (!['CURRENT_REVISION_RAW_TAPE_MISSING', 'RAW_NAV_NOT_READY',
+        'HISTORICAL_NAV_PRICE_TAPE_GAP', 'RAW_NAV_CURRENT_SESSION_INVALID'].includes(code)) {
+        throw error;
+      }
+      lastReadinessError = error;
+    }
+  }
+  if (!selected) {
+    throw new LedgerHttpError(
+      409,
+      '尚無可導出的完整凍結 Snapshot；動態 revision 仍在重算',
+      {
+        code: 'NO_COMPLETE_EXPORT_SNAPSHOT',
+        currentLedgerRevision,
+        pendingCount: derivation.pendingCount,
+        lastError: lastReadinessError && lastReadinessError.message || null,
+      },
+    );
+  }
+  const ledgerRevision = selected.revision;
+  const { events, navRows, priceRows, projection, priceTape } = selected;
   const exportId = makeId('lex');
   const syncToken = makeId('lst');
   const tokenHash = await sha256Hex(syncToken);
@@ -2825,10 +3628,28 @@ async function createExport(env, db, portfolio, actor) {
     };
   }
   const snapshot = {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    snapshotType: 'FROZEN_LEDGER_EXPORT',
     portfolio,
     currency: PORTFOLIOS[portfolio].currency,
     ledgerRevision,
+    currentLedgerRevision,
+    dynamicRevisionPending: currentLedgerRevision !== ledgerRevision ||
+      derivation.derivedWorkPending,
+    servedRevision: ledgerRevision,
+    targetRevision: currentLedgerRevision,
+    fallback: currentLedgerRevision !== ledgerRevision,
+    exportMode: 'FROZEN_COMPLETE_SNAPSHOT',
+    // A signed frozen snapshot remains a valid base for full-ledger replace.
+    // Preview always diffs against the *current* ledger revision and Confirm
+    // performs a CAS guard, so dynamic NAV work never has to block editing.
+    reverseSyncWritable: true,
+    reverseSyncMode: 'FULL_LEDGER_REPLACEMENT',
+    snapshotSource: selected.source,
+    snapshotAsOf: navRows.at(-1) && navRows.at(-1).date || projection.as_of || null,
+    priceTapeId: priceTape && priceTape.priceTapeId || null,
+    priceTapeHash: priceTape && priceTape.priceTapeHash || null,
+    projectionSha256: await sha256Hex(stableJson(projection)),
     layoutHash: LAYOUT_HASH,
     events: snapshotEvents,
   };
@@ -2845,9 +3666,22 @@ async function createExport(env, db, portfolio, actor) {
     portfolio,
     currency: PORTFOLIOS[portfolio].currency,
     ledgerRevision,
+    snapshotLedgerRevision: ledgerRevision,
+    currentLedgerRevision,
+    dynamicRevisionPending: snapshot.dynamicRevisionPending,
+    servedRevision: snapshot.servedRevision,
+    targetRevision: snapshot.targetRevision,
+    fallback: snapshot.fallback,
+    exportMode: snapshot.exportMode,
+    reverseSyncWritable: snapshot.reverseSyncWritable,
+    reverseSyncMode: snapshot.reverseSyncMode,
+    snapshotSource: snapshot.snapshotSource,
+    snapshotAsOf: snapshot.snapshotAsOf,
+    snapshotGeneratedAt: new Date().toISOString(),
+    priceTapeId: snapshot.priceTapeId,
     events,
     navRows,
-    priceRows: valued.priceRows,
+    priceRows,
     projection,
     exportId,
     syncToken,
@@ -2882,7 +3716,12 @@ async function previewImport(db, body, actor) {
   const portfolio = portfolioId(body.portfolio);
   const rows = Array.isArray(body.rows) ? body.rows : null;
   if (!rows) throw new LedgerHttpError(400, 'rows 必須是陣列');
-  if (rows.length > MAX_IMPORT_ROWS) throw new LedgerHttpError(413, 'Excel 事件行過多');
+  if (rows.length > MAX_IMPORT_ROWS) {
+    throw new LedgerHttpError(
+      413,
+      `完整 Excel 最多包含 ${MAX_IMPORT_ROWS} 筆事件；請先清理無效或重複行後整本重新 Preview`,
+    );
+  }
   const sha = String(body.uploadSha256 || '').toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(sha)) throw new LedgerHttpError(400, 'uploadSha256 無效');
   const fileName = String(body.fileName || 'ledger.xlsx').slice(0, 240);
@@ -2896,6 +3735,15 @@ async function previewImport(db, body, actor) {
     await db.prepare('DELETE FROM ledger_imports WHERE import_id = ?').bind(existing.import_id).run();
   }
   const state = await portfolioRow(db, portfolio);
+  const replaceAll = body.replaceAll === true;
+  if (replaceAll && Number(state.ledger_revision) > 0 &&
+      !rows.some(row => row && row.derived !== true)) {
+    throw new LedgerHttpError(
+      422,
+      '整賬本替換沒有讀到任何事件行；為避免誤清空，已拒絕 Preview',
+      { code: 'EMPTY_EXCEL_REPLACEMENT_FORBIDDEN' },
+    );
+  }
   const token = await validateExportToken(db, body, portfolio);
   if (!token.exportRow && Number(state.ledger_revision) > 0) {
     throw new LedgerHttpError(403, '已有賬本只接受由後台導出且簽名有效的 Excel；舊工作簿請走首次遷移');
@@ -2928,10 +3776,11 @@ async function previewImport(db, body, actor) {
       });
       continue;
     }
-    const excelHash = await canonicalHash(event);
     const lineageId = String(row.lineageId || row.eventId || row.__yi_event_id || '').trim() || null;
     if (!lineageId) {
+      const excelHash = await canonicalHash(event);
       const duplicate = currentByHash.get(excelHash);
+      if (duplicate) seenLineages.add(duplicate.lineageId);
       const createAllowed = MANUAL_EVENT_TYPES.has(event.event_type);
       operations.push({
         operationId,
@@ -2968,11 +3817,25 @@ async function previewImport(db, body, actor) {
       });
       continue;
     }
+    // An empty Buy/Sell Price means "keep the stored reference price", not
+    // "erase it". CPS is already recomputed by canonicalEvent from Amount.
+    if (['BUY', 'SELL'].includes(event.event_type) && event.price == null &&
+        current.event && current.event.price != null) {
+      event = canonicalEvent({ ...event, price: current.event.price }, portfolio);
+    }
+    const excelHash = await canonicalHash(event);
     const currentHash = await canonicalHash(current.event);
     const baseHash = base && base.hash || String(row.baseHash || row.__yi_base_hash || '') || null;
     let operation = 'CONFLICT';
     let reason = 'BOTH_CHANGED';
     if (excelHash === currentHash) { operation = 'NOOP'; reason = null; }
+    else if (replaceAll) {
+      // In explicit whole-ledger replacement mode the workbook is
+      // authoritative. The frozen export remains provenance, while current
+      // revision + Confirm CAS prevents an unseen concurrent overwrite.
+      operation = 'UPDATE';
+      reason = 'EXCEL_AUTHORITATIVE_REPLACEMENT';
+    }
     else if (baseHash && currentHash === baseHash) { operation = 'UPDATE'; reason = null; }
     else if (baseHash && excelHash === baseHash) { operation = 'NOOP'; reason = 'DATABASE_CHANGED_EXCEL_UNCHANGED'; }
     else if (!baseHash) { reason = 'MISSING_BASE_SNAPSHOT'; }
@@ -3003,7 +3866,7 @@ async function previewImport(db, body, actor) {
   const preview = {
     ok: true, importId, portfolio, currency: PORTFOLIOS[portfolio].currency,
     baseLedgerRevision: baseRevision, currentLedgerRevision: Number(state.ledger_revision),
-    signed: !!token.exportRow, warning: token.warning, summary, operations,
+    replaceAll, signed: !!token.exportRow, warning: token.warning, summary, operations,
   };
   const timestamp = now();
   const statements = [
@@ -3042,7 +3905,368 @@ async function previewImport(db, body, actor) {
   return preview;
 }
 
+async function confirmImportReplacement(db, body, actor) {
+  const importId = String(body.importId || '');
+  const expectedRevision = Number(body.expectedLedgerRevision);
+  const confirmation = body.confirmation && typeof body.confirmation === 'object'
+    ? body.confirmation : {};
+  const reason = String(confirmation.reason || body.reason || '').trim().slice(0, 1000);
+  if (confirmation.replaceAll !== true || !reason) {
+    throw new LedgerHttpError(
+      422,
+      '整賬本替換必須明確確認 replaceAll 並填寫理由',
+      { code: 'EXCEL_REPLACEMENT_CONFIRMATION_REQUIRED' },
+    );
+  }
+  const batch = await dbFirst(db, 'SELECT * FROM ledger_imports WHERE import_id = ?', [importId]);
+  if (!batch) throw new LedgerHttpError(404, '匯入預覽不存在');
+  if (batch.status !== 'PREVIEWED') throw new LedgerHttpError(409, '此匯入已處理');
+  const preview = parseJson(batch.preview_json, {});
+  if (preview.replaceAll !== true) {
+    throw new LedgerHttpError(
+      409,
+      '此 Preview 不是整賬本替換模式，請重新上傳 Excel',
+      { code: 'EXCEL_REPLACEMENT_PREVIEW_REQUIRED' },
+    );
+  }
+  const previewRevision = Number(preview.currentLedgerRevision);
+  const state = await portfolioRow(db, batch.portfolio_id);
+  if (!Number.isInteger(expectedRevision) ||
+      Number(state.ledger_revision) !== expectedRevision ||
+      previewRevision !== expectedRevision) {
+    await db.prepare(
+      "UPDATE ledger_imports SET status = 'STALE' WHERE import_id = ? AND status = 'PREVIEWED'",
+    ).bind(importId).run();
+    throw new LedgerHttpError(
+      409,
+      '預覽後賬本 revision 已改變，必須重新上傳預覽',
+      { code: 'LEDGER_REVISION_CHANGED' },
+    );
+  }
+  const rows = await dbAll(db, `
+    SELECT * FROM ledger_import_rows
+    WHERE import_id = ?
+    ORDER BY row_number, operation_id
+  `, [importId]);
+  const blockers = rows.filter(row => ['ERROR', 'CONFLICT'].includes(row.operation));
+  if (blockers.length) {
+    throw new LedgerHttpError(
+      422,
+      `Excel 還有 ${blockers.length} 個衝突或錯誤，整賬本未替換`,
+      {
+        code: 'EXCEL_REPLACEMENT_HAS_BLOCKERS',
+        operationIds: blockers.slice(0, 20).map(row => row.operation_id),
+      },
+    );
+  }
+  const actionable = rows.filter(row =>
+    ['CREATE', 'UPDATE', 'MISSING_IN_EXCEL'].includes(row.operation));
+  if (actionable.length > MAX_IMPORT_ROWS) {
+    throw new LedgerHttpError(
+      413,
+      `整賬本替換最多 ${MAX_IMPORT_ROWS} 個原子變更；請重新整理完整工作簿後 Preview`,
+    );
+  }
+  if (!actionable.length) {
+    const timestamp = now();
+    const guardId = makeId('ltg');
+    try {
+      await db.batch([
+        db.prepare(`
+          INSERT INTO ledger_transaction_guards (
+            guard_id, pending_id, expected_pending_version,
+            portfolio_id, expected_ledger_revision, created_at
+          ) VALUES (
+            ?,
+            (SELECT import_id FROM ledger_imports WHERE import_id = ? AND status = 'PREVIEWED'),
+            1,
+            (SELECT portfolio_id FROM ledger_portfolios
+              WHERE portfolio_id = ? AND ledger_revision = ?),
+            ?, ?
+          )
+        `).bind(
+          guardId, importId, batch.portfolio_id, expectedRevision,
+          expectedRevision, timestamp,
+        ),
+        db.prepare(`
+          UPDATE ledger_imports SET status = 'CONFIRMED', confirmed_by = ?, confirmed_at = ?
+          WHERE import_id = ? AND status = 'PREVIEWED'
+        `).bind(actor, timestamp, importId),
+        db.prepare(`
+          INSERT INTO ledger_audit_log (
+            audit_id, portfolio_id, actor_type, actor_ref, action,
+            target_type, target_id, before_json, after_json, metadata_json, created_at
+          ) VALUES (?, ?, 'ADMIN', ?, 'EXCEL_LEDGER_REPLACE_NOOP',
+            'IMPORT', ?, NULL, ?, ?, ?)
+        `).bind(
+          makeId('lau'), batch.portfolio_id, actor, importId,
+          stableJson({ ledgerRevision: expectedRevision, replaced: 0, removed: 0 }),
+          stableJson({ reason, replaceAll: true }), timestamp,
+        ),
+        db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+      ]);
+    } catch {
+      throw new LedgerHttpError(
+        409,
+        'Excel 整賬本確認時 revision 已改變，請重新 Preview',
+        { code: 'LEDGER_REVISION_CHANGED' },
+      );
+    }
+    return {
+      ok: true,
+      importId,
+      replaceAll: true,
+      replaced: 0,
+      removed: 0,
+      previousLedgerRevision: expectedRevision,
+      ledgerRevision: expectedRevision,
+    };
+  }
+
+  const currentItems = await activeEvents(db, batch.portfolio_id, expectedRevision);
+  const currentById = new Map(currentItems.map(item => [item.eventId, item]));
+  const planned = [];
+  const removedIds = new Set();
+  const replacedIds = new Set();
+  let nextRevision = expectedRevision;
+  for (const row of actionable) {
+    const current = row.event_id ? currentById.get(row.event_id) || null : null;
+    if (row.operation === 'MISSING_IN_EXCEL') {
+      if (!current) {
+        throw new LedgerHttpError(409, 'Excel 替換目標已改變，請重新預覽');
+      }
+      nextRevision += 1;
+      const eventId = makeId('lev');
+      const event = canonicalEvent({
+        type: 'REVERSAL',
+        date: currentPortfolioDate(batch.portfolio_id),
+        reversal_of_event_id: current.eventId,
+        notes: `Excel full-ledger replacement ${importId}`,
+      }, batch.portfolio_id);
+      planned.push({
+        row,
+        eventId,
+        lineageId: eventId,
+        eventVersion: 1,
+        ledgerRevision: nextRevision,
+        sequenceNo: current.sequenceNo,
+        event,
+        supersedesEventId: null,
+        reversalOfEventId: current.eventId,
+        before: current,
+      });
+      removedIds.add(current.eventId);
+      continue;
+    }
+
+    const event = canonicalEvent(parseJson(row.excel_json, {}), batch.portfolio_id);
+    if (event.trade_date > currentPortfolioDate(batch.portfolio_id)) {
+      throw new LedgerHttpError(
+        422,
+        '未到生效日的 Excel 事件不可直接替換進已確認賬本',
+        { code: 'FUTURE_EVENT_REQUIRES_PENDING', operationId: row.operation_id },
+      );
+    }
+    if (row.operation === 'CREATE' && !MANUAL_EVENT_TYPES.has(event.event_type)) {
+      throw new LedgerHttpError(422, 'Excel 新增只允許 BUY、SELL 或 CAPITAL');
+    }
+    if (row.operation === 'UPDATE' &&
+        (!current || event.event_type !== current.eventType)) {
+      throw new LedgerHttpError(409, 'Excel 替換目標已改變，請重新預覽');
+    }
+    nextRevision += 1;
+    const eventId = makeId('lev');
+    planned.push({
+      row,
+      eventId,
+      lineageId: current && current.lineageId || eventId,
+      eventVersion: current ? current.eventVersion + 1 : 1,
+      ledgerRevision: nextRevision,
+      sequenceNo: current
+        ? current.sequenceNo
+        : Number(event.sequence_no ?? event.sequence ?? nextRevision),
+      event,
+      supersedesEventId: current && current.eventId || null,
+      reversalOfEventId: null,
+      before: current,
+    });
+    if (current) replacedIds.add(current.eventId);
+  }
+
+  const replacementItems = planned
+    .filter(item => item.event.event_type !== 'REVERSAL')
+    .map(item => ({
+      eventId: item.eventId,
+      lineageId: item.lineageId,
+      eventVersion: item.eventVersion,
+      portfolio: batch.portfolio_id,
+      ledgerRevision: item.ledgerRevision,
+      eventType: item.event.event_type,
+      tradeDate: item.event.trade_date,
+      sequenceNo: item.sequenceNo,
+      currency: PORTFOLIOS[batch.portfolio_id].currency,
+      event: item.event,
+    }));
+  const afterItems = currentItems
+    .filter(item => !removedIds.has(item.eventId) && !replacedIds.has(item.eventId))
+    .concat(replacementItems);
+  const corporateActionPrices = await loadPriceHistory(
+    db,
+    batch.portfolio_id,
+    expectedRevision,
+  );
+  const afterProjection = replay(afterItems, batch.portfolio_id, { corporateActionPrices });
+  const fatal = projectionProblems(afterProjection)
+    .filter(item => ['ERROR', 'FATAL'].includes(problemSeverity(item)));
+  if (fatal.length) {
+    throw new LedgerHttpError(
+      422,
+      'Excel 整賬本替換後校驗失敗，未寫入任何資料',
+      fatal.map(problemMessage),
+    );
+  }
+
+  const finalRevision = nextRevision;
+  const timestamp = now();
+  const guardId = makeId('ltg');
+  const affectedFrom = planned.map(item => [
+    item.event.trade_date,
+    item.before && item.before.tradeDate,
+  ]).flat().filter(Boolean).sort()[0];
+  const eventRows = planned.map(item => ({
+    event_id: item.eventId,
+    lineage_id: item.lineageId,
+    event_version: item.eventVersion,
+    portfolio_id: batch.portfolio_id,
+    ledger_revision: item.ledgerRevision,
+    event_type: item.event.event_type,
+    trade_date: item.event.trade_date,
+    sequence_no: item.sequenceNo,
+    currency: PORTFOLIOS[batch.portfolio_id].currency,
+    payload_json: stableJson({ ...item.event, status: 'confirmed' }),
+    gross_amount_minor: moneyMinor(item.event, 'gross_amount_minor'),
+    tax_amount_minor: moneyMinor(item.event, 'tax_amount_minor'),
+    fee_amount_minor: moneyMinor(item.event, 'fee_amount_minor'),
+    net_cash_minor: moneyMinor(item.event, 'net_cash_minor'),
+    source_ref: batch.file_name,
+    idempotency_key: `excel-replace:${importId}:${item.row.operation_id}`,
+    supersedes_event_id: item.supersedesEventId,
+    reversal_of_event_id: item.reversalOfEventId,
+    confirmed_at: timestamp,
+  }));
+  const auditRows = planned.map(item => ({
+    audit_id: makeId('lau'),
+    target_id: item.eventId,
+    before_json: item.before ? stableJson(item.before.event) : null,
+    after_json: stableJson(item.event),
+    metadata_json: stableJson({
+      importId,
+      operationId: item.row.operation_id,
+      operation: item.row.operation,
+      baseLedgerRevision: Number(batch.base_ledger_revision),
+      previewLedgerRevision: expectedRevision,
+      finalLedgerRevision: finalRevision,
+    }),
+  }));
+  const outboxPayload = stableJson({ importId, affectedFrom, replaceAll: true });
+  const guard = db.prepare(`
+    INSERT INTO ledger_transaction_guards (
+      guard_id, pending_id, expected_pending_version,
+      portfolio_id, expected_ledger_revision, created_at
+    ) VALUES (
+      ?,
+      (SELECT import_id FROM ledger_imports WHERE import_id = ? AND status = 'PREVIEWED'),
+      1,
+      (SELECT portfolio_id FROM ledger_portfolios WHERE portfolio_id = ? AND ledger_revision = ?),
+      ?, ?
+    )
+  `).bind(
+    guardId,
+    importId,
+    batch.portfolio_id,
+    expectedRevision,
+    expectedRevision,
+    timestamp,
+  );
+  const statements = [
+    guard,
+    db.prepare(`
+      UPDATE ledger_portfolios SET ledger_revision = ?, updated_at = ?
+      WHERE portfolio_id = ? AND ledger_revision = ?
+    `).bind(finalRevision, timestamp, batch.portfolio_id, expectedRevision),
+    db.prepare(`
+      INSERT INTO ledger_events (
+        event_id, lineage_id, event_version, portfolio_id, ledger_revision,
+        event_type, trade_date, sequence_no, currency, payload_json,
+        gross_amount_minor, tax_amount_minor, fee_amount_minor, net_cash_minor,
+        source, source_ref, idempotency_key, supersedes_event_id,
+        reversal_of_event_id, pending_id, confirmed_by, confirm_reason, confirmed_at
+      )
+      SELECT
+        json_extract(value, '$.event_id'), json_extract(value, '$.lineage_id'),
+        json_extract(value, '$.event_version'), json_extract(value, '$.portfolio_id'),
+        json_extract(value, '$.ledger_revision'), json_extract(value, '$.event_type'),
+        json_extract(value, '$.trade_date'), json_extract(value, '$.sequence_no'),
+        json_extract(value, '$.currency'), json_extract(value, '$.payload_json'),
+        json_extract(value, '$.gross_amount_minor'), json_extract(value, '$.tax_amount_minor'),
+        json_extract(value, '$.fee_amount_minor'), json_extract(value, '$.net_cash_minor'),
+        'EXCEL', json_extract(value, '$.source_ref'), json_extract(value, '$.idempotency_key'),
+        json_extract(value, '$.supersedes_event_id'), json_extract(value, '$.reversal_of_event_id'),
+        NULL, ?, ?, json_extract(value, '$.confirmed_at')
+      FROM json_each(?) ORDER BY CAST(key AS INTEGER)
+    `).bind(actor, reason, stableJson(eventRows)),
+    db.prepare(`
+      INSERT INTO ledger_audit_log (
+        audit_id, portfolio_id, actor_type, actor_ref, action,
+        target_type, target_id, before_json, after_json, metadata_json, created_at
+      )
+      SELECT
+        json_extract(value, '$.audit_id'), ?, 'ADMIN', ?,
+        'EXCEL_LEDGER_REPLACED', 'EVENT', json_extract(value, '$.target_id'),
+        json_extract(value, '$.before_json'), json_extract(value, '$.after_json'),
+        json_extract(value, '$.metadata_json'), ?
+      FROM json_each(?) ORDER BY CAST(key AS INTEGER)
+    `).bind(batch.portfolio_id, actor, timestamp, stableJson(auditRows)),
+    db.prepare(`
+      UPDATE ledger_imports SET status = 'CONFIRMED', confirmed_by = ?, confirmed_at = ?
+      WHERE import_id = ? AND status = 'PREVIEWED'
+    `).bind(actor, timestamp, importId),
+    ...['RECALC_NAV', 'REBUILD_KV', 'REBUILD_EXCEL'].map(kind => db.prepare(`
+      INSERT INTO ledger_outbox (
+        outbox_id, portfolio_id, ledger_revision, kind, payload_json,
+        status, attempts, available_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'PENDING', 0, ?, ?)
+    `).bind(
+      makeId('lob'), batch.portfolio_id, finalRevision, kind,
+      outboxPayload, timestamp, timestamp,
+    )),
+    db.prepare('DELETE FROM ledger_transaction_guards WHERE guard_id = ?').bind(guardId),
+  ];
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    throw new LedgerHttpError(
+      409,
+      'Excel 整賬本替換時 revision 已改變，未寫入任何資料',
+      { code: 'LEDGER_REVISION_CHANGED' },
+    );
+  }
+  return {
+    ok: true,
+    importId,
+    replaceAll: true,
+    replaced: planned.filter(item => item.event.event_type !== 'REVERSAL').length,
+    removed: planned.filter(item => item.event.event_type === 'REVERSAL').length,
+    previousLedgerRevision: expectedRevision,
+    ledgerRevision: finalRevision,
+    affectedFrom,
+  };
+}
+
 async function confirmImport(db, body, actor) {
+  if (body && body.replaceAll === true) {
+    return confirmImportReplacement(db, body, actor);
+  }
   const importId = String(body.importId || '');
   const expectedRevision = Number(body.expectedLedgerRevision);
   const selected = new Set((Array.isArray(body.selectedOperationIds) ? body.selectedOperationIds : []).map(String));
@@ -3301,7 +4525,9 @@ async function previewLegacyMigration(db, body, actor) {
     event.event_id = eventId;
     event.source = 'MIGRATION';
     event.source_ref = String(source.source_ref || `${source.source_sheet || ''}:${source.source_row || index + 1}`);
-    event.tax_status = source.tax_status || event.tax_status || 'UNKNOWN_LEGACY';
+    // Preserve any legacy tax label as provenance only. Amount remains the
+    // complete settled cash figure and migration never asks for a tax review.
+    event.tax_status = source.tax_status || event.tax_status || 'INCLUDED_IN_AMOUNT';
     return event;
   });
   const previewItems = canonical.map((event, index) => ({
@@ -3337,7 +4563,6 @@ async function previewLegacyMigration(db, body, actor) {
   }));
   const importId = makeId('lmg');
   const warnings = projectionProblems(projection).filter(item => problemSeverity(item) === 'WARNING');
-  const unknownTaxEvents = canonical.filter(event => event.tax_status === 'UNKNOWN_LEGACY').length;
   const preview = {
     ok: true,
     migration: true,
@@ -3355,7 +4580,6 @@ async function previewLegacyMigration(db, body, actor) {
     historicalPriceRowCount: historicalPriceRows.length,
     priceSeedHash,
     exactDuplicates,
-    unknownTaxEvents,
     lowestCashMinor: lowestCashMinor(projection),
     warnings,
     projection,
@@ -3395,9 +4619,6 @@ async function confirmLegacyMigration(db, env, body, actor) {
   if (preview.exactDuplicates.length && acknowledgement.duplicates !== true) {
     throw new LedgerHttpError(422, '必須明確確認保留完全重複事件');
   }
-  if (preview.unknownTaxEvents && acknowledgement.unknownTax !== true) {
-    throw new LedgerHttpError(422, '必須明確確認歷史稅項維持 UNKNOWN_LEGACY');
-  }
   if (Number(preview.historicalNavRowCount || 0) !== 0 ||
       Number(preview.historicalPriceRowCount || 0) !== 0 ||
       (preview.historicalNavRows || []).length || (preview.historicalPriceRows || []).length) {
@@ -3424,7 +4645,6 @@ async function confirmLegacyMigration(db, env, body, actor) {
   `).bind(guardId, importId, portfolio, timestamp);
   const eventRows = canonical.map((event, index) => {
     const eventId = event.event_id;
-    const taxUnknown = event.tax_status === 'UNKNOWN_LEGACY';
     return {
       event_id: eventId,
       lineage_id: eventId,
@@ -3436,9 +4656,11 @@ async function confirmLegacyMigration(db, env, body, actor) {
       sequence_no: Number(event.sequence_no ?? event.sequence ?? CASH_PRIORITY[upper(event.event_type || event.type)] ?? 99),
       currency: PORTFOLIOS[portfolio].currency,
       payload_json: stableJson(event),
-      gross_amount_minor: taxUnknown ? null : moneyMinor(event, 'gross_amount_minor'),
-      tax_amount_minor: taxUnknown ? null : moneyMinor(event, 'tax_amount_minor'),
-      fee_amount_minor: taxUnknown ? null : moneyMinor(event, 'fee_amount_minor'),
+      // Compatibility money columns are audit-only. They are never used to
+      // alter the authoritative Amount/net_cash calculation.
+      gross_amount_minor: moneyMinor(event, 'gross_amount_minor'),
+      tax_amount_minor: moneyMinor(event, 'tax_amount_minor'),
+      fee_amount_minor: moneyMinor(event, 'fee_amount_minor'),
       net_cash_minor: moneyMinor(event, 'net_cash_minor'),
       source: 'MIGRATION',
       source_ref: event.source_ref || null,
@@ -3533,7 +4755,7 @@ async function confirmLegacyMigration(db, env, body, actor) {
       stableJson({
         migrationHash, sourceWorkbookSha256: preview.sourceWorkbookSha256,
         acknowledgement, exactDuplicates: preview.exactDuplicates,
-        lowestCashMinor: preview.lowestCashMinor, unknownTaxEvents: preview.unknownTaxEvents,
+        lowestCashMinor: preview.lowestCashMinor,
         historicalNavRowCount: preview.historicalNavRowCount,
         historicalNavDateRange: preview.historicalNavDateRange,
         navSeedHash: preview.navSeedHash,
@@ -3583,12 +4805,14 @@ function projectionPositions(projection) {
     sellProceeds: projectionNumber(row.sell_proceeds ?? row.sellProceeds, row.sell_proceeds_minor),
     dividend: projectionNumber(row.dividend_income ?? row.dividend, row.dividend_income_minor),
     pnl: projectionNumber(row.total_pnl ?? row.pnl, row.total_pnl_minor),
-    priceDate: row.price_date || null,
-    priceSource: row.price_source || null,
-    priceSourceRef: row.price_source_ref || null,
-    priceBasis: row.price_basis || null,
-    priceAdjusted: row.price_adjusted == null ? null : row.price_adjusted === true,
-    priceTapeId: row.price_tape_id || null,
+    priceDate: row.price_date || row.priceDate || null,
+    priceSource: row.price_source || row.priceSource || null,
+    priceSourceRef: row.price_source_ref || row.priceSourceRef || null,
+    priceBasis: row.price_basis || row.priceBasis || null,
+    priceAdjusted: (row.price_adjusted ?? row.priceAdjusted) == null
+      ? null
+      : (row.price_adjusted ?? row.priceAdjusted) === true,
+    priceTapeId: row.price_tape_id || row.priceTapeId || null,
   })).filter(row => row.t && row.q > ACTIVE_POSITION_EPSILON);
 }
 function finalCash(projection) {
@@ -4439,14 +5663,14 @@ export async function ledgerHealth(env) {
         'ledger_outbox', 'ledger_prices', 'ledger_nav_snapshots',
         'ledger_price_tapes', 'ledger_price_tape_rows',
         'ledger_public_snapshots', 'ledger_public_attempts',
-        'ledger_materialized_projections'
+        'ledger_materialized_projections', 'ledger_dividend_candidates'
       )
     `);
     const outbox = await dbFirst(db, `
       SELECT COUNT(*) AS pending FROM ledger_outbox
       WHERE status IN ('PENDING', 'FAILED', 'PROCESSING')
     `).catch(() => ({ pending: 0 }));
-    const ready = Number(row && row.count || 0) === 17;
+    const ready = Number(row && row.count || 0) === 18;
     const rawNavPortfolios = {};
     const storagePortfolios = {};
     if (ready) {
@@ -4646,23 +5870,73 @@ export async function handleLedgerAdminRequest(request, env, context = {}) {
       `, status === 'ALL' ? [portfolio] : [portfolio, status]);
       const events = status === 'PENDING' || status === 'REJECTED'
         ? [] : await activeEvents(db, portfolio, Number(state.ledger_revision));
-      const [navRows, priceRows, priceHistory] = await Promise.all([
+      const [navRows, priceRows, priceHistory, derivation, materialized] = await Promise.all([
         loadNavSnapshots(db, portfolio, Number(state.ledger_revision)),
         loadLatestPrices(db, portfolio, Number(state.ledger_revision)),
         loadPriceHistory(db, portfolio, Number(state.ledger_revision)),
+        portfolioDerivationState(env, portfolio),
+        loadMaterializedLedgerProjection(env, portfolio),
       ]);
-      const valued = events.length
-        ? await replayWithStoredValuationPrices(
-          env, portfolio, Number(state.ledger_revision), events, navRows, priceRows, priceHistory,
-        )
-        : null;
+      let valued = null;
+      let dynamicError = null;
+      if (events.length) {
+        try {
+          valued = await replayWithStoredValuationPrices(
+            env, portfolio, Number(state.ledger_revision), events, navRows, priceRows, priceHistory,
+          );
+        } catch (error) {
+          if (!(error instanceof LedgerHttpError) || Number(error.status) !== 409) throw error;
+          dynamicError = {
+            code: String(error.details && error.details.code || 'DYNAMIC_DERIVATION_NOT_READY'),
+            message: error.message,
+          };
+        }
+      }
       const projection = valued && valued.projection;
       if (projection) projection.nav_rows = navRows;
+      const currentRevision = Number(state.ledger_revision);
+      const snapshotRevision = materializedExportRevision(
+        materialized,
+        portfolio,
+        currentRevision,
+      );
+      const dynamicPending = derivation.derivedWorkPending || !!dynamicError ||
+        snapshotRevision !== currentRevision;
       return respond({
         ok: true, portfolio, currency: PORTFOLIOS[portfolio].currency,
-        ledgerRevision: Number(state.ledger_revision),
+        ledgerRevision: currentRevision,
         pending: pendingRows.map(pendingItem), events, navRows,
         priceRows: valued ? valued.priceRows : priceRows, projection,
+        dynamic: {
+          ledgerRevision: currentRevision,
+          status: dynamicPending ? 'PROCESSING' : 'READY',
+          pendingCount: derivation.pendingCount,
+          reason: dynamicError && dynamicError.code ||
+            (derivation.derivedWorkPending ? 'DERIVED_WORK_PENDING' : null),
+          message: dynamicError && dynamicError.message || null,
+        },
+        exportSnapshot: {
+          available: snapshotRevision != null,
+          ledgerRevision: snapshotRevision,
+          current: snapshotRevision === currentRevision && !dynamicPending,
+          generatedAt: materialized && materialized.generatedAt || null,
+          projectionSha256: materialized && materialized.projectionSha256 || null,
+        },
+      });
+    }
+    if (path === '/api/admin/ledger/dividends' && request.method === 'GET') {
+      return respond(await listDividendCandidates(db, url));
+    }
+    if (path === '/api/admin/ledger/dividends/verify' && request.method === 'POST') {
+      return respond({
+        ok: true,
+        ...await verifyDividendCandidate(db, await readJson(request), actor),
+      });
+    }
+    if (path === '/api/admin/ledger/dividends/dismiss' && request.method === 'POST') {
+      return respond({
+        ok: true,
+        ...await dismissDividendCandidate(db, await readJson(request), actor),
       });
     }
     if (path === '/api/admin/ledger/pending' && request.method === 'POST') {

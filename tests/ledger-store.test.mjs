@@ -84,6 +84,7 @@ async function setup() {
     '../migrations/0002_portfolio_ledger.sql',
     '../migrations/0003_frozen_price_tapes.sql',
     '../migrations/0005_public_portfolio_snapshots.sql',
+    '../migrations/0006_dividend_candidate_inbox.sql',
   ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))).join('\n');
   const env = { FEEDBACK_DB: new D1Database(sql), YC_KV: new MemoryKv() };
   return { env };
@@ -384,6 +385,55 @@ function historicalNavRows() {
   ];
 }
 
+async function signedReplacementFixture(env) {
+  await createAndConfirm(env, {
+    type: 'CAPITAL', date: '2026-03-01', shareholder: 'LP1',
+    subscription: '1000.00', redemption: '0', unit_price: '1.00',
+  });
+  await createAndConfirm(env, {
+    type: 'BUY', date: '2026-03-02', ticker: 'AAA', name: 'AAA Inc', quantity: 10,
+    Amount: '100.00', price: '9.50',
+  });
+  await createAndConfirm(env, {
+    type: 'BUY', date: '2026-03-03', ticker: 'BBB', name: 'BBB Inc', quantity: 5,
+    Amount: '50.00', price: '8.00',
+  });
+  await persistLedgerValuation(env, 'us', {
+    date: '2026-03-03', cash: 850, marketValue: 150, totalAssets: 1000,
+    liability: 0, netValue: 1000, units: 1000, unitNav: 1,
+    source: 'TUSHARE', sourceRef: 'us_daily:replacement-fixture',
+    valuation: { priceBasis: 'raw_close', adjusted: false }, warnings: [],
+  }, [
+    {
+      ticker: 'AAA', date: '2026-03-03', close: 10,
+      source: 'TUSHARE', sourceRef: 'us_daily:AAA:replacement-fixture',
+      valuation: { priceBasis: 'raw_close', adjusted: false },
+    },
+    {
+      ticker: 'BBB', date: '2026-03-03', close: 10,
+      source: 'TUSHARE', sourceRef: 'us_daily:BBB:replacement-fixture',
+      valuation: { priceBasis: 'raw_close', adjusted: false },
+    },
+  ], 3);
+  await freezeUsTape(env, 3, {
+    from: '2026-03-03',
+    prices: [
+      { ticker: 'AAA', date: '2026-03-03', close: 10 },
+      { ticker: 'BBB', date: '2026-03-03', close: 10 },
+    ],
+  });
+  markCurrentDerivationDone(env);
+  const exported = await api(env, '/api/admin/ledger/export?portfolio=us');
+  assert.equal(exported.status, 200, JSON.stringify(exported.body));
+  assert.equal(exported.body.ledgerRevision, 3);
+  return {
+    exported: exported.body,
+    capital: exported.body.events.find(item => item.eventType === 'CAPITAL'),
+    aaa: exported.body.events.find(item => item.event.ticker === 'AAA'),
+    bbb: exported.body.events.find(item => item.event.ticker === 'BBB'),
+  };
+}
+
 test('D1 ledger keeps Pending mutable, Confirm immutable, and Excel updates as superseding events', async () => {
   const { env } = await setup();
 
@@ -461,8 +511,7 @@ test('D1 ledger keeps Pending mutable, Confirm immutable, and Excel updates as s
   const changedBuy = {
     type: 'BUY', date: originalBuy.tradeDate,
     ticker: 'AAA', name: 'AAA Inc', quantity: 10,
-    gross_amount: '120.00', tax_amount: '0', fee_amount: '0',
-    net_cash: '-120.00', notes: 'edited through Excel',
+    Amount: '120.00', price: null, notes: 'edited through Excel',
   };
   const preview = await api(env, '/api/admin/ledger/import/preview', {
     method: 'POST',
@@ -497,42 +546,28 @@ test('D1 ledger keeps Pending mutable, Confirm immutable, and Excel updates as s
   assert.equal(correctionList.body.pending.length, 1);
   const correction = correctionList.body.pending[0];
   assert.equal(correction.baseEventId, originalBuy.eventId);
-  const blockedCorrection = await api(env, '/api/admin/ledger/pending/confirm', {
-    method: 'POST',
-    body: {
-      pendingId: correction.pendingId,
-      expectedVersion: correction.version,
-      confirmation: { reason: 'Excel correction checked' },
-    },
-  });
-  assert.equal(blockedCorrection.status, 422, JSON.stringify(blockedCorrection.body));
-  assert.equal(blockedCorrection.body.details.code, 'TAX_REVIEW_REQUIRED');
-
-  const taxReviewed = await api(env, '/api/admin/ledger/pending/update', {
-    method: 'POST',
-    body: {
-      pendingId: correction.pendingId,
-      expectedVersion: correction.version,
-      event: {
-        ...correction.event,
-        gross_amount: '120.00', tax_amount: '0', fees: '0', net_cash: '-120.00',
-        tax_status: 'DECLARED', tax_review_required: false, tax_review_reason: null,
-      },
-    },
-  });
-  assert.equal(taxReviewed.status, 200, JSON.stringify(taxReviewed.body));
+  assert.equal(correction.event.amount_minor, 12000);
+  assert.equal(correction.event.net_cash_minor, -12000);
+  assert.equal(correction.event.per_share, 12);
+  assert.equal(correction.event.price, null);
+  assert.equal(correction.event.tax_review_required, false);
 
   const corrected = await api(env, '/api/admin/ledger/pending/confirm', {
     method: 'POST',
     body: {
       pendingId: correction.pendingId,
-      expectedVersion: taxReviewed.body.item.version,
-      confirmation: { reason: 'Excel correction tax checked' },
+      expectedVersion: correction.version,
+      confirmation: { reason: 'Excel Amount correction checked' },
     },
   });
   assert.equal(corrected.status, 200, JSON.stringify(corrected.body));
   assert.equal(corrected.body.item.supersedesEventId, originalBuy.eventId);
   assert.equal(corrected.body.item.eventVersion, 2);
+  assert.equal(corrected.body.item.event.amount_minor, 12000);
+  assert.equal(corrected.body.item.event.net_cash_minor, -12000);
+  assert.equal(corrected.body.item.event.per_share, 12);
+  assert.equal(corrected.body.item.event.price, null);
+  assert.equal(corrected.body.projection.cash.minor, 88000);
 
   await freezeUsTape(env, 3, {
     from: '2026-01-03',
@@ -562,6 +597,371 @@ test('D1 ledger keeps Pending mutable, Confirm immutable, and Excel updates as s
     (await loadMaterializedLedgerProjection(env, 'us')).ledgerRevision,
     3,
   );
+});
+
+test('replaceAll atomically makes signed Excel the active ledger and preserves immutable history', async () => {
+  const { env } = await setup();
+  const database = env.FEEDBACK_DB.database;
+  const { exported, capital, aaa, bbb } = await signedReplacementFixture(env);
+  assert.ok(capital && aaa && bbb);
+
+  const preview = await api(env, '/api/admin/ledger/import/preview', {
+    method: 'POST',
+    body: {
+      portfolio: 'us', fileName: 'full-ledger-replacement.xlsx',
+      uploadSha256: 'e'.repeat(64),
+      replaceAll: true,
+      exportId: exported.exportId, syncToken: exported.syncToken,
+      baseLedgerRevision: exported.ledgerRevision,
+      rows: [
+        {
+          sheetName: 'Capital Record', rowNumber: 3,
+          lineageId: capital.lineageId, eventVersion: capital.eventVersion,
+          event: capital.event,
+        },
+        {
+          sheetName: 'ETF Stock Buy Record', rowNumber: 3,
+          lineageId: aaa.lineageId, eventVersion: aaa.eventVersion,
+          event: {
+            type: 'BUY', date: aaa.tradeDate, ticker: 'AAA', name: 'AAA Inc',
+            quantity: 10, Amount: '120.00', price: null,
+            notes: 'whole workbook replacement',
+          },
+        },
+        {
+          sheetName: 'ETF Stock Buy Record', rowNumber: 4,
+          event: {
+            type: 'BUY', date: '2026-03-04', ticker: 'CCC', name: 'CCC Inc',
+            quantity: 2, Amount: '20.00', price: null,
+          },
+        },
+      ],
+    },
+  });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.deepEqual({
+    NOOP: preview.body.summary.NOOP,
+    UPDATE: preview.body.summary.UPDATE,
+    CREATE: preview.body.summary.CREATE,
+    MISSING_IN_EXCEL: preview.body.summary.MISSING_IN_EXCEL,
+  }, { NOOP: 1, UPDATE: 1, CREATE: 1, MISSING_IN_EXCEL: 1 });
+
+  const unconfirmed = await api(env, '/api/admin/ledger/import/confirm', {
+    method: 'POST',
+    body: {
+      importId: preview.body.importId,
+      expectedLedgerRevision: preview.body.currentLedgerRevision,
+      replaceAll: true,
+    },
+  });
+  assert.equal(unconfirmed.status, 422, JSON.stringify(unconfirmed.body));
+  assert.equal(unconfirmed.body.details.code, 'EXCEL_REPLACEMENT_CONFIRMATION_REQUIRED');
+  assert.equal(database.prepare(
+    'SELECT status FROM ledger_imports WHERE import_id = ?',
+  ).get(preview.body.importId).status, 'PREVIEWED');
+
+  const confirmed = await api(env, '/api/admin/ledger/import/confirm', {
+    method: 'POST',
+    body: {
+      importId: preview.body.importId,
+      expectedLedgerRevision: preview.body.currentLedgerRevision,
+      replaceAll: true,
+      confirmation: {
+        replaceAll: true,
+        reason: 'Signed workbook checked; replace the complete active ledger',
+      },
+    },
+  });
+  assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+  assert.equal(confirmed.body.replaceAll, true);
+  assert.equal(confirmed.body.previousLedgerRevision, 3);
+  assert.equal(confirmed.body.ledgerRevision, 6);
+  assert.equal(confirmed.body.replaced, 2);
+  assert.equal(confirmed.body.removed, 1);
+
+  const rawEvents = database.prepare(`
+    SELECT event_id, lineage_id, event_version, ledger_revision, event_type,
+      payload_json, supersedes_event_id, reversal_of_event_id
+    FROM ledger_events WHERE portfolio_id = 'us'
+    ORDER BY ledger_revision
+  `).all();
+  assert.equal(rawEvents.length, 6);
+  const oldAaa = rawEvents.find(row => row.event_id === aaa.eventId);
+  const oldBbb = rawEvents.find(row => row.event_id === bbb.eventId);
+  assert.ok(oldAaa);
+  assert.ok(oldBbb);
+  const newAaa = rawEvents.find(row => row.supersedes_event_id === aaa.eventId);
+  assert.ok(newAaa);
+  assert.equal(newAaa.lineage_id, aaa.lineageId);
+  assert.equal(newAaa.event_version, 2);
+  const bbbReversal = rawEvents.find(row => row.reversal_of_event_id === bbb.eventId);
+  assert.ok(bbbReversal);
+  assert.equal(bbbReversal.event_type, 'REVERSAL');
+
+  const listed = await api(env, '/api/admin/ledger?portfolio=us&status=all');
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.equal(listed.body.ledgerRevision, 6);
+  assert.deepEqual(listed.body.events.map(item => ({
+    type: item.eventType,
+    ticker: item.event.ticker || null,
+    amount: item.event.amount_minor ?? null,
+  })), [
+    { type: 'CAPITAL', ticker: null, amount: null },
+    { type: 'BUY', ticker: 'AAA', amount: 12000 },
+    { type: 'BUY', ticker: 'CCC', amount: 2000 },
+  ]);
+  const activeAaa = listed.body.events.find(item => item.event.ticker === 'AAA');
+  const activeCcc = listed.body.events.find(item => item.event.ticker === 'CCC');
+  assert.equal(activeAaa.event.per_share, 12);
+  assert.equal(activeAaa.event.price, 9.5);
+  assert.equal(activeCcc.event.per_share, 10);
+  assert.equal(activeCcc.event.price, null);
+  assert.equal(listed.body.events.reduce(
+    (cash, item) => cash + Number(item.event.cash_change_minor || 0),
+    0,
+  ), 86000);
+
+  const replacementOutbox = database.prepare(`
+    SELECT ledger_revision, kind, status, payload_json
+    FROM ledger_outbox WHERE ledger_revision > 3
+    ORDER BY ledger_revision, kind
+  `).all();
+  assert.deepEqual(replacementOutbox.map(row => ({
+    revision: row.ledger_revision, kind: row.kind, status: row.status,
+  })), [
+    { revision: 6, kind: 'REBUILD_EXCEL', status: 'PENDING' },
+    { revision: 6, kind: 'REBUILD_KV', status: 'PENDING' },
+    { revision: 6, kind: 'RECALC_NAV', status: 'PENDING' },
+  ]);
+  assert.ok(replacementOutbox.every(row =>
+    JSON.parse(row.payload_json).replaceAll === true));
+});
+
+test('replaceAll fails closed when the ledger revision changes after preview', async () => {
+  const { env } = await setup();
+  const database = env.FEEDBACK_DB.database;
+  const { exported, capital, aaa, bbb } = await signedReplacementFixture(env);
+
+  const preview = await api(env, '/api/admin/ledger/import/preview', {
+    method: 'POST',
+    body: {
+      portfolio: 'us', fileName: 'stale-full-ledger.xlsx',
+      uploadSha256: 'f'.repeat(64),
+      replaceAll: true,
+      exportId: exported.exportId, syncToken: exported.syncToken,
+      baseLedgerRevision: exported.ledgerRevision,
+      rows: [
+        {
+          sheetName: 'Capital Record', rowNumber: 3,
+          lineageId: capital.lineageId, event: capital.event,
+        },
+        {
+          sheetName: 'ETF Stock Buy Record', rowNumber: 3,
+          lineageId: aaa.lineageId,
+          event: { ...aaa.event, Amount: '110.00' },
+        },
+        {
+          sheetName: 'ETF Stock Buy Record', rowNumber: 4,
+          lineageId: bbb.lineageId, event: bbb.event,
+        },
+      ],
+    },
+  });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.equal(preview.body.currentLedgerRevision, 3);
+
+  await createAndConfirm(env, {
+    type: 'BUY', date: '2026-03-05', ticker: 'DDD', name: 'DDD Inc', quantity: 1,
+    Amount: '5.00',
+  });
+  const eventsBefore = database.prepare(
+    "SELECT COUNT(*) AS count FROM ledger_events WHERE portfolio_id = 'us'",
+  ).get().count;
+
+  const stale = await api(env, '/api/admin/ledger/import/confirm', {
+    method: 'POST',
+    body: {
+      importId: preview.body.importId,
+      expectedLedgerRevision: preview.body.currentLedgerRevision,
+      replaceAll: true,
+      confirmation: { replaceAll: true, reason: 'This preview is now stale' },
+    },
+  });
+  assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  assert.equal(stale.body.details.code, 'LEDGER_REVISION_CHANGED');
+  assert.equal(database.prepare(
+    'SELECT status FROM ledger_imports WHERE import_id = ?',
+  ).get(preview.body.importId).status, 'STALE');
+  assert.equal(database.prepare(
+    "SELECT COUNT(*) AS count FROM ledger_events WHERE portfolio_id = 'us'",
+  ).get().count, eventsBefore);
+  assert.equal(database.prepare(`
+    SELECT COUNT(*) AS count FROM ledger_audit_log
+    WHERE portfolio_id = 'us' AND action = 'EXCEL_LEDGER_REPLACED'
+  `).get().count, 0);
+});
+
+test('replaceAll accepts one complete workbook above the retired 280-row batch limit', async () => {
+  const { env } = await setup();
+  const { exported } = await signedReplacementFixture(env);
+  const rows = Array.from({ length: 281 }, (_, index) => ({
+    sheetName: 'ETF Stock Buy Record',
+    rowNumber: index + 3,
+    event: {
+      type: 'BUY',
+      date: '2026-03-03',
+      ticker: `NEW${index + 1}`,
+      name: `New position ${index + 1}`,
+      quantity: 1,
+      Amount: '1.00',
+      Price: '',
+    },
+  }));
+  const preview = await api(env, '/api/admin/ledger/import/preview', {
+    method: 'POST',
+    body: {
+      portfolio: 'us',
+      fileName: 'complete-ledger-over-280.xlsx',
+      uploadSha256: '9'.repeat(64),
+      replaceAll: true,
+      exportId: exported.exportId,
+      syncToken: exported.syncToken,
+      baseLedgerRevision: exported.ledgerRevision,
+      rows,
+    },
+  });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.equal(preview.body.summary.CREATE, 281);
+  assert.equal(preview.body.replaceAll, true);
+});
+
+test('Confirm and replaceAll reject corporate actions with an invalid replayed source quantity', async () => {
+  const missingEnv = (await setup()).env;
+  const missing = await api(missingEnv, '/api/admin/ledger/source', {
+    method: 'POST',
+    body: {
+      portfolio: 'us', sourceSystem: 'corporate-action-feed', sourceAccount: 'one',
+      sourceEventId: 'missing-source-rename',
+      event: {
+        type: 'CORPORATE_ACTION', date: '2026-04-01', ticker: 'MISSING',
+        action_type: 'RENAME', pre_quantity: 0,
+        outputs: [{ ticker: 'NEW', quantity: 10 }],
+      },
+    },
+  });
+  assert.equal(missing.status, 201, JSON.stringify(missing.body));
+  const missingConfirm = await api(missingEnv, '/api/admin/ledger/pending/confirm', {
+    method: 'POST',
+    body: {
+      pendingId: missing.body.pending.pendingId,
+      expectedVersion: missing.body.pending.version,
+      confirmation: { reason: 'must not manufacture a holding' },
+    },
+  });
+  assert.equal(missingConfirm.status, 422, JSON.stringify(missingConfirm.body));
+  assert.match(missingConfirm.body.error, /確認後賬本校驗失敗/);
+  assert.equal(missingEnv.FEEDBACK_DB.database.prepare(`
+    SELECT ledger_revision FROM ledger_portfolios WHERE portfolio_id = 'us'
+  `).get().ledger_revision, 0);
+  assert.equal(missingEnv.FEEDBACK_DB.database.prepare(
+    `SELECT COUNT(*) AS count FROM ledger_events`,
+  ).get().count, 0);
+
+  const { env } = await setup();
+  await createAndConfirm(env, {
+    type: 'BUY', date: '2026-04-01', ticker: 'AAA', name: 'AAA Inc',
+    quantity: 10, amount: '100.00',
+  });
+  const stagedAction = await api(env, '/api/admin/ledger/source', {
+    method: 'POST',
+    body: {
+      portfolio: 'us', sourceSystem: 'corporate-action-feed', sourceAccount: 'one',
+      sourceEventId: 'valid-rename',
+      event: {
+        type: 'CORPORATE_ACTION', date: '2026-04-02', ticker: 'AAA',
+        action_type: 'RENAME', pre_quantity: 10,
+        outputs: [{ ticker: 'BBB', quantity: 10 }],
+      },
+    },
+  });
+  assert.equal(stagedAction.status, 201, JSON.stringify(stagedAction.body));
+  const actionConfirmed = await api(env, '/api/admin/ledger/pending/confirm', {
+    method: 'POST',
+    body: {
+      pendingId: stagedAction.body.pending.pendingId,
+      expectedVersion: stagedAction.body.pending.version,
+      confirmation: { reason: 'verified rename quantities' },
+    },
+  });
+  assert.equal(actionConfirmed.status, 200, JSON.stringify(actionConfirmed.body));
+
+  await persistLedgerValuation(env, 'us', {
+    date: '2026-04-03', cash: -100, marketValue: 100, totalAssets: 0,
+    liability: 0, netValue: 0, units: 0, unitNav: null,
+    source: 'TUSHARE', sourceRef: 'us_daily:corporate-action-guard',
+    valuation: { priceBasis: 'raw_close', adjusted: false }, warnings: [],
+  }, [{
+    ticker: 'BBB', date: '2026-04-03', close: 10,
+    source: 'TUSHARE', sourceRef: 'us_daily:BBB:corporate-action-guard',
+    valuation: { priceBasis: 'raw_close', adjusted: false },
+  }], 2);
+  await freezeUsTape(env, 2, {
+    from: '2026-04-03',
+    prices: [{ ticker: 'BBB', date: '2026-04-03', close: 10 }],
+  });
+  markCurrentDerivationDone(env);
+  const exported = await api(env, '/api/admin/ledger/export?portfolio=us');
+  assert.equal(exported.status, 200, JSON.stringify(exported.body));
+  const buyEvent = exported.body.events.find(item => item.eventType === 'BUY');
+  const corporateAction = exported.body.events.find(item => item.eventType === 'CORPORATE_ACTION');
+  assert.ok(buyEvent && corporateAction);
+
+  const preview = await api(env, '/api/admin/ledger/import/preview', {
+    method: 'POST',
+    body: {
+      portfolio: 'us', fileName: 'invalid-corporate-action-replacement.xlsx',
+      uploadSha256: '7'.repeat(64), replaceAll: true,
+      exportId: exported.body.exportId, syncToken: exported.body.syncToken,
+      baseLedgerRevision: exported.body.ledgerRevision,
+      rows: [
+        {
+          sheetName: 'ETF Stock Buy Record', rowNumber: 3,
+          lineageId: buyEvent.lineageId, event: buyEvent.event,
+        },
+        {
+          sheetName: 'Corporate Action Record', rowNumber: 3,
+          lineageId: corporateAction.lineageId,
+          event: {
+            ...corporateAction.event,
+            pre_quantity: 9,
+            outputs: [{ ticker: 'BBB', quantity: 9 }],
+          },
+        },
+      ],
+    },
+  });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.equal(preview.body.summary.UPDATE, 1);
+  const eventsBefore = env.FEEDBACK_DB.database.prepare(
+    `SELECT COUNT(*) AS count FROM ledger_events WHERE portfolio_id = 'us'`,
+  ).get().count;
+  const replacement = await api(env, '/api/admin/ledger/import/confirm', {
+    method: 'POST',
+    body: {
+      importId: preview.body.importId,
+      expectedLedgerRevision: preview.body.currentLedgerRevision,
+      replaceAll: true,
+      confirmation: { replaceAll: true, reason: 'attempt invalid pre-quantity' },
+    },
+  });
+  assert.equal(replacement.status, 422, JSON.stringify(replacement.body));
+  assert.match(replacement.body.error, /替換後校驗失敗/);
+  assert.equal(env.FEEDBACK_DB.database.prepare(
+    `SELECT COUNT(*) AS count FROM ledger_events WHERE portfolio_id = 'us'`,
+  ).get().count, eventsBefore);
+  assert.equal(env.FEEDBACK_DB.database.prepare(`
+    SELECT ledger_revision FROM ledger_portfolios WHERE portfolio_id = 'us'
+  `).get().ledger_revision, 2);
 });
 
 test('automation source idempotency rejects the same source key with changed content', async () => {
@@ -680,7 +1080,7 @@ test('legacy migration is previewed and atomically signed into immutable events'
   });
   assert.equal(preview.status, 200, JSON.stringify(preview.body));
   assert.equal(preview.body.eventCount, 2);
-  assert.equal(preview.body.unknownTaxEvents, 2);
+  assert.equal(preview.body.unknownTaxEvents, undefined);
   assert.equal(preview.body.lowestCashMinor, 90000);
   assert.equal(preview.body.historicalNavRowCount, 0);
   assert.equal(preview.body.historicalPriceRowCount, 0);
@@ -710,7 +1110,6 @@ test('legacy migration is previewed and atomically signed into immutable events'
       migrationHash: preview.body.migrationHash,
       acknowledgement: {
         phrase: 'CONFIRM LEGACY US', duplicates: true,
-        unknownTax: true,
       },
     },
   });
@@ -774,6 +1173,134 @@ test('legacy migration rejects all derived NAV and price seeds', async () => {
   });
   assert.equal(priceSeed.status, 422, JSON.stringify(priceSeed.body));
   assert.equal(priceSeed.body.details.code, 'LEGACY_DERIVED_SEED_FORBIDDEN');
+});
+
+test('Excel export serves one coherent last-complete snapshot while the current revision is pending', async () => {
+  const { env } = await setup();
+  const database = env.FEEDBACK_DB.database;
+
+  await createAndConfirm(env, {
+    type: 'CAPITAL', date: '2026-02-01', shareholder: 'LP1',
+    subscription: '1000.00', redemption: '0', unit_price: '1.00',
+  });
+  await createAndConfirm(env, {
+    type: 'BUY', date: '2026-02-02', ticker: 'AAA', name: 'AAA Inc', quantity: 10,
+    gross_amount: '100.00', tax_amount: '0', fee_amount: '0', net_cash: '-100.00',
+  });
+
+  const frozenNavRow = {
+    date: '2026-02-02', currency: 'USD', totalAssets: 1020, liability: 0,
+    liabilityAssetRatio: 0, netValue: 1020, units: 1000,
+    unitNav: 1.02, nav: 1.02, fundActionAdjustment: 0,
+    cash: 900, marketValue: 120, ledgerRevision: 2,
+    source: 'TUSHARE', sourceRef: 'us_daily:revision-2-complete',
+    sourceWorkbookSha256: null, sourceRow: null,
+    valuation: { priceBasis: 'raw_close', adjusted: false },
+    warnings: [], recalculationRequired: false,
+  };
+  await persistLedgerValuation(env, 'us', {
+    date: frozenNavRow.date, cash: frozenNavRow.cash,
+    marketValue: frozenNavRow.marketValue, totalAssets: frozenNavRow.totalAssets,
+    liability: frozenNavRow.liability, netValue: frozenNavRow.netValue,
+    units: frozenNavRow.units, unitNav: frozenNavRow.unitNav,
+    source: frozenNavRow.source, sourceRef: frozenNavRow.sourceRef,
+    valuation: frozenNavRow.valuation, warnings: frozenNavRow.warnings,
+  }, [{
+    ticker: 'AAA', date: frozenNavRow.date, close: 12,
+    source: 'TUSHARE', sourceRef: 'us_daily:AAA:revision-2-complete',
+    valuation: { priceBasis: 'raw_close', adjusted: false },
+  }], 2);
+  await freezeUsTape(env, 2, {
+    from: frozenNavRow.date,
+    prices: [{ ticker: 'AAA', date: frozenNavRow.date, close: 12 }],
+  });
+  markCurrentDerivationDone(env);
+  await materializeLedgerKv(env, 'us', { expectedLedgerRevision: 2 });
+  await persistPublicPortfolioSnapshot(env, 'us', 2, {
+    ...publicSnapshot({
+      revision: 2,
+      snapshotId: 'portfolio-us-revision-2-complete',
+      asOf: frozenNavRow.date,
+      updatedAt: '2026-02-02T22:00:00.000Z',
+    }),
+    source: 'portfolio-ledger',
+    freshness_class: 'eod',
+    freshness: { class: 'eod', stale: false, fallback: null },
+    base: {
+      date: frozenNavRow.date, cash: 900, marketValue: 120,
+      totalAssets: 1020, liability: 0, netValue: 1020,
+      units: 1000, unitNav: 1.02,
+    },
+    navRows: [frozenNavRow],
+    holdings: [{
+      t: 'AAA', n: 'AAA Inc', q: 10, price: 12, marketValue: 120,
+      date: frozenNavRow.date, priceBasis: 'raw_close', adjusted: false,
+    }],
+  }, {
+    pf: 'us', ledgerRevision: 2, complete: true, fallback: false,
+    ranAt: '2026-02-02T22:00:00.000Z',
+  });
+
+  // Revision 3 is confirmed but its derived work is still pending. Simulate a
+  // partial recalculation overwriting mutable same-day NAV/price rows. None of
+  // these values may leak into the revision-2 Excel export.
+  await createAndConfirm(env, {
+    type: 'BUY', date: '2026-02-02', ticker: 'BBB', name: 'BBB Inc', quantity: 1,
+    gross_amount: '50.00', tax_amount: '0', fee_amount: '0', net_cash: '-50.00',
+  });
+  await persistLedgerValuation(env, 'us', {
+    date: frozenNavRow.date, cash: 850, marketValue: 1040, totalAssets: 1890,
+    liability: 0, netValue: 1890, units: 1000, unitNav: 1.89,
+    source: 'PARTIAL_RECALCULATION', sourceRef: 'revision-3-must-not-export',
+    valuation: { priceBasis: 'raw_close', adjusted: false, partial: true },
+    warnings: ['revision-3-partial'],
+  }, [{
+    ticker: 'AAA', date: frozenNavRow.date, close: 99,
+    source: 'TUSHARE', sourceRef: 'revision-3-must-not-export',
+    valuation: { priceBasis: 'raw_close', adjusted: false, partial: true },
+  }], 3);
+
+  const lastComplete = await loadMaterializedLedgerProjection(env, 'us');
+  assert.equal(lastComplete.ledgerRevision, 2);
+  assert.equal(lastComplete.projection.valuationReady, true);
+  assert.deepEqual(lastComplete.projection.navRows, [frozenNavRow]);
+  assert.deepEqual(lastComplete.projection.positions.map(row => ({
+    ticker: row.t, basis: row.priceBasis, adjusted: row.priceAdjusted,
+  })), [{ ticker: 'AAA', basis: 'raw_close', adjusted: false }]);
+
+  const exported = await api(env, '/api/admin/ledger/export?portfolio=us');
+  assert.equal(exported.status, 200, JSON.stringify(exported.body));
+  assert.equal(exported.body.ledgerRevision, 2);
+  assert.equal(exported.body.servedRevision, 2);
+  assert.equal(exported.body.targetRevision, 3);
+  assert.equal(exported.body.fallback, true);
+  assert.deepEqual(exported.body.navRows, [frozenNavRow]);
+  assert.deepEqual(exported.body.projection.nav_rows, [frozenNavRow]);
+  assert.deepEqual(exported.body.events.map(item => ({
+    revision: item.ledgerRevision,
+    type: item.eventType,
+    ticker: item.event.ticker || null,
+  })), [
+    { revision: 1, type: 'CAPITAL', ticker: null },
+    { revision: 2, type: 'BUY', ticker: 'AAA' },
+  ]);
+  assert.deepEqual(exported.body.priceRows.map(row => ({
+    ticker: row.ticker, date: row.date, price: row.price,
+  })), [{ ticker: 'AAA', date: frozenNavRow.date, price: 12 }]);
+  assert.deepEqual(exported.body.projection.positions.map(row => ({
+    ticker: row.ticker, quantity: row.quantity, price: row.latest_price,
+  })), [{ ticker: 'AAA', quantity: 10, price: 12 }]);
+
+  const storedExport = database.prepare(`
+    SELECT ledger_revision, snapshot_json
+    FROM ledger_exports WHERE export_id = ?
+  `).get(exported.body.exportId);
+  assert.equal(storedExport.ledger_revision, 2);
+  const signedSnapshot = JSON.parse(storedExport.snapshot_json);
+  assert.equal(signedSnapshot.ledgerRevision, 2);
+  assert.equal(Object.values(signedSnapshot.events).length, 2);
+  assert.equal(Object.values(signedSnapshot.events).some(item =>
+    item.event && item.event.ticker === 'BBB'), false);
 });
 
 test('valuation persistence UPSERTs same-day NAV and prices under a ledger revision guard', async () => {

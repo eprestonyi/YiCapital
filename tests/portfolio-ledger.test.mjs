@@ -314,7 +314,9 @@ test('corporate action output quantities are explicit except derived SPLIT and 1
       ticker: 'AAA', action_type: 'SPLIT', split_ratio: 2,
     },
   ]);
+  assert.equal(split.ok, true);
   assert.equal(split.positions[0].quantity, 20);
+  assert.equal(split.positions[0].buy_cost_minor, 10000);
 
   const rename = replayPortfolioLedger([
     buy({ ticker: 'OLD', name: 'Old Company' }),
@@ -323,7 +325,58 @@ test('corporate action output quantities are explicit except derived SPLIT and 1
       ticker: 'OLD', action_type: 'RENAME', post_ticker: 'NEW',
     },
   ]);
+  assert.equal(rename.ok, true);
   assert.equal(rename.positions.find(position => position.ticker === 'NEW').quantity, 10);
+
+  const sameTickerRename = replayPortfolioLedger([
+    buy(),
+    {
+      event_id: 'same-ticker-rename', type: 'corporate_action', date: '2026-01-03',
+      ticker: 'AAA', action_type: 'RENAME', post_ticker: 'AAA',
+    },
+  ]);
+  assert.equal(sameTickerRename.ok, true);
+  assert.deepEqual(sameTickerRename.positions.map(position => ({
+    ticker: position.ticker,
+    quantity: position.quantity,
+    cost: position.buy_cost_minor,
+  })), [{ ticker: 'AAA', quantity: 10, cost: 10000 }]);
+});
+
+test('corporate action cannot manufacture holdings or replace a mismatched pre-quantity', () => {
+  const sourceMissing = replayPortfolioLedger([{
+    event_id: 'missing-source-action',
+    type: 'corporate_action',
+    date: '2026-01-03',
+    ticker: 'MISSING',
+    action_type: 'RENAME',
+    pre_quantity: 0,
+    outputs: [{ ticker: 'NEW', quantity: 10 }],
+  }]);
+  assert.equal(sourceMissing.ok, false);
+  assert.equal(sourceMissing.positions.some(position => position.ticker === 'NEW'), false);
+  assert.deepEqual(sourceMissing.checks.filter(check =>
+    check.code === 'CORPORATE_ACTION_SOURCE_MISSING').map(check => check.severity), ['error']);
+
+  const mismatched = replayPortfolioLedger([
+    buy(),
+    {
+      event_id: 'mismatched-pre-action',
+      type: 'corporate_action',
+      date: '2026-01-03',
+      ticker: 'AAA',
+      action_type: 'RENAME',
+      pre_quantity: 9,
+      outputs: [{ ticker: 'NEW', quantity: 9 }],
+      cash_change: '2.50',
+    },
+  ]);
+  assert.equal(mismatched.ok, false);
+  assert.equal(mismatched.positions.find(position => position.ticker === 'AAA').quantity, 10);
+  assert.equal(mismatched.positions.some(position => position.ticker === 'NEW'), false);
+  assert.equal(mismatched.cash.decimal, '-100.00');
+  assert.deepEqual(mismatched.checks.filter(check =>
+    check.code === 'CORPORATE_PRE_QUANTITY_MISMATCH').map(check => check.severity), ['error']);
 });
 
 test('RENAME leaves cash history on the old ticker and creates only target quantity', () => {
@@ -550,25 +603,40 @@ test('minor and major representations must agree and excess decimal precision is
   assert.throws(() => normalizeLedgerEvent(buy({ gross_amount: '12.345' })), LedgerValidationError);
 });
 
-test('database aggregate money aliases and Excel cash_change fields normalize without losing tax', () => {
-  const taxedSell = normalizeLedgerEvent({
+test('Amount alone controls trade cash and CPS while legacy tax and fee fields remain audit-only', () => {
+  const settledSell = normalizeLedgerEvent({
     event_id: 'sell-alias',
     type: 'SELL',
     trade_date: '2026-06-01',
     sequence_no: 7,
     ticker: 'AAA',
     quantity: 2,
-    gross_amount: '20.00',
+    Amount: '18.00',
     tax_amount: '1.25',
     fee_amount: '0.75',
-    net_amount: '18.00',
   });
-  assert.equal(taxedSell.transaction_tax_minor, 125);
-  assert.equal(taxedSell.tax_amount_minor, 125);
-  assert.equal(taxedSell.fees_minor, 75);
-  assert.equal(taxedSell.fee_amount_minor, 75);
-  assert.equal(taxedSell.net_cash_minor, 1800);
-  assert.equal(taxedSell.sequence, 7);
+  assert.equal(settledSell.gross_amount, null);
+  assert.equal(settledSell.gross_amount_minor, null);
+  assert.equal(settledSell.gross_amount_inferred, false);
+  assert.equal(settledSell.transaction_tax_minor, 125);
+  assert.equal(settledSell.tax_amount_minor, null);
+  assert.equal(settledSell.fees_minor, 75);
+  assert.equal(settledSell.fee_amount_minor, 75);
+  assert.equal(settledSell.amount_minor, 1800);
+  assert.equal(settledSell.net_cash_minor, 1800);
+  assert.equal(settledSell.per_share, 9);
+  assert.equal(settledSell.tax_review_required, false);
+  assert.equal(settledSell.sequence, 7);
+
+  assert.throws(() => normalizeLedgerEvent({
+    event_id: 'negative-reference-price',
+    type: 'BUY',
+    date: '2026-06-01',
+    ticker: 'AAA',
+    quantity: 2,
+    Amount: '18.00',
+    Price: '-0.01',
+  }), LedgerValidationError);
 
   const cashActions = replayPortfolioLedger([
     {
@@ -584,11 +652,12 @@ test('database aggregate money aliases and Excel cash_change fields normalize wi
   assert.equal(cashActions.cash.decimal, '3.00');
 });
 
-test('canonical normalization is idempotent for inferred-gross trade and cash actions', () => {
+test('canonical normalization is idempotent for authoritative Amount and cash actions', () => {
   const rawEvents = [
     {
       event_id: 'canonical-buy', type: 'BUY', date: '2026-06-01',
       ticker: 'AAA', quantity: 2, amount: '20.00',
+      tax_amount: '99.00', fee_amount: '88.00',
     },
     {
       event_id: 'canonical-fund', type: 'FUND_ACTION', date: '2026-06-02',
@@ -603,9 +672,15 @@ test('canonical normalization is idempotent for inferred-gross trade and cash ac
   for (const raw of rawEvents) {
     const once = normalizeLedgerEvent(raw);
     const twice = normalizeLedgerEvent(once);
-    assert.equal(once.gross_amount_inferred, true);
     assert.deepEqual(twice, once);
   }
+  const buyEvent = normalizeLedgerEvent(rawEvents[0]);
+  assert.equal(buyEvent.gross_amount_inferred, false);
+  assert.equal(buyEvent.gross_amount, null);
+  assert.equal(buyEvent.amount_minor, 2000);
+  assert.equal(buyEvent.cash_change_minor, -2000);
+  assert.equal(buyEvent.per_share, 10);
+  assert.equal(buyEvent.tax_review_required, false);
 });
 
 test('UNKNOWN_LEGACY and PENDING_RECONFIRMATION replay operational Amount without inventing tax facts', () => {
@@ -653,12 +728,17 @@ test('UNKNOWN_LEGACY and PENDING_RECONFIRMATION replay operational Amount withou
   assert.equal(staged.gross_amount, null);
   assert.equal(staged.tax_amount, null);
   assert.equal(staged.fees, null);
-  assert.equal(staged.tax_review_required, true);
-  assert.equal(staged.tax_review_reason, 'New Excel row has no tax facts');
+  assert.equal(staged.tax_review_required, false);
+  assert.equal(staged.tax_review_reason, null);
+  assert.equal(staged.amount_minor, 900);
+  assert.equal(staged.cash_change_minor, 900);
+  assert.equal(staged.per_share, 9);
   const reviewPreview = previewPortfolioEvent([], staged);
   assert.equal(reviewPreview.ok, false);
   assert.equal(reviewPreview.after.checks.some(check =>
-    check.code === 'TAX_REVIEW_REQUIRED'), true);
+    check.code === 'TAX_REVIEW_REQUIRED'), false);
+  assert.equal(reviewPreview.after.checks.some(check =>
+    check.code === 'OVERSELL'), true);
 
   for (const cashEvent of [
     {
@@ -677,6 +757,8 @@ test('UNKNOWN_LEGACY and PENDING_RECONFIRMATION replay operational Amount withou
     assert.equal(normalized.gross_amount, null);
     assert.equal(normalized.tax_amount, null);
     assert.equal(normalized.fees, null);
+    assert.equal(normalized.tax_review_required, false);
+    assert.equal(normalized.tax_review_reason, null);
     assert.equal(normalized.cash_change, cashEvent.type === 'FUND_ACTION' ? -2 : 3);
   }
 });
