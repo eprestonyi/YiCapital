@@ -354,6 +354,18 @@ export async function getSession(request, env, options = {}) {
 
   if (stored.row) {
     const session = normalizedSession(stored.row);
+    // An older Worker may have refreshed an administrator session using the
+    // former global 30-day idle / 180-day absolute limits. Treat any such
+    // widened D1 row as compromised state instead of silently clamping it:
+    // otherwise a rollback could extend a privileged bearer token and that
+    // extension would survive when the hardened Worker returns.
+    const widenedAdminTiming = session.role === 'admin' && (
+      session.absoluteExpiresAt > session.issuedAt + ADMIN_SESSION_ABSOLUTE_TTL_MS ||
+      session.expiresAt > Math.min(
+        session.lastSeenAt + ADMIN_SESSION_IDLE_TTL_MS,
+        session.issuedAt + ADMIN_SESSION_ABSOLUTE_TTL_MS,
+      )
+    );
     const expectedAdminProvider = session.role === 'admin' ? await currentAdminProvider(env) : null;
     const malformed = !session.u || !validRole(session.role) ||
       !Number.isFinite(session.issuedAt) || !Number.isFinite(session.lastSeenAt) ||
@@ -364,10 +376,17 @@ export async function getSession(request, env, options = {}) {
     const accountRevoked = Number.isFinite(session.accountRevokedBefore) &&
       session.issuedAt <= session.accountRevokedBefore;
     const expired = session.expiresAt <= now || session.absoluteExpiresAt <= now;
-    if (malformed || revokedProvider || staleAdminCredential || accountRevoked || expired) {
-      await revokeToken(env, token, tokenHash);
+    if (malformed || revokedProvider || staleAdminCredential || accountRevoked || expired ||
+        widenedAdminTiming) {
+      await revokeToken(env, token, tokenHash, now);
       return null;
     }
+
+    // D1 is authoritative. A rollback to a legacy Worker can nevertheless
+    // recreate a plaintext compatibility copy in KV. Scrub it on every valid
+    // administrator D1 hit; deletion is intentionally best effort because a
+    // healthy D1 session must not become unavailable due only to KV lag.
+    if (session.role === 'admin') await deleteLegacyKvSession(env, token);
 
     const timing = sessionTiming(session.role);
     if (now - session.lastSeenAt >= timing.touchInterval ||

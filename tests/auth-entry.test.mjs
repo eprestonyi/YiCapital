@@ -160,6 +160,41 @@ test('email and password resolve the mapped email to the ordinary account', asyn
   assert.notEqual(upgraded.hash, hash);
 });
 
+test('password login does not reveal disabled or Google-only account state', async () => {
+  const kv = kvStore({
+    'user:disabled-member': JSON.stringify({
+      u: 'disabled-member',
+      email: 'disabled@example.com',
+      disabled: true,
+      salt: '00112233445566778899aabbccddeeff',
+      hash: 'not-used',
+    }),
+    'user:google-member': JSON.stringify({
+      u: 'google-member',
+      email: 'google@example.com',
+      disabled: false,
+      provider: 'google',
+      hash: null,
+    }),
+  });
+  const env = {
+    YC_KV: kv,
+    ADMIN_USERNAME: 'site-admin',
+    ADMIN_PASSWORD: 'strong-administrator-password',
+    ALLOWED_ORIGIN: 'https://www.yicapital.co',
+  };
+
+  for (const username of ['disabled-member', 'google-member', 'missing-member']) {
+    const response = await worker.fetch(new Request('https://portal.test/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.199' },
+      body: JSON.stringify({ username, password: 'a sufficiently long password' }),
+    }), env);
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: '帳號或密碼錯誤' });
+  }
+});
+
 test('auth POST rejects hostile origins and malformed or oversized JSON before account mutation', async () => {
   const kv = kvStore();
   const env = { YC_KV: kv, ALLOWED_ORIGIN: 'https://www.yicapital.co' };

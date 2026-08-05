@@ -288,15 +288,29 @@ test('all three terms pages disclose feedback data handling', async () => {
   }
 });
 
-test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fallback', async () => {
-  const [page, ledgerAdmin] = await Promise.all([
+test('ledger Excel UI disables external parsing while keeping export and print layout', async () => {
+  const [page, ledgerAdmin, vendorReadme] = await Promise.all([
     read('admin-ledger.html'),
     read('assets/yc-ledger-admin.js'),
+    read('assets/vendor/xlsx-js-style-1.2.0/README.md'),
   ]);
   assert.match(page, /assets\/vendor\/xlsx-js-style-1\.2\.0\/xlsx\.min\.js/);
   assert.match(page, /yc-ledger-admin\.js\?v=20260805b/);
+  assert.match(page, /data-purpose="excel-export-only"/);
   assert.doesNotMatch(page, /cdn\.jsdelivr\.net|unpkg\.com/);
   assert.doesNotMatch(ledgerAdmin, /cdn\.jsdelivr\.net|unpkg\.com/);
+  assert.match(page, /id="import-file"[^>]*\bdisabled\b/);
+  assert.match(page, /安全升級期間已停用瀏覽器端 Excel 匯入/);
+  assert.match(page, /D1 賬本、人工 Pending 流程、Excel 導出及打印版式不受影響/);
+  assert.doesNotMatch(ledgerAdmin, /\bXLSX\.read\s*\(/);
+  assert.doesNotMatch(ledgerAdmin, /\bXLSX_EXPORT\.read\s*\(/);
+  assert.match(ledgerAdmin, /const XLSX_EXPORT = window\.XLSX;/);
+  assert.match(ledgerAdmin, /delete window\.XLSX/);
+  assert.doesNotMatch(ledgerAdmin, /\$\('import-file'\)\.addEventListener/);
+  assert.doesNotMatch(ledgerAdmin, /addEventListener\(['"]drop['"]/);
+  assert.doesNotMatch(ledgerAdmin, /function (?:prepareImport|parseImportWorkbook)\s*\(/);
+  assert.match(ledgerAdmin, /function readTrustedTemplateLayouts\(/);
+  assert.match(vendorReadme, /Do not call `XLSX\.read`/);
   assert.match(ledgerAdmin, /\['trade_no', 'tradeNo', 'sequence_no', 'sequence'\]/);
   assert.match(ledgerAdmin, /Hidden:\s*2/);
   assert.match(ledgerAdmin, /'2F5B7C'/);
@@ -304,7 +318,7 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
   assert.match(ledgerAdmin, /\['pre_quantity', 'preQuantity', 'quantity', 'qty'\]/);
   assert.match(ledgerAdmin, /function corporateActionOutput\(event, field\)/);
   assert.match(ledgerAdmin, /function preserveTemplateWorkbookLayout\(/);
-  assert.match(ledgerAdmin, /XLSX\.CFB\.read\(new Uint8Array\(templateBuffer\)/);
+  assert.match(ledgerAdmin, /XLSX_EXPORT\.CFB\.read\(new Uint8Array\(templateBuffer\)/);
   assert.match(ledgerAdmin, /'sheetFormatPr'/);
   assert.match(ledgerAdmin, /'pageMargins'/);
   assert.match(ledgerAdmin, /'bookViews'/);
@@ -312,7 +326,7 @@ test('ledger Excel UI keeps the style-capable writer and cash-flow sequence fall
   assert.match(ledgerAdmin, /function remapGeneratedCellStyles\(/);
   assert.match(ledgerAdmin, /templateStyleCount !== CANONICAL_CELL_STYLES\.length/);
   assert.match(ledgerAdmin, /writeXml\(generatedStyles\.entry, templateStyles\.xml\)/);
-  assert.match(ledgerAdmin, /XLSX\.write\(workbook/);
+  assert.match(ledgerAdmin, /XLSX_EXPORT\.write\(workbook/);
   const vendor = await readFile(path.join(ROOT, 'assets/vendor/xlsx-js-style-1.2.0/xlsx.min.js'));
   assert.equal(
     createHash('sha384').update(vendor).digest('hex'),

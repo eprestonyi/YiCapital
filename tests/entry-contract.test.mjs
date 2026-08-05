@@ -1,8 +1,25 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const read = path => readFile(new URL('../' + path, import.meta.url), 'utf8');
+const ROOT = fileURLToPath(new URL('../', import.meta.url));
+const read = relative => readFile(path.join(ROOT, relative), 'utf8');
+
+async function htmlDocuments(directory = ROOT, relative = '') {
+  const documents = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const nextRelative = path.join(relative, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === '.wrangler' || entry.name === '.git') continue;
+      documents.push(...await htmlDocuments(path.join(directory, entry.name), nextRelative));
+    } else if (entry.isFile() && entry.name.endsWith('.html')) {
+      documents.push(nextRelative);
+    }
+  }
+  return documents;
+}
 
 test('all three home routes mount the market entry before the existing dashboard', async () => {
   for (const path of ['index.html', 'cn/index.html', 'en/index.html']) {
@@ -212,6 +229,7 @@ test('account state clears disabled sessions and synchronizes identity changes a
   assert.match(session, /nextToken\.toLowerCase\(\) !== token\.toLowerCase\(\)/);
   assert.match(session, /addEventListener\('pageshow'/);
   assert.match(session, /reconcileStoredIdentity\(\)/);
+  assert.match(session, /if \(isGuest\) \{[\s\S]{0,500}event\.persisted[\s\S]{0,500}location\.replace\(homePath\)/);
   assert.match(session, /location\.replace\(loginPath \+ '\?reason=signedout'\)/);
   assert.match(session, /visibilitychange/);
   assert.match(session, /async function loadProfile\(attempt = 0\)/);
@@ -224,12 +242,27 @@ test('administrator password copy and shared auth assets match the hardened rele
   assert.match(users, /15–128 個字元/);
   assert.doesNotMatch(users, /至少 6 位/);
   for (const page of ['admin.html', 'admin-feedback.html', 'admin-inbox.html', 'admin-insights.html', 'admin-ledger.html', 'admin-mail.html', 'admin-reports.html', 'admin-users.html']) {
-    assert.match(await read(page), /yc-admin\.js\?v=8\.13/);
+    assert.match(await read(page), /yc-admin\.js\?v=8\.14/);
   }
   for (const page of ['index.html', 'login.html', 'cn\/index.html', 'cn\/login.html', 'en\/index.html', 'en\/login.html']) {
     assert.match(await read(page), /portal-config\.js\?v=9\.4/);
     assert.match(await read(page), /yc-entry\.js\?v=9\.6/);
   }
+});
+
+test('every HTML surface loads the current portal-config cache key', async () => {
+  const configuredPages = [];
+  for (const page of await htmlDocuments()) {
+    const html = await read(page);
+    if (!html.includes('portal-config.js')) continue;
+    configuredPages.push(page);
+    const references = [...html.matchAll(/<script\b[^>]*\bsrc=["']([^"']*portal-config\.js[^"']*)["'][^>]*>/gi)];
+    assert.ok(references.length > 0, `${page} mentions portal-config.js outside a script source`);
+    for (const [, reference] of references) {
+      assert.match(reference, /portal-config\.js\?v=9\.4$/, `${page} has stale portal-config cache key: ${reference}`);
+    }
+  }
+  assert.ok(configuredPages.length >= 50, 'expected portal config coverage across public, member and admin surfaces');
 });
 
 test('managed research content is escaped and links are restricted to the same origin', async () => {
@@ -265,7 +298,7 @@ test('auth mutations fail closed on origin, body, verification and password boun
   assert.match(sessions, /ADMIN_SESSION_IDLE_TTL_MS = 12 \* 60 \* 60 \* 1000/);
   assert.match(sessions, /'subject\\u0000' \+ String\(options\.identity\)/);
   assert.match(worker, /authRateAllowed\(request, env, 'login-subject'/);
-  assert.match(wrangler, /\[limits\][\s\S]*cpu_ms = 30000/);
+  assert.doesNotMatch(wrangler, /^\[limits\]/m);
 });
 
 test('all member surfaces load the current account-center release', async () => {
@@ -275,7 +308,16 @@ test('all member surfaces load the current account-center release', async () => 
     'cn/index.html', 'cn/about.html', 'cn/insights.html', 'cn/forum.html', 'cn/portfolios.html',
     'en/index.html', 'en/about.html', 'en/insights.html', 'en/forum.html', 'en/portfolios.html',
   ];
-  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.4/);
+  for (const page of pages) assert.match(await read(page), /yc-session\.js\?v=10\.5/);
+
+  let accountSurfaceCount = 0;
+  for (const page of await htmlDocuments()) {
+    const html = await read(page);
+    if (!html.includes('yc-session.js')) continue;
+    accountSurfaceCount += 1;
+    assert.match(html, /yc-session\.js\?v=10\.5/, `${page} has a stale account-center cache key`);
+  }
+  assert.ok(accountSurfaceCount >= 40, 'expected account center on all public content surfaces');
 });
 
 test('Google verification uses persistent signing-key resilience', async () => {
@@ -300,7 +342,7 @@ test('an expired admin session clears browser identity before redirecting', asyn
     'admin-feedback.html',
     'admin-ledger.html',
   ]) {
-    assert.match(await read(page), /assets\/yc-admin\.js\?v=8\.13/);
+    assert.match(await read(page), /assets\/yc-admin\.js\?v=8\.14/);
   }
 });
 

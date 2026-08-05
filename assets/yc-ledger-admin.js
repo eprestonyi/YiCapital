@@ -3,7 +3,8 @@
   'use strict';
 
   const { api, $ } = window.YCAdmin;
-  const MAX_FILE_BYTES = 8 * 1024 * 1024;
+  const XLSX_EXPORT = window.XLSX;
+  try { delete window.XLSX; } catch (_) { window.XLSX = undefined; }
   const MAX_IMPORT_ROWS = 280;
   const MAX_LEGACY_JSON_BYTES = 2 * 1024 * 1024;
   const MAX_LEGACY_EVENTS = 120;
@@ -178,8 +179,8 @@
     if (value instanceof Date && !Number.isNaN(value.getTime())) {
       return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
     }
-    if (typeof value === 'number' && window.XLSX && XLSX.SSF) {
-      const parsed = XLSX.SSF.parse_date_code(value);
+    if (typeof value === 'number' && XLSX_EXPORT && XLSX_EXPORT.SSF) {
+      const parsed = XLSX_EXPORT.SSF.parse_date_code(value);
       if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
     }
     const match = String(value).match(/^(\d{4})[-/]?(\d{2})[-/]?(\d{2})/);
@@ -250,9 +251,7 @@
     $('export-workbook').addEventListener('click', exportWorkbook);
     $('rebuild-derived').addEventListener('click', rebuildDerived);
     $('drain-outbox').addEventListener('click', drainPortfolioOutbox);
-    $('import-file').addEventListener('change', event => prepareImport(event.target.files && event.target.files[0]));
-    $('preview-import').addEventListener('click', previewImport);
-    $('confirm-import').addEventListener('click', confirmImport);
+    disableWorkbookImport();
     $('legacy-json').addEventListener('input', invalidateLegacyPackage);
     $('parse-legacy').addEventListener('click', parseLegacyMigrationPackage);
     $('clear-legacy').addEventListener('click', () => clearLegacyMigration());
@@ -261,7 +260,6 @@
     LEGACY_ACKS.forEach(item => $(item.input).addEventListener('change', updateLegacyConfirmation));
     $('confirm-legacy').addEventListener('click', confirmLegacyMigration);
     $('drain-legacy-outbox').addEventListener('click', drainLegacyOutbox);
-    bindDropzone();
     renderEventFields();
     updateTax();
   }
@@ -734,8 +732,8 @@
   }
 
   async function ensureXLSX() {
-    if (window.XLSX) return window.XLSX;
-    throw new Error('本地表格解析庫加載失敗，已停止匯入。');
+    if (XLSX_EXPORT) return XLSX_EXPORT;
+    throw new Error('本地 Excel 導出庫加載失敗，已停止導出。');
   }
 
   async function sha256Buffer(buffer) {
@@ -821,17 +819,95 @@
     return remapped;
   }
 
+  function trustedTemplateArchive(templateBuffer) {
+    if (!XLSX_EXPORT.CFB || typeof XLSX_EXPORT.CFB.read !== 'function' || typeof XLSX_EXPORT.CFB.find !== 'function') {
+      throw new Error('表格庫缺少可信模板版式讀取能力，已停止導出。');
+    }
+    // SECURITY: this helper is only for the bundled same-origin export template.
+    // Never pass user-selected files here and never use the SheetJS workbook parser.
+    return XLSX_EXPORT.CFB.read(new Uint8Array(templateBuffer), { type: 'array' });
+  }
+
+  function trustedTemplateXml(archive, part) {
+    const entry = XLSX_EXPORT.CFB.find(archive, `Root Entry/${part}`);
+    if (!entry || !entry.content) throw new Error(`工作簿模板缺少 ${part}。`);
+    const xml = new TextDecoder().decode(entry.content);
+    const documentNode = new DOMParser().parseFromString(xml, 'application/xml');
+    if (documentNode.getElementsByTagName('parsererror').length) {
+      throw new Error(`工作簿模板 ${part} 不是有效 XML。`);
+    }
+    return documentNode;
+  }
+
+  function templateElements(documentNode, localName) {
+    return [...documentNode.getElementsByTagName('*')]
+      .filter(node => node.localName === localName);
+  }
+
+  function trustedTemplateSheetLayout(archive, sheetIndex) {
+    const documentNode = trustedTemplateXml(archive, `xl/worksheets/sheet${sheetIndex}.xml`);
+    const columns = [];
+    templateElements(documentNode, 'col').forEach(node => {
+      const min = Number.parseInt(node.getAttribute('min') || '', 10);
+      const max = Number.parseInt(node.getAttribute('max') || '', 10);
+      if (!Number.isInteger(min) || !Number.isInteger(max) || min < 1 || max < min || max > 16384) {
+        throw new Error('工作簿模板包含無效欄位版式。');
+      }
+      const width = Number(node.getAttribute('width'));
+      for (let index = min - 1; index < max; index += 1) {
+        const column = {};
+        if (Number.isFinite(width) && width > 0) column.width = width;
+        if (node.getAttribute('hidden') === '1') column.hidden = true;
+        const level = Number.parseInt(node.getAttribute('outlineLevel') || '', 10);
+        if (Number.isInteger(level) && level >= 0) column.level = level;
+        columns[index] = column;
+      }
+    });
+    const rows = [];
+    templateElements(documentNode, 'row').forEach(node => {
+      const number = Number.parseInt(node.getAttribute('r') || '', 10);
+      if (!Number.isInteger(number) || number < 1 || number > 1048576) return;
+      const row = {};
+      const height = Number(node.getAttribute('ht'));
+      if (Number.isFinite(height) && height > 0) row.hpt = height;
+      if (node.getAttribute('hidden') === '1') row.hidden = true;
+      rows[number - 1] = row;
+    });
+    const merges = templateElements(documentNode, 'mergeCell').map(node => {
+      const reference = node.getAttribute('ref') || '';
+      if (!/^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$/.test(reference)) {
+        throw new Error('工作簿模板包含無效合併儲存格。');
+      }
+      return XLSX_EXPORT.utils.decode_range(reference);
+    });
+    return { '!cols': columns, '!rows': rows, '!merges': merges };
+  }
+
+  function readTrustedTemplateLayouts(templateBuffer, requiredOrder) {
+    const archive = trustedTemplateArchive(templateBuffer);
+    const workbookDocument = trustedTemplateXml(archive, 'xl/workbook.xml');
+    const sheetNames = templateElements(workbookDocument, 'sheet')
+      .map(node => node.getAttribute('name') || '');
+    if (!requiredOrder.every((name, index) => sheetNames[index] === name)) {
+      throw new Error('模板的 11-sheet 順序不符合鎖定格式。');
+    }
+    return Object.fromEntries(requiredOrder.map((name, index) => [
+      name,
+      trustedTemplateSheetLayout(archive, index + 1),
+    ]));
+  }
+
   async function preserveTemplateWorkbookLayout(templateBuffer, generatedBuffer, visibleSheetCount, styleManifest) {
-    if (!XLSX.CFB || typeof XLSX.CFB.read !== 'function' ||
-        typeof XLSX.CFB.write !== 'function' || typeof XLSX.CFB.find !== 'function') {
+    if (!XLSX_EXPORT.CFB || typeof XLSX_EXPORT.CFB.read !== 'function' ||
+        typeof XLSX_EXPORT.CFB.write !== 'function' || typeof XLSX_EXPORT.CFB.find !== 'function') {
       throw new Error('表格庫缺少模板版式保真能力，已停止導出。');
     }
-    const templateZip = XLSX.CFB.read(new Uint8Array(templateBuffer), { type: 'array' });
-    const generatedZip = XLSX.CFB.read(new Uint8Array(generatedBuffer), { type: 'array' });
+    const templateZip = XLSX_EXPORT.CFB.read(new Uint8Array(templateBuffer), { type: 'array' });
+    const generatedZip = XLSX_EXPORT.CFB.read(new Uint8Array(generatedBuffer), { type: 'array' });
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
     const readXml = (archive, part) => {
-      const entry = XLSX.CFB.find(archive, `Root Entry/${part}`);
+      const entry = XLSX_EXPORT.CFB.find(archive, `Root Entry/${part}`);
       if (!entry || !entry.content) throw new Error(`工作簿缺少 ${part}。`);
       return { entry, xml: decoder.decode(entry.content) };
     };
@@ -906,7 +982,7 @@
     // style/layout metadata is transplanted; generated values, formulas and
     // reverse-sync payloads remain unchanged.
     writeXml(generatedStyles.entry, templateStyles.xml);
-    return XLSX.CFB.write(generatedZip, {
+    return XLSX_EXPORT.CFB.write(generatedZip, {
       type: 'array', fileType: 'zip', compression: true,
     });
   }
@@ -922,25 +998,20 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  function bindDropzone() {
-    const zone = $('import-drop');
-    ['dragover', 'drop'].forEach(name => document.addEventListener(name, event => event.preventDefault()));
-    zone.addEventListener('dragover', () => zone.classList.add('over'));
-    zone.addEventListener('dragleave', () => zone.classList.remove('over'));
-    zone.addEventListener('drop', event => {
-      zone.classList.remove('over');
-      const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
-      if (file) prepareImport(file);
-    });
-  }
-
   function clearImport() {
     state.importFile = null; state.importBuffer = null; state.importHash = null; state.importParsed = null;
     state.importPreview = null; state.importId = null; state.importExpectedRevision = null;
     $('import-file').value = ''; $('import-file-name').value = '';
     $('preview-import').disabled = true; $('confirm-import').disabled = true;
     $('import-preview').style.display = 'none'; $('import-operations').replaceChildren();
-    $('import-log').textContent = '選擇文件後才會啟用預覽。';
+    $('import-log').textContent = '安全升級期間已停用瀏覽器端 Excel 匯入；D1 賬本與導出不受影響。';
+  }
+
+  function disableWorkbookImport() {
+    clearImport();
+    $('import-file').disabled = true;
+    $('import-file-name').disabled = true;
+    $('import-drop').setAttribute('aria-disabled', 'true');
   }
 
   function flattenEvent(raw) {
@@ -1136,7 +1207,7 @@
   }
 
   function ensureCell(sheet, row, col) {
-    const address = XLSX.utils.encode_cell({ r: row, c: col });
+    const address = XLSX_EXPORT.utils.encode_cell({ r: row, c: col });
     if (!sheet[address]) sheet[address] = { t: 's', v: '' };
     return sheet[address];
   }
@@ -1215,7 +1286,7 @@
 
   function buildRecordSheet(template, def, events, currency) {
     const built = recordWorkbookRows(def, events, currency);
-    const sheet = XLSX.utils.aoa_to_sheet(built.rows, { cellDates: false });
+    const sheet = XLSX_EXPORT.utils.aoa_to_sheet(built.rows, { cellDates: false });
     sheet['!merges'] = built.merges;
     applyRecordStyle(sheet, template, def, built.rows, built.kinds);
     return sheet;
@@ -1330,7 +1401,7 @@
     const asset = name === 'Asset Position Record';
     const headerRow = asset ? 1 : 0;
     const columns = rows.reduce((max, row) => Math.max(max, row.length), 0);
-    const sheet = XLSX.utils.aoa_to_sheet(rows, { cellDates: false });
+    const sheet = XLSX_EXPORT.utils.aoa_to_sheet(rows, { cellDates: false });
     const dataStyles = PROJECTION_DATA_STYLE_IDS[name] || [];
     rows.forEach((row, rowIndex) => {
       for (let col = 0; col < columns; col += 1) {
@@ -1373,7 +1444,7 @@
       ['eventMetaColumns', META_HEADERS.length],
     ];
     workbook.SheetNames.push(name);
-    workbook.Sheets[name] = XLSX.utils.aoa_to_sheet(rows);
+    workbook.Sheets[name] = XLSX_EXPORT.utils.aoa_to_sheet(rows);
     workbook.Workbook = workbook.Workbook || {};
     workbook.Workbook.Sheets = workbook.Workbook.Sheets || workbook.SheetNames.map(sheet => ({ name: sheet, Hidden: 0 }));
     let entry = workbook.Workbook.Sheets.find(sheet => sheet.name === name);
@@ -1393,15 +1464,9 @@
       const templateResponse = await fetch(config.template, { cache: 'no-store' });
       if (!templateResponse.ok) throw new Error(`工作簿模板讀取失敗（HTTP ${templateResponse.status}）。`);
       const templateBuffer = await templateResponse.arrayBuffer();
-      const templateWorkbook = XLSX.read(templateBuffer, { type: 'array', cellDates: false, cellStyles: true });
       const requiredOrder = [...INPUT_DEFS.slice(0, 4).map(def => def.sheet), 'Asset Position Record', 'Liability Record', 'Liability Statement', 'Capital Record', 'Fund Action Record', 'Cash Flow Statement', 'NAV Statement'];
-      if (!requiredOrder.every((sheet, index) => templateWorkbook.SheetNames[index] === sheet)) throw new Error('模板的 11-sheet 順序不符合鎖定格式。');
-      const workbook = XLSX.utils.book_new();
-      workbook.Props = styleClone(templateWorkbook.Props || {});
-      workbook.Custprops = styleClone(templateWorkbook.Custprops || {});
-      workbook.Workbook = styleClone(templateWorkbook.Workbook || {});
-      workbook.Themes = styleClone(templateWorkbook.Themes || {});
-      workbook.SSF = styleClone(templateWorkbook.SSF || {});
+      const templateLayouts = readTrustedTemplateLayouts(templateBuffer, requiredOrder);
+      const workbook = XLSX_EXPORT.utils.book_new();
       const rawEvents = first(result, ['events', 'confirmedEvents', 'confirmed_events'], []);
       let events = (Array.isArray(rawEvents) ? rawEvents : []).map(normalizeConfirmed)
         .filter(event => event.status !== 'PENDING');
@@ -1416,7 +1481,7 @@
         return copy;
       }));
       INPUT_DEFS.forEach(def => {
-        const source = templateWorkbook.Sheets[def.sheet];
+        const source = templateLayouts[def.sheet];
         workbook.SheetNames.push(def.sheet);
         workbook.Sheets[def.sheet] = buildRecordSheet(source, def, events.filter(event => event.type === def.type), config.currency);
       });
@@ -1427,7 +1492,7 @@
         if (!projectionArray(projectionSource(projection, name))) unavailableProjection.push(name);
         const rows = projectionRows(projection, name, config.currency);
         if (rows && rows.length) {
-          const source = templateWorkbook.Sheets[name];
+          const source = templateLayouts[name];
           const insertAfter = requiredOrder.indexOf(name);
           workbook.SheetNames.splice(insertAfter, 0, name);
           workbook.Sheets[name] = buildProjectionSheet(source, rows, name);
@@ -1441,7 +1506,7 @@
         layoutHash: first(result, ['layoutHash', 'layout_hash'], ''),
       });
       const styleManifest = canonicalStyleManifest(workbook);
-      const generatedWorkbook = XLSX.write(workbook, {
+      const generatedWorkbook = XLSX_EXPORT.write(workbook, {
         type: 'array', bookType: 'xlsx', compression: true, cellStyles: true,
       });
       const preservedWorkbook = await preserveTemplateWorkbookLayout(
@@ -1462,28 +1527,6 @@
     }
   }
 
-  async function prepareImport(file) {
-    if (!file) return;
-    clearImport();
-    $('import-file-name').value = file.name;
-    const log = $('import-log');
-    try {
-      if (!/\.xlsx$/i.test(file.name)) throw new Error('只接受不含宏的 .xlsx 文件。');
-      if (!file.size) throw new Error('文件是空的。');
-      if (file.size > MAX_FILE_BYTES) throw new Error(`文件超過 8 MB 上限（目前 ${(file.size / 1024 / 1024).toFixed(2)} MB）。`);
-      log.textContent = '正在本地計算 SHA-256 並解析 7 張事件 sheet…';
-      const buffer = await file.arrayBuffer();
-      const hash = await sha256Buffer(buffer);
-      const parsed = await parseImportWorkbook(buffer);
-      state.importFile = file; state.importBuffer = buffer; state.importHash = hash; state.importParsed = parsed;
-      $('preview-import').disabled = false;
-      log.textContent = `✓ 本地預檢通過：${parsed.rows.length} 個事件行 · SHA-256 ${hash.slice(0, 16)}… · 4 張派生表將忽略。尚未寫入後台。`;
-    } catch (error) {
-      log.textContent = '✗ ' + error.message;
-      $('preview-import').disabled = true;
-    }
-  }
-
   function scanInputFormulas(workbook) {
     const found = [];
     INPUT_DEFS.forEach(def => {
@@ -1497,7 +1540,7 @@
   function syncManifest(workbook) {
     const sheet = workbook.Sheets._YiSync;
     if (!sheet) return {};
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+    const rows = XLSX_EXPORT.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
     const out = {};
     rows.slice(1).forEach(row => { if (row[0]) out[String(row[0])] = row[1]; });
     return out;
@@ -1695,56 +1738,6 @@
       return cleanEvent(event);
     }
     return cleanEvent(event);
-  }
-
-  async function parseImportWorkbook(buffer) {
-    await ensureXLSX();
-    const workbook = XLSX.read(buffer, { type: 'array', cellDates: false, cellStyles: false, WTF: false });
-    const missing = INPUT_DEFS.filter(def => !workbook.Sheets[def.sheet]).map(def => def.sheet);
-    if (missing.length) throw new Error('缺少事件 sheet：' + missing.join(', '));
-    scanInputFormulas(workbook);
-    const manifest = syncManifest(workbook);
-    if (manifest.portfolio && String(manifest.portfolio).toLowerCase() !== state.portfolio) {
-      throw new Error(`工作簿屬於 ${String(manifest.portfolio).toUpperCase()}，目前頁面選中 ${state.portfolio.toUpperCase()}。`);
-    }
-    if (state.ledgerRevision > 0 && (!manifest.exportId || !manifest.syncToken)) {
-      throw new Error('正式賬本只接受從本頁最新匯出的簽名 Excel；請先重新下載。');
-    }
-    const rows = [];
-    for (const def of INPUT_DEFS) {
-      const data = XLSX.utils.sheet_to_json(workbook.Sheets[def.sheet], { header: 1, raw: true, defval: null });
-      for (let index = 0; index < data.length; index += 1) {
-        const row = data[index];
-        const number = Number(row[0]);
-        const date = dateString(row[1]);
-        if (!Number.isFinite(number) || number <= 0 || !date) continue;
-        const eventId = row[def.visible] == null ? '' : String(row[def.visible]).trim();
-        const eventVersion = row[def.visible + 1] == null ? null : asNumber(row[def.visible + 1], null);
-        const baseHash = row[def.visible + 2] == null ? '' : String(row[def.visible + 2]).trim();
-        const payload = hiddenPayload(row[def.visible + 3], eventId, `${def.sheet} Row ${index + 1}`);
-        if (eventId && baseHash) {
-          const payloadHash = await sha256Text(stableStringify(syncFreePayload(payload)));
-          if (payloadHash !== baseHash) {
-            throw new Error(`${def.sheet} Row ${index + 1} 的隱藏 payload 與 base hash 不符；請不要編輯隱藏欄，並從後台重新下載 Excel。`);
-          }
-        }
-        const visible = excelEvent(def, row, date);
-        const event = mergeExcelEvent(def, visible, payload, !!eventId);
-        rows.push({
-          sheetName: def.sheet, rowNumber: index + 1, eventId: eventId || null,
-          eventVersion, baseHash: baseHash || null, event,
-          taxReviewRequired: event.tax_review_required === true,
-          taxReviewReason: event.tax_review_reason || null,
-        });
-      }
-    }
-    if (rows.length > MAX_IMPORT_ROWS) throw new Error(`事件行超過 ${MAX_IMPORT_ROWS} 行單次安全上限；請分批處理。`);
-    return {
-      workbook, rows, manifest,
-      baseLedgerRevision: asNumber(manifest.ledgerRevision, state.ledgerRevision),
-      exportId: manifest.exportId || null, syncToken: manifest.syncToken || null,
-      ignoredDerivedSheets: DERIVED_SHEETS.filter(name => workbook.Sheets[name]),
-    };
   }
 
   function excelEvent(def, row, date) {

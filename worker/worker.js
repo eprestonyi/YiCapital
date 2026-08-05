@@ -4710,8 +4710,10 @@ export default {
         const raw = await env.YC_KV.get('user:' + username);
         if (!raw) return J(env, { error: '帳號或密碼錯誤' }, 401);
         const u = JSON.parse(raw);
-        if (u.disabled) return J(env, { error: '此帳號已被停用' }, 403);
-        if (!u.hash) return J(env, { error: '此帳號未設置密碼，請用 Google 登入' }, 400);
+        // Keep password-login failures indistinguishable. Revealing whether an
+        // account is disabled or Google-only would turn this endpoint into an
+        // account/provider enumeration oracle.
+        if (u.disabled || !u.hash) return J(env, { error: '帳號或密碼錯誤' }, 401);
         const iterations = Number(u.passwordIterations) || LEGACY_PBKDF2_ITERATIONS;
         const hash = await pbkdf2(password, u.salt, iterations);
         if (!safeEqual(hash, u.hash)) return J(env, { error: '帳號或密碼錯誤' }, 401);

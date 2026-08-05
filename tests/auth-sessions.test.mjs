@@ -225,6 +225,90 @@ test('administrator credential rotation revokes existing sessions automatically'
   assert.equal(database.sessions.size, 0);
 });
 
+test('a valid D1 administrator hit scrubs a legacy plaintext KV copy', async () => {
+  const database = authDatabase();
+  const kv = kvStore();
+  const now = Date.UTC(2026, 7, 4);
+  const env = {
+    FEEDBACK_DB: database,
+    YC_KV: kv,
+    ADMIN_USERNAME: 'tyi',
+    ADMIN_PASSWORD: 'a-strong-administrator-password',
+    FEEDBACK_RATE_SALT: 'test-rate-salt',
+  };
+  const token = await newSession(env, 'tyi', 'admin', {}, { now: () => now });
+  kv.values.set('sess:' + token, JSON.stringify({ u: 'tyi', role: 'admin' }));
+
+  const session = await getSession(requestWithToken(token), env, { now: () => now + 1000 });
+
+  assert.equal(session.role, 'admin');
+  assert.equal(session.store, 'd1');
+  assert.equal(kv.values.has('sess:' + token), false);
+  assert.equal(database.sessions.size, 1);
+  assert.equal(database.revocations.size, 0);
+});
+
+test('a rollback-expanded administrator idle deadline is revoked and its KV copy is removed', async () => {
+  const database = authDatabase();
+  const kv = kvStore();
+  const issuedAt = Date.UTC(2026, 7, 4);
+  const env = {
+    FEEDBACK_DB: database,
+    YC_KV: kv,
+    ADMIN_USERNAME: 'tyi',
+    ADMIN_PASSWORD: 'a-strong-administrator-password',
+    FEEDBACK_RATE_SALT: 'test-rate-salt',
+  };
+  const token = await newSession(env, 'tyi', 'admin', {}, { now: () => issuedAt });
+  const row = [...database.sessions.values()][0];
+
+  // Simulate the previous Worker refreshing this privileged row with its
+  // global 30-day idle limit, while also recreating the legacy KV bearer copy.
+  row.last_seen_at = issuedAt + 60 * 60 * 1000;
+  row.expires_at = row.last_seen_at + SESSION_IDLE_TTL_MS;
+  row.absolute_expires_at = issuedAt + ADMIN_SESSION_ABSOLUTE_TTL_MS;
+  kv.values.set('sess:' + token, JSON.stringify({
+    u: 'tyi',
+    role: 'admin',
+    issuedAt,
+    lastSeenAt: row.last_seen_at,
+    expiresAt: row.expires_at,
+    absoluteExpiresAt: issuedAt + SESSION_ABSOLUTE_TTL_MS,
+  }));
+
+  const session = await getSession(requestWithToken(token), env, {
+    now: () => row.last_seen_at + 1000,
+  });
+
+  assert.equal(session, null);
+  assert.equal(database.sessions.size, 0);
+  assert.equal(database.revocations.size, 1);
+  assert.equal(kv.values.has('sess:' + token), false);
+});
+
+test('an administrator absolute deadline beyond seven days is revoked independently', async () => {
+  const database = authDatabase();
+  const kv = kvStore();
+  const issuedAt = Date.UTC(2026, 7, 4);
+  const env = {
+    FEEDBACK_DB: database,
+    YC_KV: kv,
+    ADMIN_USERNAME: 'tyi',
+    ADMIN_PASSWORD: 'a-strong-administrator-password',
+    FEEDBACK_RATE_SALT: 'test-rate-salt',
+  };
+  const token = await newSession(env, 'tyi', 'admin', {}, { now: () => issuedAt });
+  const row = [...database.sessions.values()][0];
+  row.expires_at = issuedAt + ADMIN_SESSION_IDLE_TTL_MS;
+  row.absolute_expires_at = issuedAt + ADMIN_SESSION_ABSOLUTE_TTL_MS + 1;
+
+  assert.equal(await getSession(requestWithToken(token), env, {
+    now: () => issuedAt + 1000,
+  }), null);
+  assert.equal(database.sessions.size, 0);
+  assert.equal(database.revocations.size, 1);
+});
+
 test('a bound but unavailable D1 session store cannot silently create KV-only sessions', async () => {
   const database = {
     prepare() {

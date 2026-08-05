@@ -86,7 +86,7 @@
     const cur = (location.pathname.split('/').pop() || 'admin').replace(/\.html$/, '') || 'admin';
     host.className = 'adminnav';
     host.innerHTML = NAV.map(([p, t]) => `<a href="${p}" class="${cur === p ? 'on' : ''}">${t}</a>`).join('')
-      + `<a href="./" target="_blank">前台 ↗</a><a href="#" id="yca-logout" class="exit">登出</a>`;
+      + `<a href="./" target="_blank" rel="noopener">前台 ↗</a><a href="#" id="yca-logout" class="exit">登出</a>`;
     $('yca-logout').onclick = async e => {
       e.preventDefault();
       const link = e.currentTarget;

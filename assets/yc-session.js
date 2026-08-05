@@ -801,6 +801,19 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden) validate(0); });
   }
 
+  if (isGuest) {
+    window.addEventListener('pageshow', event => {
+      if (!event.persisted) return;
+      const nextToken = String(localStorage.getItem('yc-token') || '');
+      const nextUser = String(localStorage.getItem('yc-user') || '');
+      if (/^[a-f0-9]{64}$/i.test(nextToken) && nextUser) {
+        location.reload();
+        return;
+      }
+      if (localStorage.getItem('yc-guest') !== '1') location.replace(homePath);
+    });
+  }
+
   window.addEventListener('storage', event => {
     if (event.storageArea && event.storageArea !== localStorage) return;
     if (event.key && !['yc-token', 'yc-user', 'yc-guest'].includes(event.key)) return;
